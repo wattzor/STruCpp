@@ -1174,7 +1174,10 @@ export class CodeGenerator {
           for (const name of decl.names) {
             this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
             if (decl.initialValue) {
-              const initExpr = this.generateExpression(decl.initialValue);
+              const initExpr = this.generateInitializer(
+                decl.type,
+                decl.initialValue,
+              );
               this.emitHeader(
                 `${constQualifier}inline ${cppType} ${name} = ${initExpr};`,
               );
@@ -1970,7 +1973,7 @@ export class CodeGenerator {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
             const initValue = decl.initialValue
-              ? ` = ${this.generateExpression(decl.initialValue)}`
+              ? ` = ${this.generateInitializer(decl.type, decl.initialValue)}`
               : "";
             this.emit(
               `    ${this.mapTypeRefToCpp(decl.type)} ${name}${initValue};`,
@@ -2053,7 +2056,10 @@ export class CodeGenerator {
     for (const block of prog.varBlocks) {
       for (const decl of block.declarations) {
         if (decl.initialValue !== undefined) {
-          const initExpr = this.generateExpression(decl.initialValue);
+          const initExpr = this.generateInitializer(
+            decl.type,
+            decl.initialValue,
+          );
           for (const name of decl.names) {
             this.emit(`    ${name} = ${initExpr};`);
           }
@@ -2133,7 +2139,10 @@ export class CodeGenerator {
       if (block.blockType === "VAR_EXTERNAL") continue;
       for (const decl of block.declarations) {
         if (decl.initialValue) {
-          const initExpr = this.generateExpression(decl.initialValue);
+          const initExpr = this.generateInitializer(
+            decl.type,
+            decl.initialValue,
+          );
           for (const name of decl.names) {
             const cppType = this.mapTypeRefToCpp(decl.type);
             const memberName = this.mangleMemberIfNeeded(
@@ -2219,7 +2228,7 @@ export class CodeGenerator {
           for (const decl of block.declarations) {
             for (const name of decl.names) {
               const initValue = decl.initialValue
-                ? ` = ${this.generateExpression(decl.initialValue)}`
+                ? ` = ${this.generateInitializer(decl.type, decl.initialValue)}`
                 : "";
               this.emit(
                 `    ${this.mapTypeRefToCpp(decl.type)} ${name}${initValue};`,
@@ -3167,7 +3176,16 @@ export class CodeGenerator {
     }
 
     const target = this.generateExpression(stmt.target);
-    const value = this.generateExpression(stmt.value);
+    const isInterfaceTarget =
+      stmt.target.kind === "VariableExpression" &&
+      this.isInterfaceTypeRef({
+        name:
+          this.currentScopeVarTypes.get(stmt.target.name.toUpperCase()) ??
+          stmt.target.name,
+      });
+    const value = isInterfaceTarget
+      ? this.generatePointerExpression(stmt.value)
+      : this.generateExpression(stmt.value);
 
     // For interface-returning methods, convert assignment to result var into return statement
     if (
@@ -3590,7 +3608,33 @@ export class CodeGenerator {
    * For interface variables this is the variable itself; for FB instances or
    * THIS^ it is the address of the object; for null literals it is nullptr.
    */
-  private generatePointerExpression(expr: Expression): string {
+  protected isInterfaceTypeRef(typeRef: {
+    name: string;
+    elementTypeName?: string;
+  }): boolean {
+    if (this.knownInterfaceTypes.has(typeRef.name.toUpperCase())) return true;
+    if (
+      typeRef.elementTypeName &&
+      this.knownInterfaceTypes.has(typeRef.elementTypeName.toUpperCase())
+    )
+      return true;
+    return false;
+  }
+
+  protected generateInitializer(
+    typeRef: {
+      name: string;
+      elementTypeName?: string;
+    },
+    expr: Expression,
+  ): string {
+    if (this.isInterfaceTypeRef(typeRef)) {
+      return this.generatePointerExpression(expr);
+    }
+    return this.generateExpression(expr);
+  }
+
+  protected generatePointerExpression(expr: Expression): string {
     if (expr.kind === "LiteralExpression") {
       const lit = expr;
       if (
@@ -3601,6 +3645,15 @@ export class CodeGenerator {
         return "nullptr";
       }
       // Other literals are not valid interface pointer sources
+      return this.generateExpression(expr);
+    }
+
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.generatePointerExpression(expr.expression);
+    }
+
+    if (expr.kind === "NewExpression") {
+      // __NEW returns T* which is already a pointer
       return this.generateExpression(expr);
     }
 
@@ -3623,6 +3676,24 @@ export class CodeGenerator {
           this.knownProgramTypes.has(typeName.toUpperCase()))
       ) {
         return `&${this.generateExpression(expr)}`;
+      }
+      if (ve.isDereference && typeName) {
+        // POINTER TO / REF_TO dereference: p^ yields an object, take its address
+        return `&(${this.generateExpression(expr)})`;
+      }
+    }
+
+    const inferred = this.inferExprType(expr);
+    if (inferred) {
+      const inferredUpper = inferred.toUpperCase();
+      if (this.knownInterfaceTypes.has(inferredUpper)) {
+        return this.generateExpression(expr);
+      }
+      if (
+        this.knownFBTypes.has(inferredUpper) ||
+        this.knownProgramTypes.has(inferredUpper)
+      ) {
+        return `&(${this.generateExpression(expr)})`;
       }
     }
 
@@ -4300,6 +4371,26 @@ export class CodeGenerator {
       }
       case "FunctionCallExpression": {
         const fnUpper = expr.functionName.toUpperCase();
+        // Dotted method call: Prefix.Method() — resolve method return type
+        const dotIdx = fnUpper.indexOf(".");
+        if (dotIdx > 0 && this.ast) {
+          const prefix = fnUpper.substring(0, dotIdx);
+          const methodName = fnUpper.substring(dotIdx + 1);
+          const prefixType = this.currentScopeVarTypes.get(prefix);
+          if (prefixType) {
+            const fb = this.ast.functionBlocks.find(
+              (f) => f.name.toUpperCase() === prefixType.toUpperCase(),
+            );
+            if (fb) {
+              const method = fb.methods.find(
+                (m) => m.name.toUpperCase() === methodName,
+              );
+              if (method?.returnType) {
+                return method.returnType.name.toUpperCase();
+              }
+            }
+          }
+        }
         // Check user-defined functions
         if (this.ast) {
           const funcDecl = this.ast.functions.find(
@@ -4836,7 +4927,10 @@ export class CodeGenerator {
               blockType: block.blockType,
             };
             if (decl.initialValue) {
-              entry.defaultExpr = this.generateExpression(decl.initialValue);
+              entry.defaultExpr = this.generateInitializer(
+                decl.type,
+                decl.initialValue,
+              );
             }
             params.push(entry);
           }
@@ -5003,7 +5097,7 @@ export class CodeGenerator {
   /**
    * Check if a type name refers to a known interface type.
    */
-  private isInterfaceType(typeName: string): boolean {
+  public isInterfaceType(typeName: string): boolean {
     return this.knownInterfaceTypes.has(typeName.toUpperCase());
   }
 
@@ -5644,6 +5738,15 @@ export class CodeGenerator {
    * Get the default value for a type.
    */
   private getDefaultValue(typeName: string, initialValue?: string): string {
+    const upperType = typeName.toUpperCase();
+    if (this.knownInterfaceTypes.has(upperType)) {
+      if (initialValue) {
+        const upperInit = initialValue.toUpperCase();
+        if (upperInit === "0" || upperInit === "NULL") return "nullptr";
+        return `&${initialValue}`;
+      }
+      return "nullptr";
+    }
     if (initialValue) {
       // Convert enum dot-notation (TRAFFICSTATE.RED) to C++ scoped access (TRAFFICSTATE::RED)
       const dotIdx = initialValue.indexOf(".");
@@ -5730,7 +5833,6 @@ export class CodeGenerator {
       return initialValue;
     }
 
-    const upperType = typeName.toUpperCase();
     if (upperType === "BOOL") return "false";
     if (upperType === "REAL" || upperType === "LREAL") return "0.0";
     if (upperType === "STRING") return '""';

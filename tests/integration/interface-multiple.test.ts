@@ -91,4 +91,134 @@ describe.skipIf(!hasGpp)("multiple interface implementation", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("1 passed, 0 failed");
   });
+
+  it("queries from an interface variable that was assigned from an FB instance", () => {
+    const sourceST = `
+      INTERFACE IBase
+        METHOD GetValue : INT
+        END_METHOD
+      END_INTERFACE
+
+      INTERFACE IDerived EXTENDS IBase
+        METHOD GetExtra : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Comp IMPLEMENTS IDerived
+        METHOD PUBLIC GetValue : INT
+          GetValue := 10;
+        END_METHOD
+        METHOD PUBLIC GetExtra : INT
+          GetExtra := 20;
+        END_METHOD
+      END_FUNCTION_BLOCK
+    `;
+
+    const testST = `
+      TEST 'Query from interface variable'
+      VAR
+        c : Comp;
+        base : IBase := c;
+        derived : IDerived;
+        ok : BOOL;
+      END_VAR
+      ok := __QUERYINTERFACE(base, derived);
+      ASSERT_EQ(ok, TRUE);
+      ASSERT_EQ(derived.GetValue(), 10);
+      ASSERT_EQ(derived.GetExtra(), 20);
+      END_TEST
+    `;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "interface_var_query_test.st",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("1 passed, 0 failed");
+  });
+
+  it("returns FALSE when the source interface pointer is null", () => {
+    const sourceST = `
+      INTERFACE IBase
+      END_INTERFACE
+
+      INTERFACE IDerived EXTENDS IBase
+      END_INTERFACE
+    `;
+
+    const testST = `
+      TEST 'Query null interface pointer'
+      VAR
+        base : IBase := 0;
+        derived : IDerived;
+        ok : BOOL;
+      END_VAR
+      ok := __QUERYINTERFACE(base, derived);
+      ASSERT_EQ(ok, FALSE);
+      END_TEST
+    `;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "interface_null_query_test.st",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("1 passed, 0 failed");
+  });
+
+  it("supports FB inheritance where the base implements one interface and the derived adds another", () => {
+    const sourceST = `
+      INTERFACE IBase
+        METHOD A : INT
+        END_METHOD
+      END_INTERFACE
+
+      INTERFACE IDerived
+        METHOD B : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Base IMPLEMENTS IBase
+        METHOD PUBLIC A : INT
+          A := 1;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Child EXTENDS Base IMPLEMENTS IDerived
+        METHOD PUBLIC B : INT
+          B := 2;
+        END_METHOD
+      END_FUNCTION_BLOCK
+    `;
+
+    const testST = `
+      TEST 'FB inheritance adds interface'
+      VAR
+        ch : Child;
+        b : IBase;
+        d : IDerived;
+        ok1, ok2 : BOOL;
+      END_VAR
+      ok1 := __QUERYINTERFACE(ch, b);
+      ok2 := __QUERYINTERFACE(ch, d);
+      ASSERT_EQ(ok1, TRUE);
+      ASSERT_EQ(ok2, TRUE);
+      ASSERT_EQ(b.A(), 1);
+      ASSERT_EQ(d.B(), 2);
+      END_TEST
+    `;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "interface_inherit_adds_test.st",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("1 passed, 0 failed");
+  });
 });
