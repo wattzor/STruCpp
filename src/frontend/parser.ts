@@ -1018,19 +1018,53 @@ export class STParser extends CstParser {
   }
 
   private isMethodCallAhead(): boolean {
-    return (
-      this.isIdentifierOrKeywordToken(this.LA(1).tokenType) &&
-      this.LA(2).tokenType === tokens.Dot &&
-      this.isIdentifierOrKeywordToken(this.LA(3).tokenType) &&
-      this.LA(4)?.tokenType === tokens.LParen
-    );
+    // Scan over an access chain (subscripts, ^ dereferences, .field) and
+    // report true when the chain ends in .identifier(.
+    if (!this.isIdentifierOrKeywordToken(this.LA(1).tokenType)) {
+      return false;
+    }
+    let i = 2;
+    while (i <= 20) {
+      const t = this.LA(i)?.tokenType;
+      if (t === undefined) return false;
+      if (t === tokens.LBracket) {
+        let depth = 1;
+        i++;
+        while (i <= 40 && depth > 0) {
+          const inner = this.LA(i)?.tokenType;
+          if (inner === undefined) return false;
+          if (inner === tokens.LBracket) depth++;
+          else if (inner === tokens.RBracket) depth--;
+          i++;
+        }
+        continue;
+      }
+      if (t === tokens.Caret) {
+        i++;
+        continue;
+      }
+      if (t === tokens.Dot) {
+        const next = this.LA(i + 1)?.tokenType;
+        const after = this.LA(i + 2)?.tokenType;
+        if (
+          next !== undefined &&
+          this.isIdentifierOrKeywordToken(next) &&
+          after === tokens.LParen
+        ) {
+          return true;
+        }
+        return false;
+      }
+      return false;
+    }
+    return false;
   }
 
   /**
    * instance.method(args); statement
    */
   public methodCallStatement = this.RULE("methodCallStatement", () => {
-    this.SUBRULE(this.identifierOrKeyword); // instance name
+    this.SUBRULE(this.methodCallPrefix); // instance / access-chain prefix
     this.CONSUME(tokens.Dot);
     this.SUBRULE2(this.identifierOrKeyword); // method name
     this.CONSUME(tokens.LParen);
@@ -1495,7 +1529,7 @@ export class STParser extends CstParser {
    * instance.method(args) expression
    */
   public methodCall = this.RULE("methodCall", () => {
-    this.SUBRULE(this.identifierOrKeyword); // instance name
+    this.SUBRULE(this.methodCallPrefix); // instance / access-chain prefix
     this.CONSUME(tokens.Dot);
     this.SUBRULE2(this.identifierOrKeyword); // method name
     this.CONSUME(tokens.LParen);
@@ -1665,6 +1699,34 @@ export class STParser extends CstParser {
               ],
               IGNORE_AMBIGUITIES: true,
             });
+          },
+        },
+        {
+          ALT: () => {
+            this.CONSUME(tokens.Caret);
+          },
+        },
+      ]);
+    });
+  });
+
+  /**
+   * Prefix for a method call: an identifier followed by subscripts and/or
+   * dereferences. The caller (methodCall / methodCallStatement) consumes the
+   * trailing `.methodName(args)`.
+   */
+  public methodCallPrefix = this.RULE("methodCallPrefix", () => {
+    this.SUBRULE(this.identifierOrKeyword);
+    this.MANY(() => {
+      this.OR([
+        {
+          ALT: () => {
+            this.CONSUME(tokens.LBracket);
+            this.AT_LEAST_ONE_SEP({
+              SEP: tokens.Comma,
+              DEF: () => this.SUBRULE(this.expression),
+            });
+            this.CONSUME(tokens.RBracket);
           },
         },
         {

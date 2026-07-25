@@ -61,6 +61,7 @@ import {
   getTypeCategory,
   isImplicitlyConvertible,
   resolveFieldType as resolveFieldTypeUtil,
+  resolveArrayElementType,
   typeName as typeNameUtil,
   buildEnumMemberMap,
   type EnumMemberEntry,
@@ -619,9 +620,7 @@ export class CodeGenerator {
     // Array1D stores T directly — use IECVar-wrapped types for elementary elements
     // and bare names for composites (whose fields already contain IECVar leaves)
     if (typeRef.arrayDimensions && typeRef.elementTypeName) {
-      const elemCpp = this.isUserDefinedType(typeRef.elementTypeName)
-        ? typeRef.elementTypeName
-        : this.mapVarTypeToCpp(typeRef.elementTypeName);
+      const elemCpp = this.mapVarTypeToCpp(typeRef.elementTypeName);
       baseType = formatArrayType(elemCpp, typeRef.arrayDimensions);
     } else {
       baseType = this.mapVarTypeToCpp(
@@ -3708,17 +3707,8 @@ export class CodeGenerator {
   private generateQueryInterfaceExpression(
     expr: QueryInterfaceExpression,
   ): string {
-    if (expr.target.kind !== "VariableExpression") {
-      // Target must be a variable; fall back to generated expression on error
-      return `strucpp::query_interface<void>(${this.generateExpression(
-        expr.source,
-      )}, ${this.generateExpression(expr.target)})`;
-    }
-
-    const targetVar = expr.target;
-    const targetNameUpper = targetVar.name.toUpperCase();
-    const targetTypeName = this.currentScopeVarTypes.get(targetNameUpper);
-    const targetCppType = targetTypeName ?? targetVar.name;
+    const targetType = this.inferExprType(expr.target);
+    const targetCppType = targetType ?? "void";
 
     const sourcePtr = this.generatePointerExpression(expr.source);
     const targetExpr = this.generateExpression(expr.target);
@@ -4280,22 +4270,14 @@ export class CodeGenerator {
       .map((a) => this.generateExpression(a.value))
       .join(", ");
     // Try type-specific resolution first (avoids collisions when two FBs share a method name)
-    let resolvedName: string;
-    let isInterfacePointer = false;
-    if (expr.object.kind === "VariableExpression") {
-      const varType = this.currentScopeVarTypes.get(
-        expr.object.name.toUpperCase(),
-      );
-      resolvedName = varType
-        ? this.resolveMethodName(varType, expr.methodName)
-        : this.resolveMethodNameGlobal(expr.methodName);
-      if (varType && this.knownInterfaceTypes.has(varType.toUpperCase())) {
-        isInterfacePointer = true;
-      }
-    } else {
-      resolvedName = this.resolveMethodNameGlobal(expr.methodName);
-    }
-    const accessOp = isInterfacePointer ? "->" : ".";
+    const objType = this.inferExprType(expr.object);
+    const resolvedName = objType
+      ? this.resolveMethodName(objType, expr.methodName)
+      : this.resolveMethodNameGlobal(expr.methodName);
+    const accessOp =
+      objType && this.knownInterfaceTypes.has(objType.toUpperCase())
+        ? "->"
+        : ".";
     return `${obj}${accessOp}${resolvedName}(${args})`;
   }
 
@@ -4325,19 +4307,52 @@ export class CodeGenerator {
     // Fallback to ad-hoc inference for standalone codegen (tests without semantic analysis)
     switch (expr.kind) {
       case "VariableExpression": {
-        // Walk `fieldAccess` so `FB_INSTANCE.OUTPUT` resolves to the
-        // output's element type rather than the FB's type — without
-        // this, type-driven literal casts (see `harmonizeStdFuncArgs`)
-        // would synthesise `static_cast<IEC_<FB_TYPE>>(literal)`, and
-        // `IEC_<FB_TYPE>` aliases don't exist (only types emit them).
-        let type = this.currentScopeVarTypes.get(expr.name.toUpperCase());
-        if (!type) return undefined;
-        for (const field of expr.fieldAccess ?? []) {
-          const next = this.resolveMemberType(type, field);
-          if (!next) return undefined;
-          type = next;
+        // Walk the full access chain (subscripts, ^, fields) so that
+        // `observers[1].Update()` resolves to the element FB type and
+        // `p^.Start()` resolves to the pointed FB type.
+        const ast = this.ast;
+        let currentType = this.currentScopeVarTypes.get(
+          expr.name.toUpperCase(),
+        );
+        if (!currentType || !ast) return undefined;
+
+        const applyStep = (
+          type: string,
+          step: AccessStep,
+        ): string | undefined => {
+          switch (step.kind) {
+            case "field":
+              return this.resolveMemberType(type, step.name);
+            case "subscript":
+              return resolveArrayElementType(type, ast);
+            case "dereference":
+              // The stored base type already represents the pointed/referred value.
+              return type;
+          }
+        };
+
+        if (expr.accessChain && expr.accessChain.length > 0) {
+          for (const step of expr.accessChain) {
+            const next = applyStep(currentType, step);
+            if (!next) return undefined;
+            currentType = next;
+          }
+        } else {
+          for (let i = 0; i < expr.subscripts.length; i++) {
+            const elem = resolveArrayElementType(currentType, ast);
+            if (!elem) return undefined;
+            currentType = elem;
+          }
+          for (const field of expr.fieldAccess ?? []) {
+            const next = this.resolveMemberType(currentType, field);
+            if (!next) return undefined;
+            currentType = next;
+          }
+          if (expr.isDereference) {
+            // The stored base type already represents the pointed/referred value.
+          }
         }
-        return type.toUpperCase();
+        return currentType.toUpperCase();
       }
       case "LiteralExpression": {
         if (expr.typePrefix) return expr.typePrefix.toUpperCase();
@@ -4412,22 +4427,20 @@ export class CodeGenerator {
         return undefined;
       }
       case "MethodCallExpression": {
-        // Resolve object type → find FB declaration → find method → return type
-        if (expr.object.kind === "VariableExpression") {
-          const objType = this.currentScopeVarTypes.get(
-            expr.object.name.toUpperCase(),
+        // Resolve object type → find FB declaration → find method → return type.
+        // Recursing through `inferExprType` handles array elements, pointer
+        // dereferences, field access and chained method calls.
+        const objType = this.inferExprType(expr.object);
+        if (objType && this.ast) {
+          const fb = this.ast.functionBlocks.find(
+            (f) => f.name.toUpperCase() === objType.toUpperCase(),
           );
-          if (objType && this.ast) {
-            const fb = this.ast.functionBlocks.find(
-              (f) => f.name.toUpperCase() === objType.toUpperCase(),
+          if (fb) {
+            const method = fb.methods.find(
+              (m) => m.name.toUpperCase() === expr.methodName.toUpperCase(),
             );
-            if (fb) {
-              const method = fb.methods.find(
-                (m) => m.name.toUpperCase() === expr.methodName.toUpperCase(),
-              );
-              if (method?.returnType) {
-                return method.returnType.name.toUpperCase();
-              }
+            if (method?.returnType) {
+              return method.returnType.name.toUpperCase();
             }
           }
         }
