@@ -773,20 +773,30 @@ export class ASTBuilder {
 
     // GET block
     let getter: Statement[] | undefined;
+    let getterVarBlocks: VarBlock[] | undefined;
     const getterNode = getFirstNode(children.propertyGetter);
     if (getterNode) {
       const getterChildren = getterNode.children as CstChildren;
       const getterStmtList = getFirstNode(getterChildren.statementList);
       getter = this.extractStatementsFromList(getterStmtList);
+      const getterVarNodes = getAllNodes(getterChildren.propertyVarBlock);
+      if (getterVarNodes.length > 0) {
+        getterVarBlocks = getterVarNodes.map((n) => this.buildVarBlock(n));
+      }
     }
 
     // SET block
     let setter: Statement[] | undefined;
+    let setterVarBlocks: VarBlock[] | undefined;
     const setterNode = getFirstNode(children.propertySetter);
     if (setterNode) {
       const setterChildren = setterNode.children as CstChildren;
       const setterStmtList = getFirstNode(setterChildren.statementList);
       setter = this.extractStatementsFromList(setterStmtList);
+      const setterVarNodes = getAllNodes(setterChildren.propertyVarBlock);
+      if (setterVarNodes.length > 0) {
+        setterVarBlocks = setterVarNodes.map((n) => this.buildVarBlock(n));
+      }
     }
 
     return {
@@ -797,6 +807,8 @@ export class ASTBuilder {
       visibility,
       ...(getter !== undefined ? { getter } : {}),
       ...(setter !== undefined ? { setter } : {}),
+      ...(getterVarBlocks !== undefined ? { getterVarBlocks } : {}),
+      ...(setterVarBlocks !== undefined ? { setterVarBlocks } : {}),
     };
   }
 

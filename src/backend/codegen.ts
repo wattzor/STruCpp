@@ -9,6 +9,7 @@
 
 import type {
   CompilationUnit,
+  VarBlock,
   VarDeclaration,
   Statement,
   Expression,
@@ -2015,16 +2016,41 @@ export class CodeGenerator {
   ): void {
     const type = this.mapTypeRefToCpp(prop.type);
 
+    // Helper to emit local VAR / VAR_TEMP declarations for an accessor
+    const emitLocalVars = (varBlocks: VarBlock[] | undefined) => {
+      if (!varBlocks) return;
+      for (const block of varBlocks) {
+        if (block.blockType === "VAR" || block.blockType === "VAR_TEMP") {
+          for (const decl of block.declarations) {
+            for (const name of decl.names) {
+              const initValue = decl.initialValue
+                ? ` = ${this.generateExpression(decl.initialValue)}`
+                : "";
+              this.emit(
+                `    ${this.mapTypeRefToCpp(decl.type)} ${name}${initValue};`,
+              );
+            }
+          }
+        }
+      }
+    };
+
     // Getter
     if (prop.getter) {
       this.emitLineDirective(prop.sourceSpan.startLine);
       const getterLine = this.currentLine;
       this.emit(`${type} ${className}::get_${prop.name}() const {`);
+      this.enterScope([
+        ...this.currentFBVarBlocks,
+        ...(prop.getterVarBlocks ?? []),
+      ]);
+      emitLocalVars(prop.getterVarBlocks);
       this.emit(`    ${type} ${prop.name}_result;`);
       this.currentFunctionName = prop.name;
       this.generateStatements(prop.getter);
       this.emit(`    return ${prop.name}_result;`);
       this.currentFunctionName = undefined;
+      this.exitScope();
       this.emit("}");
       this.emit("");
       this.recordLineMapping(prop.sourceSpan.startLine, getterLine);
@@ -2035,8 +2061,14 @@ export class CodeGenerator {
       this.emitLineDirective(prop.sourceSpan.startLine);
       const setterLine = this.currentLine;
       this.emit(`void ${className}::set_${prop.name}(${type} ${prop.name}) {`);
+      this.enterScope([
+        ...this.currentFBVarBlocks,
+        ...(prop.setterVarBlocks ?? []),
+      ]);
+      emitLocalVars(prop.setterVarBlocks);
       // In setter, prop.name refers to the input parameter (no redirection)
       this.generateStatements(prop.setter);
+      this.exitScope();
       this.emit("}");
       this.emit("");
       this.recordLineMapping(prop.sourceSpan.startLine, setterLine);

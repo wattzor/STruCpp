@@ -201,6 +201,8 @@ export interface PropertyDeclaration extends ASTNode {
   visibility: Visibility;
   getter?: Statement[];
   setter?: Statement[];
+  getterVarBlocks?: VarBlock[];
+  setterVarBlocks?: VarBlock[];
 }
 
 // =============================================================================
