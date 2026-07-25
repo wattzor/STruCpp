@@ -1319,4 +1319,92 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       expect(result.cppCode).toContain('"it\'s"');
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Interface runtime support
+  // ─────────────────────────────────────────────────────────────────────
+  describe("Interface pointer representation", () => {
+    it("should emit interface-typed variables as raw C++ pointers", () => {
+      const result = compileAndCheck(`
+        INTERFACE IBase
+          METHOD GetValue : INT
+          END_METHOD
+        END_INTERFACE
+
+        PROGRAM Main
+          VAR
+            itf : IBase;
+          END_VAR
+        END_PROGRAM
+      `);
+
+      expect(result.headerCode).toContain("IBASE* ITF;");
+    });
+
+    it("should generate __QUERYINTERFACE as a runtime helper call", () => {
+      const result = compileAndCheck(`
+        INTERFACE IBase
+          METHOD GetValue : INT
+          END_METHOD
+        END_INTERFACE
+
+        FUNCTION_BLOCK Comp IMPLEMENTS IBase
+          METHOD PUBLIC GetValue : INT
+            GetValue := 1;
+          END_METHOD
+        END_FUNCTION_BLOCK
+
+        PROGRAM Main
+          VAR
+            c : Comp;
+            itf : IBase;
+            ok : BOOL;
+          END_VAR
+          ok := __QUERYINTERFACE(c, itf);
+        END_PROGRAM
+      `);
+
+      expect(result.cppCode).toContain(
+        "strucpp::query_interface<IBASE>(&C, ITF)",
+      );
+    });
+
+    it("should use -> for method calls on interface variables", () => {
+      const result = compileAndCheck(`
+        INTERFACE IBase
+          METHOD GetValue : INT
+          END_METHOD
+        END_INTERFACE
+
+        PROGRAM Main
+          VAR
+            itf : IBase;
+            got : INT;
+          END_VAR
+          got := itf.GetValue();
+        END_PROGRAM
+      `);
+
+      expect(result.cppCode).toContain("ITF->GETVALUE()");
+    });
+
+    it("should generate pointer return for interface-returning methods", () => {
+      const result = compileAndCheck(`
+        INTERFACE IBase
+        END_INTERFACE
+
+        FUNCTION_BLOCK Comp IMPLEMENTS IBase
+          METHOD PUBLIC AsBase : IBase
+            AsBase := THIS^;
+          END_METHOD
+        END_FUNCTION_BLOCK
+
+        PROGRAM Main END_PROGRAM
+      `);
+
+      expect(result.headerCode).toContain("virtual IBASE* ASBASE();");
+      expect(result.cppCode).toContain("IBASE* COMP::ASBASE()");
+      expect(result.cppCode).toContain("return this;");
+    });
+  });
 });

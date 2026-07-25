@@ -1498,4 +1498,16 @@ inline IEC_ULINT MEMCPY(IEC_ULINT dest, IEC_ULINT src, std::size_t n) {
     return dest;
 }
 
+/**
+ * __QUERYINTERFACE(source, target) runtime support.
+ * Casts the source object/pointer to the target interface type. On success
+ * the target pointer is updated and the function returns true; otherwise it
+ * is set to null and the function returns false.
+ */
+template <typename To, typename From>
+inline bool query_interface(From* from, To*& to) {
+    to = dynamic_cast<To*>(from);
+    return to != nullptr;
+}
+
 } // namespace strucpp

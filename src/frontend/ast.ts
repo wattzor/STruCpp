@@ -571,6 +571,7 @@ export type Expression =
   | RefExpression
   | DrefExpression
   | NewExpression
+  | QueryInterfaceExpression
   | ArrayLiteralExpression;
 
 /**
@@ -726,6 +727,17 @@ export interface NewExpression extends TypedNode {
   kind: "NewExpression";
   allocationType: TypeReference;
   arraySize?: Expression;
+}
+
+/**
+ * __QUERYINTERFACE(source, target) expression - runtime interface cast.
+ * Returns BOOL and, on success, assigns a pointer of the target interface
+ * type to the target variable.
+ */
+export interface QueryInterfaceExpression extends TypedNode {
+  kind: "QueryInterfaceExpression";
+  source: Expression;
+  target: Expression;
 }
 
 /**

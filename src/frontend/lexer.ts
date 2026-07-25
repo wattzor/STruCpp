@@ -355,6 +355,12 @@ export const POINTER = createToken({ name: "POINTER", pattern: /POINTER/i });
 export const __NEW = createToken({ name: "__NEW", pattern: /__NEW/i });
 export const __DELETE = createToken({ name: "__DELETE", pattern: /__DELETE/i });
 
+// Interface query (CODESYS extension)
+export const __QUERYINTERFACE = createToken({
+  name: "__QUERYINTERFACE",
+  pattern: /__QUERYINTERFACE/i,
+});
+
 // Test framework keywords (only active in test file lexing)
 export const TEST = createToken({ name: "TEST", pattern: /TEST/i });
 export const END_TEST = createToken({
@@ -704,6 +710,7 @@ const keywordTokens = [
   NULL,
   __NEW,
   __DELETE,
+  __QUERYINTERFACE,
   METHOD,
   END_METHOD,
   INTERFACE,
@@ -831,6 +838,7 @@ export const allTokens = [
   NULL,
   __NEW,
   __DELETE,
+  __QUERYINTERFACE,
   END_METHOD,
   END_INTERFACE,
   END_PROPERTY,
