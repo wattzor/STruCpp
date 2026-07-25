@@ -1001,6 +1001,43 @@ export class CodeGenerator {
       }
     }
 
+    // Propagate methods and properties down the FB inheritance chain so
+    // `Child.BaseProp` and `Child.InheritedMethod()` resolve to the parent names.
+    const fbMap = new Map(
+      ast.functionBlocks.map((fb) => [fb.name.toUpperCase(), fb] as const),
+    );
+    const propagate = (
+      derived: (typeof ast.functionBlocks)[0],
+      ancestorName: string,
+      visited: Set<string>,
+    ) => {
+      if (visited.has(ancestorName.toUpperCase())) return;
+      visited.add(ancestorName.toUpperCase());
+      const ancestor = fbMap.get(ancestorName.toUpperCase());
+      if (!ancestor) return;
+      const derivedKey = derived.name.toUpperCase();
+      for (const method of ancestor.methods) {
+        const key = `${derivedKey}.${method.name.toUpperCase()}`;
+        if (!this.methodNameMap.has(key)) {
+          this.methodNameMap.set(key, method.name);
+        }
+      }
+      for (const prop of ancestor.properties) {
+        const key = `${derivedKey}.${prop.name.toUpperCase()}`;
+        if (!this.propertyNameMap.has(key)) {
+          this.propertyNameMap.set(key, prop.name);
+        }
+      }
+      if (ancestor.extends) {
+        propagate(derived, ancestor.extends, visited);
+      }
+    };
+    for (const fb of ast.functionBlocks) {
+      if (fb.extends) {
+        propagate(fb, fb.extends, new Set<string>());
+      }
+    }
+
     // Build set of known struct/UDT types and enum member maps
     const enumDescriptors: Array<{ name: string; members: string[] }> = [];
     for (const td of ast.types) {
@@ -1469,7 +1506,10 @@ export class CodeGenerator {
     }
     if (fb.implements) {
       for (const iface of fb.implements) {
-        bases.push(`public ${iface}`);
+        // Virtual inheritance prevents diamond ambiguity when an FB both
+        // inherits another FB that already implements an interface and also
+        // implements a derived interface of the same base.
+        bases.push(`virtual public ${iface}`);
       }
     }
     const inheritance = bases.length > 0 ? ` : ${bases.join(", ")}` : "";
@@ -1732,7 +1772,7 @@ export class CodeGenerator {
   ): void {
     const extendsClause =
       iface.extends && iface.extends.length > 0
-        ? ` : ${iface.extends.map((e) => `public ${e}`).join(", ")}`
+        ? ` : ${iface.extends.map((e) => `virtual public ${e}`).join(", ")}`
         : "";
 
     this.emitHeaderLineDirective(iface.sourceSpan.startLine);

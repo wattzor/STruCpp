@@ -91,6 +91,44 @@ export class TestCodeGenerator extends CodeGenerator {
         this.fbInterfaceMethodNames.set(fb.name.toUpperCase(), ifaceMethods);
       }
     }
+
+    // Propagate inherited methods and properties so a test can call
+    // `child.BaseProp` or `child.InheritedMethod()` even when declared in the parent FB.
+    const fbMap = new Map(
+      ast.functionBlocks.map((fb) => [fb.name.toUpperCase(), fb] as const),
+    );
+    const propagate = (
+      derived: (typeof ast.functionBlocks)[0],
+      ancestorName: string,
+      visited: Set<string>,
+    ) => {
+      if (visited.has(ancestorName.toUpperCase())) return;
+      visited.add(ancestorName.toUpperCase());
+      const ancestor = fbMap.get(ancestorName.toUpperCase());
+      if (!ancestor) return;
+      const derivedKey = derived.name.toUpperCase();
+      for (const method of ancestor.methods) {
+        const key = `${derivedKey}.${method.name.toUpperCase()}`;
+        if (!this.methodNameMap.has(key)) {
+          this.methodNameMap.set(key, method.name);
+        }
+      }
+      for (const prop of ancestor.properties) {
+        const key = `${derivedKey}.${prop.name.toUpperCase()}`;
+        if (!this.propertyNameMap.has(key)) {
+          this.propertyNameMap.set(key, prop.name);
+        }
+      }
+      if (ancestor.extends) {
+        propagate(derived, ancestor.extends, visited);
+      }
+    };
+    for (const fb of ast.functionBlocks) {
+      if (fb.extends) {
+        propagate(fb, fb.extends, new Set<string>());
+      }
+    }
+
     const enumDescriptors: Array<{ name: string; members: string[] }> = [];
     for (const td of ast.types) {
       this.knownStructTypes.add(td.name.toUpperCase());
