@@ -187,6 +187,11 @@ export class TestCodeGenerator extends CodeGenerator {
     return this.generateExpression(expr);
   }
 
+  /** Generate a C++ pointer expression for interface initializers/assignments. */
+  emitPointerExpression(expr: Expression): string {
+    return this.generatePointerExpression(expr);
+  }
+
   /** Generate C++ statement(s) and append to output buffer. */
   emitStatement(stmt: Statement, indent: string): void {
     this.generateStatement(stmt, indent);
