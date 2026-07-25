@@ -301,6 +301,23 @@ export class STParser extends CstParser {
   });
 
   /**
+   * Variable block inside a property accessor (only local VAR / VAR_TEMP allowed)
+   */
+  public propertyVarBlock = this.RULE("propertyVarBlock", () => {
+    this.OR({
+      DEF: [
+        { ALT: () => this.CONSUME(tokens.VAR) },
+        { ALT: () => this.CONSUME(tokens.VAR_TEMP) },
+      ],
+      IGNORE_AMBIGUITIES: true,
+    });
+    this.MANY(() => {
+      this.SUBRULE(this.varDeclaration);
+    });
+    this.CONSUME(tokens.END_VAR);
+  });
+
+  /**
    * PROPERTY declaration within a Function Block
    */
   public propertyDeclaration = this.RULE("propertyDeclaration", () => {
@@ -337,6 +354,9 @@ export class STParser extends CstParser {
    */
   public propertyGetter = this.RULE("propertyGetter", () => {
     this.CONSUME(tokens.GET);
+    this.MANY(() => {
+      this.SUBRULE(this.propertyVarBlock);
+    });
     this.OPTION(() => {
       this.SUBRULE(this.statementList);
     });
@@ -348,6 +368,9 @@ export class STParser extends CstParser {
    */
   public propertySetter = this.RULE("propertySetter", () => {
     this.CONSUME(tokens.SET);
+    this.MANY(() => {
+      this.SUBRULE(this.propertyVarBlock);
+    });
     this.OPTION(() => {
       this.SUBRULE(this.statementList);
     });

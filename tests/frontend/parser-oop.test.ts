@@ -708,6 +708,36 @@ describe('OOP Parser', () => {
       expect(result.cst).toBeDefined();
     });
 
+    it('should parse a property with local VAR blocks in getter and setter', () => {
+      const source = `
+        FUNCTION_BLOCK Motor
+          VAR
+            _speed : INT;
+          END_VAR
+          PROPERTY PUBLIC Speed : INT
+            GET
+              VAR
+                scaled : INT;
+              END_VAR
+              scaled := _speed * 2;
+              Speed := scaled;
+            END_GET
+            SET
+              VAR
+                clamped : INT;
+              END_VAR
+              clamped := Speed;
+              IF clamped > 100 THEN clamped := 100; END_IF;
+              _speed := clamped;
+            END_SET
+          END_PROPERTY
+        END_FUNCTION_BLOCK
+      `;
+      const result = parseSource(source);
+      expect(result.errors).toHaveLength(0);
+      expect(result.cst).toBeDefined();
+    });
+
     it('should parse properties alongside methods', () => {
       const source = `
         FUNCTION_BLOCK Motor

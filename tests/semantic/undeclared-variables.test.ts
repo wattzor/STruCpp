@@ -220,6 +220,28 @@ describe("Undeclared Variables - Positive (no false errors)", () => {
     expect(undeclaredErrors(result)).toHaveLength(0);
   });
 
+  it("should accept property accessor local VAR", () => {
+    const result = analyzeSource(`
+      FUNCTION_BLOCK MyFB
+        VAR _val : INT; END_VAR
+        PROPERTY PUBLIC Value : INT
+          GET
+            VAR scaled : INT; END_VAR
+            scaled := _val * 2;
+            Value := scaled;
+          END_GET
+          SET
+            VAR clamped : INT; END_VAR
+            clamped := Value;
+            IF clamped > 100 THEN clamped := 100; END_IF;
+            _val := clamped;
+          END_SET
+        END_PROPERTY
+      END_FUNCTION_BLOCK
+    `);
+    expect(undeclaredErrors(result)).toHaveLength(0);
+  });
+
   it("should accept standard function calls without flagging function name", () => {
     const result = analyzeSource(`
       PROGRAM Main

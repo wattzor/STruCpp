@@ -508,6 +508,33 @@ describe("AST Builder - OOP Features", () => {
       expect(prop.setter).toBeDefined();
     });
 
+    it("should build property getter/setter with local VAR blocks", () => {
+      const ast = parseAndBuild(`
+        FUNCTION_BLOCK Motor
+          VAR speed : INT; END_VAR
+          PROPERTY Speed : INT
+            GET
+              VAR scaled : INT; END_VAR
+              scaled := speed * 2;
+              Speed := scaled;
+            END_GET
+            SET
+              VAR clamped : INT; END_VAR
+              clamped := Speed;
+              IF clamped > 100 THEN clamped := 100; END_IF;
+              speed := clamped;
+            END_SET
+          END_PROPERTY
+        END_FUNCTION_BLOCK
+      `);
+
+      const prop = ast.functionBlocks[0]!.properties[0]!;
+      expect(prop.getterVarBlocks).toBeDefined();
+      expect(prop.getterVarBlocks![0]!.declarations[0]!.names[0]).toBe("SCALED");
+      expect(prop.setterVarBlocks).toBeDefined();
+      expect(prop.setterVarBlocks![0]!.declarations[0]!.names[0]).toBe("CLAMPED");
+    });
+
     it("should build a property with PUBLIC visibility (default)", () => {
       const ast = parseAndBuild(`
         FUNCTION_BLOCK Motor
