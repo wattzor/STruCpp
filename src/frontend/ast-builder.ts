@@ -44,6 +44,7 @@ import type {
   RefExpression,
   DrefExpression,
   NewExpression,
+  QueryInterfaceExpression,
   DeleteStatement,
   ArrayLiteralExpression,
   FunctionCallExpression,
@@ -2308,6 +2309,13 @@ export class ASTBuilder {
       return this.buildNewExpression(getFirstNode(children.newExpression)!);
     }
 
+    // Check for __QUERYINTERFACE(source, target) expression
+    if (children.queryInterfaceExpression) {
+      return this.buildQueryInterfaceExpression(
+        getFirstNode(children.queryInterfaceExpression)!,
+      );
+    }
+
     // Check for THIS access expression
     if (children.thisAccess) {
       return this.buildThisAccessExpression(getFirstNode(children.thisAccess)!);
@@ -2430,6 +2438,26 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       allocationType,
       ...(arraySize !== undefined ? { arraySize } : {}),
+    };
+  }
+
+  /**
+   * Build a QueryInterfaceExpression from a CST node.
+   * Handles: __QUERYINTERFACE(source, target)
+   */
+  buildQueryInterfaceExpression(node: CstNode): QueryInterfaceExpression {
+    const children = node.children as CstChildren;
+
+    const sourceNode = getFirstNode(children.expression);
+    const targetNode = getAllNodes(children.expression)[1];
+    const source = sourceNode ? this.buildExpression(sourceNode) : undefined;
+    const target = targetNode ? this.buildExpression(targetNode) : undefined;
+
+    return {
+      kind: "QueryInterfaceExpression",
+      sourceSpan: nodeToSourceSpan(node),
+      source: source!,
+      target: target!,
     };
   }
 

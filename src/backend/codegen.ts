@@ -31,6 +31,7 @@ import type {
   MethodDeclaration,
   InterfaceDeclaration,
   PropertyDeclaration,
+  QueryInterfaceExpression,
   Visibility,
 } from "../frontend/ast.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
@@ -507,6 +508,10 @@ export class CodeGenerator {
       }
       if (this.enumTypeMembers.has(typeName.toUpperCase())) {
         return `IEC_${typeName}`;
+      }
+      // Interface-typed variables are reference/pointer types in CODESYS.
+      if (this.knownInterfaceTypes.has(typeName.toUpperCase())) {
+        return `${typeName}*`;
       }
       return typeName;
     }
@@ -1735,10 +1740,8 @@ export class CodeGenerator {
     this.recordHeaderLineMapping(iface.sourceSpan.startLine, classLine);
 
     for (const method of iface.methods) {
-      const isIfaceReturn =
-        method.returnType && this.isInterfaceType(method.returnType.name);
       const returnType = method.returnType
-        ? `${this.mapTypeRefToCpp(method.returnType)}${isIfaceReturn ? "&" : ""}`
+        ? this.mapTypeRefToCpp(method.returnType)
         : "void";
       const params = this.generateMethodParamList(method);
       if (method.sourceSpan) {
@@ -1814,10 +1817,8 @@ export class CodeGenerator {
       }
 
       for (const method of visMethods) {
-        const isIfaceReturn =
-          method.returnType && this.isInterfaceType(method.returnType.name);
         const returnType = method.returnType
-          ? `${this.mapTypeRefToCpp(method.returnType)}${isIfaceReturn ? "&" : ""}`
+          ? this.mapTypeRefToCpp(method.returnType)
           : "void";
         const params = this.generateMethodParamList(method);
 
@@ -1924,7 +1925,7 @@ export class CodeGenerator {
     const isIfaceReturn =
       method.returnType && this.isInterfaceType(method.returnType.name);
     const returnType = method.returnType
-      ? `${this.mapTypeRefToCpp(method.returnType)}${isIfaceReturn ? "&" : ""}`
+      ? this.mapTypeRefToCpp(method.returnType)
       : "void";
     const params = this.generateMethodParamList(method);
 
@@ -3174,7 +3175,8 @@ export class CodeGenerator {
       this.currentFunctionName &&
       target === `${this.currentFunctionName}_result`
     ) {
-      this.emit(`${indent}return ${value};`);
+      const pointerValue = this.generatePointerExpression(stmt.value);
+      this.emit(`${indent}return ${pointerValue};`);
       return;
     }
 
@@ -3495,12 +3497,9 @@ export class CodeGenerator {
    */
   private generateReturnStatement(indent: string): void {
     if (this.interfaceReturnMethod) {
-      // Interface-returning methods: the assignment-based return path (methodName := expr)
-      // directly emits `return expr;`. A bare `RETURN;` has no value to return, so we
-      // default to `return *this;` which is correct for the common pattern where the
-      // method returns its own FB as the interface implementor. Edge case: if the method
-      // should return a different object, the user must use the assignment form instead.
-      this.emit(`${indent}return *this;`);
+      // Interface-returning methods return an interface pointer. A bare `RETURN;`
+      // returns a pointer to the current instance.
+      this.emit(`${indent}return this;`);
     } else if (this.currentFunctionName) {
       this.emit(`${indent}return ${this.currentFunctionName}_result;`);
     } else {
@@ -3580,7 +3579,80 @@ export class CodeGenerator {
         const elements = expr.elements.map((e) => this.generateExpression(e));
         return `{${elements.join(", ")}}`;
       }
+      case "QueryInterfaceExpression": {
+        return this.generateQueryInterfaceExpression(expr);
+      }
     }
+  }
+
+  /**
+   * Generate an interface pointer expression.
+   * For interface variables this is the variable itself; for FB instances or
+   * THIS^ it is the address of the object; for null literals it is nullptr.
+   */
+  private generatePointerExpression(expr: Expression): string {
+    if (expr.kind === "LiteralExpression") {
+      const lit = expr;
+      if (
+        lit.value === 0 ||
+        lit.value === "0" ||
+        lit.rawValue?.toUpperCase() === "NULL"
+      ) {
+        return "nullptr";
+      }
+      // Other literals are not valid interface pointer sources
+      return this.generateExpression(expr);
+    }
+
+    if (expr.kind === "VariableExpression") {
+      const ve = expr;
+      const nameUpper = ve.name.toUpperCase();
+      const typeName =
+        nameUpper === "THIS"
+          ? this.currentFBName
+          : this.currentScopeVarTypes.get(nameUpper);
+      if (typeName && this.knownInterfaceTypes.has(typeName.toUpperCase())) {
+        return this.generateExpression(expr);
+      }
+      if (nameUpper === "THIS" && ve.isDereference) {
+        return "this";
+      }
+      if (
+        typeName &&
+        (this.knownFBTypes.has(typeName.toUpperCase()) ||
+          this.knownProgramTypes.has(typeName.toUpperCase()))
+      ) {
+        return `&${this.generateExpression(expr)}`;
+      }
+    }
+
+    // Fallback: address of whatever expression was generated
+    return `&(${this.generateExpression(expr)})`;
+  }
+
+  /**
+   * Generate C++ for a __QUERYINTERFACE(source, target) expression.
+   * Calls strucpp::query_interface<TargetInterface>(sourcePtr, targetVar).
+   */
+  private generateQueryInterfaceExpression(
+    expr: QueryInterfaceExpression,
+  ): string {
+    if (expr.target.kind !== "VariableExpression") {
+      // Target must be a variable; fall back to generated expression on error
+      return `strucpp::query_interface<void>(${this.generateExpression(
+        expr.source,
+      )}, ${this.generateExpression(expr.target)})`;
+    }
+
+    const targetVar = expr.target;
+    const targetNameUpper = targetVar.name.toUpperCase();
+    const targetTypeName = this.currentScopeVarTypes.get(targetNameUpper);
+    const targetCppType = targetTypeName ?? targetVar.name;
+
+    const sourcePtr = this.generatePointerExpression(expr.source);
+    const targetExpr = this.generateExpression(expr.target);
+
+    return `strucpp::query_interface<${targetCppType}>(${sourcePtr}, ${targetExpr})`;
   }
 
   /**
@@ -4138,6 +4210,7 @@ export class CodeGenerator {
       .join(", ");
     // Try type-specific resolution first (avoids collisions when two FBs share a method name)
     let resolvedName: string;
+    let isInterfacePointer = false;
     if (expr.object.kind === "VariableExpression") {
       const varType = this.currentScopeVarTypes.get(
         expr.object.name.toUpperCase(),
@@ -4145,10 +4218,14 @@ export class CodeGenerator {
       resolvedName = varType
         ? this.resolveMethodName(varType, expr.methodName)
         : this.resolveMethodNameGlobal(expr.methodName);
+      if (varType && this.knownInterfaceTypes.has(varType.toUpperCase())) {
+        isInterfacePointer = true;
+      }
     } else {
       resolvedName = this.resolveMethodNameGlobal(expr.methodName);
     }
-    return `${obj}.${resolvedName}(${args})`;
+    const accessOp = isInterfacePointer ? "->" : ".";
+    return `${obj}${accessOp}${resolvedName}(${args})`;
   }
 
   // ===========================================================================
@@ -4546,8 +4623,12 @@ export class CodeGenerator {
       } else if (prefix.toUpperCase() === "SUPER" && this.currentFBExtends) {
         return `${this.currentFBExtends}::${resolvedMethod}(${args.join(", ")})`;
       } else {
-        // instance.method() call
-        return `${prefix}.${resolvedMethod}(${args.join(", ")})`;
+        // instance.method() call; interface pointers use ->
+        const prefixType = this.currentScopeVarTypes.get(prefix.toUpperCase());
+        const isInterfacePointer =
+          prefixType && this.knownInterfaceTypes.has(prefixType.toUpperCase());
+        const accessOp = isInterfacePointer ? "->" : ".";
+        return `${prefix}${accessOp}${resolvedMethod}(${args.join(", ")})`;
       }
     }
 

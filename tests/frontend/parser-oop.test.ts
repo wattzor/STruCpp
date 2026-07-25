@@ -1252,5 +1252,32 @@ describe('OOP Parser', () => {
       // Parser allows the combination; these are independent optional modifiers
       expect(result.errors).toHaveLength(0);
     });
+
+    it('should parse __QUERYINTERFACE(source, target)', () => {
+      const source = `
+        INTERFACE IBase
+          METHOD GetValue : INT
+          END_METHOD
+        END_INTERFACE
+
+        FUNCTION_BLOCK Comp IMPLEMENTS IBase
+          METHOD PUBLIC GetValue : INT
+            GetValue := 1;
+          END_METHOD
+        END_FUNCTION_BLOCK
+
+        PROGRAM Main
+          VAR
+            c : Comp;
+            itf : IBase;
+            ok : BOOL;
+          END_VAR
+          ok := __QUERYINTERFACE(c, itf);
+        END_PROGRAM
+      `;
+      const result = parseSource(source);
+      expect(result.errors).toHaveLength(0);
+      expect(result.cst).toBeDefined();
+    });
   });
 });

@@ -1453,6 +1453,10 @@ export class STParser extends CstParser {
           GATE: () => this.LA(1).tokenType === tokens.__NEW,
         },
         {
+          ALT: () => this.SUBRULE(this.queryInterfaceExpression),
+          GATE: () => this.LA(1).tokenType === tokens.__QUERYINTERFACE,
+        },
+        {
           ALT: () => this.SUBRULE(this.thisAccess),
           GATE: () => this.LA(1).tokenType === tokens.THIS,
         },
@@ -1615,6 +1619,23 @@ export class STParser extends CstParser {
     });
     this.CONSUME(tokens.RParen);
   });
+
+  /**
+   * __QUERYINTERFACE(source, target) - runtime interface query.
+   * Both operands are expressions; the second must resolve to an
+   * interface-typed variable that the query assigns on success.
+   */
+  public queryInterfaceExpression = this.RULE(
+    "queryInterfaceExpression",
+    () => {
+      this.CONSUME(tokens.__QUERYINTERFACE);
+      this.CONSUME(tokens.LParen);
+      this.SUBRULE(this.expression);
+      this.CONSUME(tokens.Comma);
+      this.SUBRULE2(this.expression);
+      this.CONSUME(tokens.RParen);
+    },
+  );
 
   /**
    * Variable reference (with optional array subscripts and field access)

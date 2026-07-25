@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025 Autonomy / OpenPLC Project
+/**
+ * E2E for CODESYS __QUERYINTERFACE runtime support.
+ */
+
+import { describe, it, expect } from "vitest";
+import { hasGpp, runE2ETestPipeline } from "./test-helpers.js";
+
+describe.skipIf(!hasGpp)("__QUERYINTERFACE runtime support", () => {
+  it("queries an interface from an FB and chains to a derived interface", () => {
+    const sourceST = `
+      INTERFACE IBase
+        METHOD GetValue : INT
+        END_METHOD
+      END_INTERFACE
+
+      INTERFACE IDerived EXTENDS IBase
+        METHOD GetExtra : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Comp IMPLEMENTS IDerived
+        METHOD PUBLIC GetValue : INT
+          GetValue := 10;
+        END_METHOD
+        METHOD PUBLIC GetExtra : INT
+          GetExtra := 20;
+        END_METHOD
+      END_FUNCTION_BLOCK
+    `;
+
+    const testST = `
+      TEST 'QueryInterface chains'
+      VAR
+        c : Comp;
+        itfBase : IBase;
+        itfDerived : IDerived;
+        okBase : BOOL;
+        okDerived : BOOL;
+        got : INT;
+      END_VAR
+      okBase := __QUERYINTERFACE(c, itfBase);
+      okDerived := __QUERYINTERFACE(itfBase, itfDerived);
+      got := itfBase.GetValue();
+      ASSERT_EQ(got, 10);
+      got := itfDerived.GetExtra();
+      ASSERT_EQ(got, 20);
+      ASSERT_EQ(okBase, TRUE);
+      ASSERT_EQ(okDerived, TRUE);
+      END_TEST
+    `;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "query_interface_test.st",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("1 passed, 0 failed");
+  });
+});

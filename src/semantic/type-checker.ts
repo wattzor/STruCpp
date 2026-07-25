@@ -332,6 +332,13 @@ export class TypeChecker {
         // Array literals don't have an inherent type — they get their type from the assignment target
         return undefined;
       }
+      case "QueryInterfaceExpression": {
+        // __QUERYINTERFACE returns a BOOL and mutates its target argument
+        const boolType = ELEMENTARY_TYPES["BOOL"];
+        if (!boolType) return undefined;
+        expr.resolvedType = boolType;
+        return boolType;
+      }
       default:
         return undefined;
     }

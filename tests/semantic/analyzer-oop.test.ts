@@ -439,4 +439,30 @@ describe("Semantic Analyzer - Access Modifier Enforcement", () => {
     const accessErrors = result.errors.filter((e) => e.message.includes("PROTECTED"));
     expect(accessErrors).toHaveLength(0);
   });
+
+  it("should resolve __QUERYINTERFACE expression type to BOOL", () => {
+    const result = analyzeSource(`
+      INTERFACE IBase
+        METHOD GetValue : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Comp IMPLEMENTS IBase
+        METHOD PUBLIC GetValue : INT
+          GetValue := 1;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+        VAR
+          c : Comp;
+          itf : IBase;
+          ok : BOOL;
+        END_VAR
+        ok := __QUERYINTERFACE(c, itf);
+      END_PROGRAM
+    `);
+
+    expect(result.errors).toHaveLength(0);
+  });
 });

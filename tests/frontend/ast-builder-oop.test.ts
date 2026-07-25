@@ -14,6 +14,7 @@ import type {
   FunctionCallStatement,
   AssignmentStatement,
   VariableExpression,
+  QueryInterfaceExpression,
 } from "../../src/frontend/ast.js";
 
 function parseAndBuild(source: string) {
@@ -888,6 +889,38 @@ describe("AST Builder - OOP Features", () => {
 
       const iface = ast.interfaces[0]!;
       expect(iface.extends).toBeUndefined();
+    });
+
+    it("should build a QueryInterfaceExpression node", () => {
+      const ast = parseAndBuild(`
+        INTERFACE IBase
+          METHOD GetValue : INT
+          END_METHOD
+        END_INTERFACE
+
+        FUNCTION_BLOCK Comp IMPLEMENTS IBase
+          METHOD PUBLIC GetValue : INT
+            GetValue := 1;
+          END_METHOD
+        END_FUNCTION_BLOCK
+
+        PROGRAM Main
+          VAR
+            c : Comp;
+            itf : IBase;
+            ok : BOOL;
+          END_VAR
+          ok := __QUERYINTERFACE(c, itf);
+        END_PROGRAM
+      `);
+
+      const program = ast.programs[0]!;
+      const stmt = program.body[0] as AssignmentStatement;
+      expect(stmt.kind).toBe("AssignmentStatement");
+      const value = stmt.value as QueryInterfaceExpression;
+      expect(value.kind).toBe("QueryInterfaceExpression");
+      expect(value.source).toMatchObject({ kind: "VariableExpression", name: "C" });
+      expect(value.target).toMatchObject({ kind: "VariableExpression", name: "ITF" });
     });
   });
 });
