@@ -243,6 +243,109 @@ describe.skipIf(!hasGpp)("interface edge cases", () => {
     expect(stdout).toContain("1 passed, 0 failed");
   });
 
+  it("passes an interface pointer through a VAR_IN_OUT parameter", () => {
+    const sourceST = `
+      INTERFACE IBase
+        METHOD GetValue : INT
+        END_METHOD
+      END_INTERFACE
+
+      INTERFACE IDerived EXTENDS IBase
+        METHOD GetExtra : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Comp IMPLEMENTS IDerived
+        METHOD PUBLIC GetValue : INT
+          GetValue := 77;
+        END_METHOD
+        METHOD PUBLIC GetExtra : INT
+          GetExtra := 88;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      FUNCTION UseItf : INT
+      VAR_IN_OUT
+        itf : IBase;
+      END_VAR
+      VAR
+        derived : IDerived;
+        ok : BOOL;
+      END_VAR
+        ok := __QUERYINTERFACE(itf, derived);
+        IF ok THEN
+          UseItf := derived.GetExtra();
+        ELSE
+          UseItf := -1;
+        END_IF;
+      END_FUNCTION
+    `;
+
+    const testST = `
+      TEST 'Interface VAR_IN_OUT parameter'
+      VAR
+        c : Comp;
+        base : IBase := c;
+        result : INT;
+      END_VAR
+      result := UseItf(itf := base);
+      ASSERT_EQ(result, 88);
+      END_TEST
+    `;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "interface_var_in_out_test.st",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("1 passed, 0 failed");
+  });
+
+  it("queries into and calls methods on array elements of interface type", () => {
+    const sourceST = `
+      INTERFACE IBase
+        METHOD GetValue : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Comp IMPLEMENTS IBase
+        METHOD PUBLIC GetValue : INT
+          GetValue := 11;
+        END_METHOD
+      END_FUNCTION_BLOCK
+    `;
+
+    const testST = `
+      TEST 'Interface array elements'
+      VAR
+        c1, c2 : Comp;
+        arr : ARRAY[1..2] OF IBase;
+        ok1, ok2 : BOOL;
+        v1, v2 : INT;
+      END_VAR
+      ok1 := __QUERYINTERFACE(c1, arr[1]);
+      ok2 := __QUERYINTERFACE(c2, arr[2]);
+      ASSERT_EQ(ok1, TRUE);
+      ASSERT_EQ(ok2, TRUE);
+      v1 := arr[1].GetValue();
+      v2 := arr[2].GetValue();
+      ASSERT_EQ(v1, 11);
+      ASSERT_EQ(v2, 11);
+      END_TEST
+    `;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "interface_array_test.st",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("1 passed, 0 failed");
+  });
+
   it("chains through a multi-level interface inheritance hierarchy", () => {
     const sourceST = `
       INTERFACE IA
