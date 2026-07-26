@@ -1745,11 +1745,10 @@ describeIfGpp('iec_std_lib comparison sign-class semantics', () => {
     }
   });
 
-  it('mixed-sign comparisons follow C++ usual arithmetic conversions', () => {
-    // Wrapping is only observable when the unsigned operand has rank >=
-    // int, since otherwise both sides promote up to int and the compare
-    // happens in signed land. Use UDINT (uint32_t) where the rank ties
-    // and the signed operand converts to unsigned.
+  it('mixed-sign comparisons are sign-aware, not C++ usual arithmetic conversions', () => {
+    // These cases used to decay to C++ usual arithmetic conversions and
+    // produce unsigned-wrap answers. The iec_cmp_* helpers now compare the
+    // mathematical values, even when the types have the same width.
     const mainCode = `
 int main() {
     using namespace strucpp;
@@ -1757,18 +1756,16 @@ int main() {
     IEC_DINT  neg_one = -1;
     IEC_UDINT zero_u = 0;
 
-    // -1 promotes to UDINT (uint32_t) = 0xFFFFFFFF, so EQ is TRUE.
+    // 0xFFFFFFFF (UDINT) is not equal to -1 (DINT) when compared as
+    // mathematical integer values.
     std::cout << "eq_max_neg=" << static_cast<int>(EQ(u_max, neg_one)) << std::endl;
     std::cout << "ne_max_neg=" << static_cast<int>(NE(u_max, neg_one)) << std::endl;
 
-    // For (zero_u, -1): -1 -> 0xFFFFFFFF, so 0 < 0xFFFFFFFF -> LT is TRUE,
-    // 0 > 0xFFFFFFFF -> GT is FALSE. Counterintuitive vs. mathematical
-    // ordering, which is exactly the foot-gun the doc warns about.
+    // 0 > -1 is true; 0 < -1 is false.
     std::cout << "lt_zero_neg=" << static_cast<int>(LT(zero_u, neg_one)) << std::endl;
     std::cout << "gt_zero_neg=" << static_cast<int>(GT(zero_u, neg_one)) << std::endl;
 
-    // For UINT (uint16_t) vs INT, both sides promote up to int and the
-    // compare is signed — no wrap, intuitive answers.
+    // UINT vs INT also compares mathematically (65535 != -1).
     IEC_UINT u16_max = IEC_UINT(0xFFFF);
     IEC_INT  neg_int = -1;
     std::cout << "eq_uint_neg=" << static_cast<int>(EQ(u16_max, neg_int)) << std::endl;
@@ -1783,12 +1780,10 @@ int main() {
       testName: 'cmp_sign_class',
       mainCode,
     });
-    // Wrapping cases (UDINT vs signed)
-    expect(stdout).toContain('eq_max_neg=1');
-    expect(stdout).toContain('ne_max_neg=0');
-    expect(stdout).toContain('lt_zero_neg=1');
-    expect(stdout).toContain('gt_zero_neg=0');
-    // Non-wrapping case (UINT vs INT — both promote to int)
+    expect(stdout).toContain('eq_max_neg=0');
+    expect(stdout).toContain('ne_max_neg=1');
+    expect(stdout).toContain('lt_zero_neg=0');
+    expect(stdout).toContain('gt_zero_neg=1');
     expect(stdout).toContain('eq_uint_neg=0');
   });
 });

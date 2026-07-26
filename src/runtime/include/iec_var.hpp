@@ -478,6 +478,57 @@ struct iec_arith_result_impl {
 template<typename T, typename U>
 using iec_arith_result_t = typename detail::iec_arith_result_impl<T, U>::type;
 
+// Result type for MIN/MAX/LIMIT/SEL when operands have different IEC types.
+// For mixed-sign integer pairs we widen to a signed type with twice the operand
+// width so the full value range is representable (e.g. DINT+UDINT -> LINT).
+// When no wider signed type exists (LINT+ULINT) we fall back to iec_arith_result_t.
+namespace detail {
+    template<unsigned Width, bool IsSigned, bool IsReal>
+    struct iec_wider_signed_select { using type = void; };
+
+    template<> struct iec_wider_signed_select<8,  true, false> { using type = int16_t; };
+    template<> struct iec_wider_signed_select<16, true, false> { using type = int32_t; };
+    template<> struct iec_wider_signed_select<32, true, false> { using type = int64_t; };
+
+    template<unsigned Width>
+    struct iec_wider_signed_select<Width, false, false> {
+        using type = typename std::conditional<
+            (Width <= 32),
+            typename iec_arith_select<Width * 2, true, false>::type,
+            void
+        >::type;
+    };
+
+    template<unsigned Width>
+    struct iec_wider_signed_select<Width, true, true> { using type = double; };
+
+    template<unsigned Width>
+    struct iec_wider_signed_select<Width, false, true> { using type = double; };
+}
+
+template<typename T, typename U, typename = void>
+struct iec_minmax_result { using type = iec_arith_result_t<T, U>; };
+
+template<typename T, typename U>
+struct iec_minmax_result<T, U, std::enable_if_t<
+    std::is_integral<T>::value && std::is_integral<U>::value &&
+    detail::iec_arith_info<T>::is_iec && detail::iec_arith_info<U>::is_iec &&
+    (std::is_signed<T>::value != std::is_signed<U>::value)>> {
+    static constexpr unsigned max_width =
+        (detail::iec_arith_info<T>::width > detail::iec_arith_info<U>::width)
+            ? detail::iec_arith_info<T>::width
+            : detail::iec_arith_info<U>::width;
+    using wider = typename detail::iec_wider_signed_select<max_width, true, false>::type;
+    using type = typename std::conditional<
+        !std::is_same<wider, void>::value,
+        wider,
+        iec_arith_result_t<T, U>
+    >::type;
+};
+
+template<typename T, typename U>
+using iec_minmax_result_t = typename iec_minmax_result<T, U>::type;
+
 template<typename T, typename U>
 inline IECVar<iec_arith_result_t<T, U>> operator+(const IECVar<T>& a, const IECVar<U>& b) noexcept {
     using R = iec_arith_result_t<T, U>;
@@ -585,53 +636,186 @@ inline IECVar<iec_arith_result_t<T, U>> operator%(U a, const IECVar<T>& b) {
     return IECVar<R>(iec_mod(static_cast<R>(a), static_cast<R>(b.get())));
 }
 
+namespace detail {
+    // Distinguish IECVar<T> from raw arithmetic/IEC types for symmetric overloads.
+    template<typename T> struct is_iec_var : std::false_type {};
+    template<typename T> struct is_iec_var<IECVar<T>> : std::true_type {};
+
+    template<typename T>
+    inline T iec_unwrap_value(const IECVar<T>& v) noexcept { return v.get(); }
+    template<typename T>
+    inline T iec_unwrap_value(T v) noexcept { return v; }
+
+    template<typename T, typename U, typename = void>
+    struct iec_both_integral : std::false_type {};
+    template<typename T, typename U>
+    struct iec_both_integral<T, U, std::enable_if_t<std::is_integral<T>::value && std::is_integral<U>::value>> : std::true_type {};
+
+    template<typename T, typename U>
+    inline bool iec_cmp_equal_impl(T a, U b, std::true_type) noexcept {
+        constexpr bool tSigned = std::is_signed<T>::value;
+        constexpr bool uSigned = std::is_signed<U>::value;
+        if (tSigned == uSigned) {
+            using R = iec_arith_result_t<T, U>;
+            return static_cast<R>(a) == static_cast<R>(b);
+        }
+        if (tSigned && !uSigned) {
+            if (a < T(0)) return false;
+            using R = iec_arith_result_t<T, U>;
+            return static_cast<R>(a) == static_cast<R>(b);
+        }
+        if (!tSigned && uSigned) {
+            if (b < U(0)) return false;
+            using R = iec_arith_result_t<T, U>;
+            return static_cast<R>(a) == static_cast<R>(b);
+        }
+        return false;
+    }
+
+    template<typename T, typename U>
+    inline bool iec_cmp_equal_impl(T a, U b, std::false_type) noexcept {
+        using R = iec_arith_result_t<T, U>;
+        return static_cast<R>(a) == static_cast<R>(b);
+    }
+
+    template<typename T, typename U>
+    inline bool iec_cmp_less_impl(T a, U b, std::true_type) noexcept {
+        constexpr bool tSigned = std::is_signed<T>::value;
+        constexpr bool uSigned = std::is_signed<U>::value;
+        if (tSigned == uSigned) {
+            using R = iec_arith_result_t<T, U>;
+            return static_cast<R>(a) < static_cast<R>(b);
+        }
+        if (tSigned && !uSigned) {
+            if (a < T(0)) return true;
+            using R = iec_arith_result_t<T, U>;
+            return static_cast<R>(a) < static_cast<R>(b);
+        }
+        if (!tSigned && uSigned) {
+            if (b < U(0)) return false;
+            using R = iec_arith_result_t<T, U>;
+            return static_cast<R>(a) < static_cast<R>(b);
+        }
+        return false;
+    }
+
+    template<typename T, typename U>
+    inline bool iec_cmp_less_impl(T a, U b, std::false_type) noexcept {
+        using R = iec_arith_result_t<T, U>;
+        return static_cast<R>(a) < static_cast<R>(b);
+    }
+}
+
+// Sign-aware comparison helpers (C++17 stand-in for std::cmp_less / cmp_equal).
+template<typename T, typename U>
+inline bool iec_cmp_equal(T a, U b) noexcept {
+    return detail::iec_cmp_equal_impl(a, b, typename detail::iec_both_integral<T, U>::type());
+}
+
+template<typename T, typename U>
+inline bool iec_cmp_not_equal(T a, U b) noexcept {
+    return !iec_cmp_equal(a, b);
+}
+
+template<typename T, typename U>
+inline bool iec_cmp_less(T a, U b) noexcept {
+    return detail::iec_cmp_less_impl(a, b, typename detail::iec_both_integral<T, U>::type());
+}
+
+template<typename T, typename U>
+inline bool iec_cmp_greater(T a, U b) noexcept {
+    return iec_cmp_less(b, a);
+}
+
+template<typename T, typename U>
+inline bool iec_cmp_less_equal(T a, U b) noexcept {
+    return !iec_cmp_less(b, a);
+}
+
+template<typename T, typename U>
+inline bool iec_cmp_greater_equal(T a, U b) noexcept {
+    return !iec_cmp_less(a, b);
+}
+
 // =============================================================================
 // Comparison Operators
 // =============================================================================
 
-template<typename T>
-inline bool operator==(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return a.get() == b.get();
+// Generic heterogeneous comparisons covering IECVar<T> vs IECVar<U> and
+// IECVar<T> vs any raw arithmetic/IEC value.  They use iec_cmp_* so mixed
+// signed/unsigned comparisons do not silently decay to unsigned C++
+// arithmetic (e.g. INT#-1 < UDINT#1 must be true).
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<U>::value || detail::is_iec_var<U>::value>>
+inline bool operator==(const IECVar<T>& a, const U& b) noexcept {
+    return iec_cmp_equal(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
 }
 
-template<typename T>
-inline bool operator!=(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return a.get() != b.get();
+template<typename T, typename U,
+         typename = std::enable_if_t<(std::is_arithmetic<U>::value || detail::is_iec_var<U>::value) && !detail::is_iec_var<U>::value>>
+inline bool operator==(const U& a, const IECVar<T>& b) noexcept {
+    return iec_cmp_equal(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
 }
 
-template<typename T>
-inline bool operator<(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return a.get() < b.get();
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<U>::value || detail::is_iec_var<U>::value>>
+inline bool operator!=(const IECVar<T>& a, const U& b) noexcept {
+    return iec_cmp_not_equal(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
 }
 
-template<typename T>
-inline bool operator>(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return a.get() > b.get();
+template<typename T, typename U,
+         typename = std::enable_if_t<(std::is_arithmetic<U>::value || detail::is_iec_var<U>::value) && !detail::is_iec_var<U>::value>>
+inline bool operator!=(const U& a, const IECVar<T>& b) noexcept {
+    return iec_cmp_not_equal(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
 }
 
-template<typename T>
-inline bool operator<=(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return a.get() <= b.get();
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<U>::value || detail::is_iec_var<U>::value>>
+inline bool operator<(const IECVar<T>& a, const U& b) noexcept {
+    return iec_cmp_less(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
 }
 
-template<typename T>
-inline bool operator>=(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return a.get() >= b.get();
+template<typename T, typename U,
+         typename = std::enable_if_t<(std::is_arithmetic<U>::value || detail::is_iec_var<U>::value) && !detail::is_iec_var<U>::value>>
+inline bool operator<(const U& a, const IECVar<T>& b) noexcept {
+    return iec_cmp_less(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
 }
 
-// Mixed-type comparison operators
-template<typename T> inline bool operator==(const IECVar<T>& a, T b) noexcept { return a.get() == b; }
-template<typename T> inline bool operator==(T a, const IECVar<T>& b) noexcept { return a == b.get(); }
-template<typename T> inline bool operator!=(const IECVar<T>& a, T b) noexcept { return a.get() != b; }
-template<typename T> inline bool operator!=(T a, const IECVar<T>& b) noexcept { return a != b.get(); }
-template<typename T> inline bool operator<(const IECVar<T>& a, T b) noexcept { return a.get() < b; }
-template<typename T> inline bool operator<(T a, const IECVar<T>& b) noexcept { return a < b.get(); }
-template<typename T> inline bool operator>(const IECVar<T>& a, T b) noexcept { return a.get() > b; }
-template<typename T> inline bool operator>(T a, const IECVar<T>& b) noexcept { return a > b.get(); }
-template<typename T> inline bool operator<=(const IECVar<T>& a, T b) noexcept { return a.get() <= b; }
-template<typename T> inline bool operator<=(T a, const IECVar<T>& b) noexcept { return a <= b.get(); }
-template<typename T> inline bool operator>=(const IECVar<T>& a, T b) noexcept { return a.get() >= b; }
-template<typename T> inline bool operator>=(T a, const IECVar<T>& b) noexcept { return a >= b.get(); }
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<U>::value || detail::is_iec_var<U>::value>>
+inline bool operator>(const IECVar<T>& a, const U& b) noexcept {
+    return iec_cmp_greater(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<(std::is_arithmetic<U>::value || detail::is_iec_var<U>::value) && !detail::is_iec_var<U>::value>>
+inline bool operator>(const U& a, const IECVar<T>& b) noexcept {
+    return iec_cmp_greater(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<U>::value || detail::is_iec_var<U>::value>>
+inline bool operator<=(const IECVar<T>& a, const U& b) noexcept {
+    return iec_cmp_less_equal(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<(std::is_arithmetic<U>::value || detail::is_iec_var<U>::value) && !detail::is_iec_var<U>::value>>
+inline bool operator<=(const U& a, const IECVar<T>& b) noexcept {
+    return iec_cmp_less_equal(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<U>::value || detail::is_iec_var<U>::value>>
+inline bool operator>=(const IECVar<T>& a, const U& b) noexcept {
+    return iec_cmp_greater_equal(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<(std::is_arithmetic<U>::value || detail::is_iec_var<U>::value) && !detail::is_iec_var<U>::value>>
+inline bool operator>=(const U& a, const IECVar<T>& b) noexcept {
+    return iec_cmp_greater_equal(detail::iec_unwrap_value(a), detail::iec_unwrap_value(b));
+}
 
 // =============================================================================
 // Bitwise Operators

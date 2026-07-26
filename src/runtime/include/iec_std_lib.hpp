@@ -424,40 +424,41 @@ inline T LIMIT(T mn, T in, T mx) noexcept {
 template<typename T, typename U,
     std::enable_if_t<!std::is_same_v<std::decay_t<T>, std::decay_t<U>>, int> = 0>
 inline auto MAX(T a, U b) noexcept {
-    using CT = std::common_type_t<decltype(iec_unwrap(a)), decltype(iec_unwrap(b))>;
+    using CT = iec_minmax_result_t<decltype(iec_unwrap(a)), decltype(iec_unwrap(b))>;
     auto va = static_cast<CT>(iec_unwrap(a));
     auto vb = static_cast<CT>(iec_unwrap(b));
-    return va > vb ? va : vb;
+    return iec_cmp_greater(va, vb) ? va : vb;
 }
 
 template<typename T, typename U,
     std::enable_if_t<!std::is_same_v<std::decay_t<T>, std::decay_t<U>>, int> = 0>
 inline auto MIN(T a, U b) noexcept {
-    using CT = std::common_type_t<decltype(iec_unwrap(a)), decltype(iec_unwrap(b))>;
+    using CT = iec_minmax_result_t<decltype(iec_unwrap(a)), decltype(iec_unwrap(b))>;
     auto va = static_cast<CT>(iec_unwrap(a));
     auto vb = static_cast<CT>(iec_unwrap(b));
-    return va < vb ? va : vb;
+    return iec_cmp_less(va, vb) ? va : vb;
 }
 
-template<typename T1, typename T2, typename T3>
-inline auto LIMIT(T1 mn, T2 in, T3 mx) noexcept
-    -> std::enable_if_t<
-        !(std::is_same_v<std::decay_t<T1>, std::decay_t<T2>> &&
-          std::is_same_v<std::decay_t<T2>, std::decay_t<T3>>),
-        std::common_type_t<decltype(iec_unwrap(mn)), decltype(iec_unwrap(in)), decltype(iec_unwrap(mx))>> {
-    using CT = std::common_type_t<decltype(iec_unwrap(mn)), decltype(iec_unwrap(in)), decltype(iec_unwrap(mx))>;
+template<typename T1, typename T2, typename T3,
+    std::enable_if_t<!(std::is_same_v<std::decay_t<T1>, std::decay_t<T2>> &&
+                       std::is_same_v<std::decay_t<T2>, std::decay_t<T3>>), int> = 0>
+inline auto LIMIT(T1 mn, T2 in, T3 mx) noexcept {
+    using TIn = decltype(iec_unwrap(in));
+    using TMx = decltype(iec_unwrap(mx));
+    using TInner = iec_minmax_result_t<TIn, TMx>;
+    using CT = iec_minmax_result_t<decltype(iec_unwrap(mn)), TInner>;
     auto vmn = static_cast<CT>(iec_unwrap(mn));
     auto vin = static_cast<CT>(iec_unwrap(in));
     auto vmx = static_cast<CT>(iec_unwrap(mx));
-    if (vin < vmn) return vmn;
-    if (vin > vmx) return vmx;
+    if (iec_cmp_less(vin, vmn)) return vmn;
+    if (iec_cmp_greater(vin, vmx)) return vmx;
     return vin;
 }
 
 template<typename T, typename U,
     std::enable_if_t<!std::is_same_v<std::decay_t<T>, std::decay_t<U>>, int> = 0>
 inline auto SEL(IEC_BOOL g, T in0, U in1) noexcept {
-    using CT = std::common_type_t<decltype(iec_unwrap(in0)), decltype(iec_unwrap(in1))>;
+    using CT = iec_minmax_result_t<decltype(iec_unwrap(in0)), decltype(iec_unwrap(in1))>;
     return iec_unwrap(g) ? static_cast<CT>(iec_unwrap(in1)) : static_cast<CT>(iec_unwrap(in0));
 }
 
@@ -529,7 +530,7 @@ using enable_if_two_elementary = std::enable_if_t<
  */
 template<typename A, typename B, enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL GT(A a, B b) noexcept {
-    return IEC_BOOL(iec_unwrap(a) > iec_unwrap(b));
+    return IEC_BOOL(iec_cmp_greater(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
@@ -538,7 +539,7 @@ inline IEC_BOOL GT(A a, B b) noexcept {
  */
 template<typename A, typename B, enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL GE(A a, B b) noexcept {
-    return IEC_BOOL(iec_unwrap(a) >= iec_unwrap(b));
+    return IEC_BOOL(iec_cmp_greater_equal(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
@@ -547,7 +548,7 @@ inline IEC_BOOL GE(A a, B b) noexcept {
  */
 template<typename A, typename B, enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL EQ(A a, B b) noexcept {
-    return IEC_BOOL(iec_unwrap(a) == iec_unwrap(b));
+    return IEC_BOOL(iec_cmp_equal(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
@@ -556,7 +557,7 @@ inline IEC_BOOL EQ(A a, B b) noexcept {
  */
 template<typename A, typename B, enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL LE(A a, B b) noexcept {
-    return IEC_BOOL(iec_unwrap(a) <= iec_unwrap(b));
+    return IEC_BOOL(iec_cmp_less_equal(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
@@ -565,7 +566,7 @@ inline IEC_BOOL LE(A a, B b) noexcept {
  */
 template<typename A, typename B, enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL LT(A a, B b) noexcept {
-    return IEC_BOOL(iec_unwrap(a) < iec_unwrap(b));
+    return IEC_BOOL(iec_cmp_less(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
@@ -574,7 +575,7 @@ inline IEC_BOOL LT(A a, B b) noexcept {
  */
 template<typename A, typename B, enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL NE(A a, B b) noexcept {
-    return IEC_BOOL(iec_unwrap(a) != iec_unwrap(b));
+    return IEC_BOOL(iec_cmp_not_equal(iec_unwrap(a), iec_unwrap(b)));
 }
 
 // ---------------------------------------------------------------------------
@@ -593,42 +594,42 @@ inline IEC_BOOL NE(A a, B b) noexcept {
 template<typename A, typename B, typename C, typename... Rest,
          enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL GT(A a, B b, C c, Rest... rest) noexcept {
-    if (!(iec_unwrap(a) > iec_unwrap(b))) return IEC_BOOL(false);
+    if (!iec_cmp_greater(iec_unwrap(a), iec_unwrap(b))) return IEC_BOOL(false);
     return GT(b, c, rest...);
 }
 
 template<typename A, typename B, typename C, typename... Rest,
          enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL GE(A a, B b, C c, Rest... rest) noexcept {
-    if (!(iec_unwrap(a) >= iec_unwrap(b))) return IEC_BOOL(false);
+    if (!iec_cmp_greater_equal(iec_unwrap(a), iec_unwrap(b))) return IEC_BOOL(false);
     return GE(b, c, rest...);
 }
 
 template<typename A, typename B, typename C, typename... Rest,
          enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL EQ(A a, B b, C c, Rest... rest) noexcept {
-    if (!(iec_unwrap(a) == iec_unwrap(b))) return IEC_BOOL(false);
+    if (!iec_cmp_equal(iec_unwrap(a), iec_unwrap(b))) return IEC_BOOL(false);
     return EQ(b, c, rest...);
 }
 
 template<typename A, typename B, typename C, typename... Rest,
          enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL LE(A a, B b, C c, Rest... rest) noexcept {
-    if (!(iec_unwrap(a) <= iec_unwrap(b))) return IEC_BOOL(false);
+    if (!iec_cmp_less_equal(iec_unwrap(a), iec_unwrap(b))) return IEC_BOOL(false);
     return LE(b, c, rest...);
 }
 
 template<typename A, typename B, typename C, typename... Rest,
          enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL LT(A a, B b, C c, Rest... rest) noexcept {
-    if (!(iec_unwrap(a) < iec_unwrap(b))) return IEC_BOOL(false);
+    if (!iec_cmp_less(iec_unwrap(a), iec_unwrap(b))) return IEC_BOOL(false);
     return LT(b, c, rest...);
 }
 
 template<typename A, typename B, typename C, typename... Rest,
          enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL NE(A a, B b, C c, Rest... rest) noexcept {
-    if (!(iec_unwrap(a) != iec_unwrap(b))) return IEC_BOOL(false);
+    if (!iec_cmp_not_equal(iec_unwrap(a), iec_unwrap(b))) return IEC_BOOL(false);
     return NE(b, c, rest...);
 }
 

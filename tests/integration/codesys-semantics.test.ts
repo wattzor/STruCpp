@@ -1013,4 +1013,131 @@ int main() {
       fs.rmSync(target32Dir, { recursive: true, force: true });
     }
   });
+
+  // C9: mixed signed/unsigned comparisons must not silently decay to unsigned
+  // C++ arithmetic. INT#-1 < UDINT#1 is true, and INT#-1 = UDINT#1 is false.
+  it("C9: mixed signed/unsigned comparisons are sign-aware at both target widths", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        lt_sint, lt_int, lt_dint, lt_lint : BOOL;
+        eq_sint, eq_int, eq_dint, eq_lint : BOOL;
+        gt_sint, gt_int, gt_dint, gt_lint : BOOL;
+        mixed_add : DINT;
+      END_VAR
+        lt_sint := (-SINT#1 < USINT#1);
+        lt_int  := (-INT#1 < UINT#1);
+        lt_dint := (-DINT#1 < UDINT#1);
+        lt_lint := (-LINT#1 < ULINT#1);
+
+        eq_sint := (-SINT#1 = USINT#1);
+        eq_int  := (-INT#1 = UINT#1);
+        eq_dint := (-DINT#1 = UDINT#1);
+        eq_lint := (-LINT#1 = ULINT#1);
+
+        gt_sint := (-SINT#1 > USINT#1);
+        gt_int  := (-INT#1 > UINT#1);
+        gt_dint := (-DINT#1 > UDINT#1);
+        gt_lint := (-LINT#1 > ULINT#1);
+
+        mixed_add := -INT#1 + UDINT#10;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const mainCode = `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout
+      << (prog.LT_SINT ? 1 : 0) << (prog.LT_INT ? 1 : 0)
+      << (prog.LT_DINT ? 1 : 0) << (prog.LT_LINT ? 1 : 0) << '\\n'
+      << (prog.EQ_SINT ? 1 : 0) << (prog.EQ_INT ? 1 : 0)
+      << (prog.EQ_DINT ? 1 : 0) << (prog.EQ_LINT ? 1 : 0) << '\\n'
+      << (prog.GT_SINT ? 1 : 0) << (prog.GT_INT ? 1 : 0)
+      << (prog.GT_DINT ? 1 : 0) << (prog.GT_LINT ? 1 : 0) << '\\n'
+      << static_cast<long long>(prog.MIXED_ADD) << std::endl;
+    return 0;
+}
+`;
+    const expected = ["1111", "0000", "0000", "9"].join("\n");
+
+    const stdout64 = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "mixed_cmp_64",
+      mainCode,
+    });
+    expect(stdout64).toBe(expected);
+
+    const target32Dir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-mixed-cmp-32-"));
+    try {
+      const target32Pch = createPCH(target32Dir, ["-DSTRUCPP_TARGET_WIDTH=32"]);
+      const stdout32 = compileAndRunStandalone({
+        tempDir: target32Dir,
+        pchPath: target32Pch,
+        extraFlags: ["-DSTRUCPP_TARGET_WIDTH=32"],
+        headerCode: result.headerCode!,
+        cppCode: result.cppCode!,
+        testName: "mixed_cmp_32",
+        mainCode,
+      });
+      expect(stdout32).toBe(expected);
+    } finally {
+      fs.rmSync(target32Dir, { recursive: true, force: true });
+    }
+  });
+
+  // C10: mixed signed/unsigned MIN/MAX/LIMIT/SEL and comparison functions
+  // (GT/LT/etc.) must not decay to C++ usual arithmetic conversions.
+  it("C10: mixed signed/unsigned selection and comparison functions are sign-aware", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        max_v, min_v, limit_v, sel_true, sel_false : DINT;
+        gt_v, lt_v, eq_v : BOOL;
+      END_VAR
+        max_v     := MAX(-DINT#1, UDINT#1);
+        min_v     := MIN(-DINT#1, UDINT#1);
+        limit_v   := LIMIT(-DINT#10, DINT#5, UDINT#100);
+        sel_true  := SEL(TRUE,  -DINT#1, UDINT#1);
+        sel_false := SEL(FALSE, -DINT#1, UDINT#1);
+
+        gt_v := GT(-DINT#1, UDINT#1);
+        lt_v := LT(-DINT#1, UDINT#1);
+        eq_v := EQ(-DINT#1, UDINT#1);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const mainCode = `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout
+      << static_cast<long long>(prog.MAX_V) << '\\n'
+      << static_cast<long long>(prog.MIN_V) << '\\n'
+      << static_cast<long long>(prog.LIMIT_V) << '\\n'
+      << static_cast<long long>(prog.SEL_TRUE) << '\\n'
+      << static_cast<long long>(prog.SEL_FALSE) << '\\n'
+      << (prog.GT_V ? 1 : 0) << (prog.LT_V ? 1 : 0) << (prog.EQ_V ? 1 : 0) << std::endl;
+    return 0;
+}
+`;
+    const expected = ["1", "-1", "5", "1", "-1", "010"].join("\n");
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "mixed_minmax_cmp",
+      mainCode,
+    });
+    expect(stdout).toBe(expected);
+  });
 });
