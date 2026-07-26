@@ -8,7 +8,7 @@
  * do not change them without checking the CODESYS documentation.
  */
 
-import type { IECType } from "../frontend/ast.js";
+import type { EnumType, IECType } from "../frontend/ast.js";
 import { lookupBaseType } from "./iec-types-data.js";
 
 /**
@@ -103,6 +103,110 @@ export const MEMORY_AREA_NAME: ReadonlyMap<number, string> = ((): ReadonlyMap<
   }
   return m;
 })();
+
+/** Member lists for the two CODESYS __SYSTEM enums. */
+export const SYSTEM_ENUM_MEMBERS: Readonly<Record<string, readonly string[]>> =
+  {
+    TYPE_CLASS: Object.keys(TYPE_CLASS),
+    MEMORY_AREA: Object.keys(MEMORY_AREA),
+  };
+
+/** Map of "TYPE_CLASS.TYPE_BOOL" / "MEMORY_AREA.MEM_INPUT" to numeric value. */
+export const SYSTEM_ENUM_MEMBER_VALUES: ReadonlyMap<string, number> =
+  ((): ReadonlyMap<string, number> => {
+    const m = new Map<string, number>();
+    for (const enumName of ["TYPE_CLASS", "MEMORY_AREA"] as const) {
+      const values = enumName === "TYPE_CLASS" ? TYPE_CLASS : MEMORY_AREA;
+      for (const member of SYSTEM_ENUM_MEMBERS[enumName] ?? []) {
+        m.set(
+          `${enumName}.${member}`,
+          (values as Record<string, number>)[member]!,
+        );
+      }
+    }
+    return m;
+  })();
+
+/** The set of names that live inside the synthetic __SYSTEM namespace. */
+export const SYSTEM_ENUM_NAMES: ReadonlySet<string> = new Set<string>([
+  "TYPE_CLASS",
+  "MEMORY_AREA",
+]);
+
+/**
+ * True when `name` (any case) is the synthetic __SYSTEM namespace identifier.
+ */
+export function isSystemNamespaceName(name: string): boolean {
+  return name.toUpperCase() === "__SYSTEM";
+}
+
+/**
+ * Resolve a __SYSTEM qualified path to the enum type or member it denotes.
+ * Returns undefined for anything that is not a recognized __SYSTEM identifier.
+ */
+export function resolveSystemAccess(
+  path: string[],
+):
+  | { kind: "enumType"; enumType: EnumType }
+  | { kind: "enumValue"; enumType: EnumType; value: number }
+  | undefined {
+  if (path.length < 1 || path.length > 2) return undefined;
+  const enumName = path[0]!.toUpperCase();
+  if (!SYSTEM_ENUM_NAMES.has(enumName)) return undefined;
+
+  const values =
+    enumName === "TYPE_CLASS"
+      ? TYPE_CLASS
+      : enumName === "MEMORY_AREA"
+        ? MEMORY_AREA
+        : undefined;
+  if (values === undefined) return undefined;
+
+  const enumType: EnumType = {
+    typeKind: "enum",
+    name: enumName,
+    values: [...(SYSTEM_ENUM_MEMBERS[enumName] ?? [])],
+  };
+
+  if (path.length === 1) {
+    return { kind: "enumType", enumType };
+  }
+
+  const memberName = path[1]!.toUpperCase();
+  const key = `${enumName}.${memberName}`;
+  const value = SYSTEM_ENUM_MEMBER_VALUES.get(key);
+  if (value === undefined) return undefined;
+
+  return { kind: "enumValue", enumType, value };
+}
+
+/**
+ * Resolve an IEC type name to the corresponding __SYSTEM enum type, if any.
+ * Accepts both "TYPE_CLASS" and "__SYSTEM.TYPE_CLASS" forms.
+ */
+export function getSystemEnumType(name: string): EnumType | undefined {
+  let n = name.toUpperCase();
+  if (n.startsWith("__SYSTEM.")) {
+    n = n.slice("__SYSTEM.".length);
+  }
+  if (!SYSTEM_ENUM_NAMES.has(n)) return undefined;
+  return {
+    typeKind: "enum",
+    name: n,
+    values: [...(SYSTEM_ENUM_MEMBERS[n] ?? [])],
+  };
+}
+
+/**
+ * True when `name` refers to a __SYSTEM enum type through the qualified
+ * namespace (e.g. "__SYSTEM.TYPE_CLASS").
+ */
+export function isSystemTypeReference(name: string): boolean {
+  const upper = name.toUpperCase();
+  if (!upper.startsWith("__SYSTEM.")) return false;
+  const suffix = upper.slice("__SYSTEM.".length);
+  return SYSTEM_ENUM_NAMES.has(suffix);
+}
 
 /**
  * Resolve an IEC type to its CODESYS __SYSTEM.TYPE_CLASS numeric id.

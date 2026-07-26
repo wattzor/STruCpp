@@ -42,6 +42,12 @@ import {
   typeName as typeNameUtil,
   isGenericGroupType,
 } from "./type-utils.js";
+import {
+  getSystemEnumType,
+  isSystemNamespaceName,
+  isSystemTypeReference,
+  resolveSystemAccess,
+} from "./system-types.js";
 import { stripEnEno } from "../ast-utils.js";
 
 // Re-export from type-utils for backward compatibility
@@ -365,6 +371,11 @@ export class TypeChecker {
    * StructType against a placeholder elementary and be wrongly rejected.
    */
   private resolveNamedType(name: string): IECType {
+    if (isSystemTypeReference(name)) {
+      const systemEnum = getSystemEnumType(name);
+      if (systemEnum) return systemEnum;
+    }
+
     return (
       ELEMENTARY_TYPES[name.toUpperCase()] ??
       this.symbolTables.lookupType(name)?.resolvedType ??
@@ -502,6 +513,24 @@ export class TypeChecker {
     expr: VariableExpression,
     scope: Scope,
   ): IECType | undefined {
+    // CODESYS __SYSTEM qualified enum access: __SYSTEM.TYPE_CLASS.TYPE_BOOL
+    if (isSystemNamespaceName(expr.name)) {
+      const path =
+        expr.accessChain?.length === 2 &&
+        expr.accessChain.every((s) => s.kind === "field")
+          ? expr.accessChain.map((s) => s.name)
+          : expr.fieldAccess.length === 2
+            ? expr.fieldAccess
+            : undefined;
+      if (path) {
+        const resolved = resolveSystemAccess(path);
+        if (resolved) {
+          return resolved.enumType;
+        }
+      }
+      return undefined;
+    }
+
     const symbol = scope.lookup(expr.name);
     if (symbol === undefined) {
       // Don't report error here — Pass 3 undeclared-variable check handles this

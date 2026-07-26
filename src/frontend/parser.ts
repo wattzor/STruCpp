@@ -751,6 +751,11 @@ export class STParser extends CstParser {
         this.CONSUME(tokens.RParen);
       },
     });
+    // Optional namespace-qualified type: __SYSTEM.TYPE_CLASS
+    this.MANY(() => {
+      this.CONSUME(tokens.Dot);
+      this.CONSUME5(tokens.Identifier);
+    });
   });
 
   // ==========================================================================
