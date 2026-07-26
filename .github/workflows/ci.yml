@@ -81,16 +81,19 @@ jobs:
       - name: Run tests with coverage
         run: npm run test:coverage -- --run --reporter=default --reporter=json --outputFile=./vitest-results.json
 
-      - name: Verify minimum executed test count
+      - name: Verify no unexpected test skips
         run: node -e "
           const fs = require('fs');
           const data = JSON.parse(fs.readFileSync('./vitest-results.json', 'utf8'));
-          const executed = (data.numPassedTests || 0) + (data.numFailedTests || 0);
-          if (executed < 2000) {
-            console.error('Only ' + executed + ' tests executed; expected at least 2000');
+          if ((data.numFailedTests || 0) > 0) {
+            console.error(data.numFailedTests + ' tests failed');
             process.exit(1);
           }
-          console.log('Executed ' + executed + ' tests');
+          if ((data.numSkippedTests || 0) > 0) {
+            console.error(data.numSkippedTests + ' tests were skipped unexpectedly');
+            process.exit(1);
+          }
+          console.log('All ' + data.numPassedTests + ' tests executed (0 skipped, 0 failed)');
         "
 
   extension:

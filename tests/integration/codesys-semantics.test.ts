@@ -530,7 +530,7 @@ int main() {
     expect(stdout).toBe(["67305985", "1,2,3,4"].join("\n"));
   });
 
-  it("D6: CODESYS semantics suite is clean under AddressSanitizer/UndefinedBehaviorSanitizer", () => {
+  it("D6: a representative CODESYS semantics program runs clean under ASan/UBSan", () => {
     const result = compile(`
       FUNCTION_BLOCK ByteWriter
       VAR_IN_OUT

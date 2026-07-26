@@ -68,4 +68,48 @@ int main() {
     });
     expect(stdout).toBe("FAULT");
   });
+
+  it("faults when an early RETURN skips the REF= bind", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Box
+      METHOD PUBLIC GetRef : REFERENCE TO Box
+        IF TRUE THEN
+          RETURN;
+        END_IF;
+        GetRef ref= THIS^;
+      END_METHOD
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        b : Box;
+      END_VAR
+        b.GetRef();
+      END_PROGRAM
+    `);
+
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "ref_return_early_guard",
+      mainCode: `
+#include <iostream>
+#include <stdexcept>
+int main() {
+    strucpp::Program_MAIN prog;
+    try {
+        prog.run();
+    } catch (const std::exception&) {
+        std::cout << "FAULT" << std::endl;
+    }
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("FAULT");
+  });
 });
