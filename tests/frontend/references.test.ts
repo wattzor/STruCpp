@@ -61,7 +61,7 @@ describe('Phase 2.4 - References and Pointers', () => {
       expect(decl?.type.name).toBe('MYSTRUCT');
     });
 
-    it.skip('should parse nested REF_TO REF_TO type (pending grammar extension)', () => {
+    it.todo('should parse nested REF_TO REF_TO type (pending grammar extension)', () => {
       // Note: Nested REF_TO types like `REF_TO REF_TO INT` require
       // grammar changes to support recursive type references.
       // This is tracked for a future enhancement.

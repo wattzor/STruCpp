@@ -3741,6 +3741,20 @@ export class CodeGenerator {
       // Interface-returning methods return an interface pointer. A bare `RETURN;`
       // returns a pointer to the current instance.
       this.emit(`${indent}return this;`);
+    } else if (
+      this.currentFunctionName &&
+      this.currentFunctionReturnsReferenceToUserDefined
+    ) {
+      // A REFERENCE TO return must be bound before the method exits. If the
+      // method body hits a `RETURN;` before the REF= assignment, fail cleanly
+      // instead of dereferencing a null pointer.
+      const resultVar = `${this.currentFunctionName}_result`;
+      this.emit(`${indent}if (${resultVar} == nullptr) {`);
+      this.emit(
+        `        strucpp::iec_null_reference_fault("Unbound REFERENCE TO return value in method '${this.currentFunctionName}'");`,
+      );
+      this.emit(`${indent}}`);
+      this.emit(`${indent}return *${resultVar};`);
     } else if (this.currentFunctionName) {
       this.emit(`${indent}return ${this.currentFunctionName}_result;`);
     } else {
