@@ -39,6 +39,7 @@ import type {
   IECType,
   ElementaryType,
   ArrayType,
+  VarBlock,
 } from "../frontend/ast.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry } from "../types.js";
@@ -3971,7 +3972,8 @@ export class CodeGenerator {
     const numElements = 0;
 
     const symbolName = this.generateVarInfoSymbol(arg);
-    const comment = "";
+    const declaration = this.findVarDeclaration(arg.name);
+    const comment = declaration?.comment ?? "";
     const byteAddress = this.generateVarInfoByteAddress();
 
     const id = ++this.varInfoCounter;
@@ -3995,6 +3997,36 @@ export class CodeGenerator {
     ];
 
     return `([&]() -> strucpp::VAR_INFO { static const strucpp::VAR_INFO ${descriptorName} = { ${fields.join(", ")} }; return ${descriptorName}; })()`;
+  }
+
+  /**
+   * Find the VarDeclaration for a variable referenced by a __VARINFO expression.
+   * Searches all POU and global var blocks in the AST.
+   */
+  private findVarDeclaration(name: string): VarDeclaration | undefined {
+    if (!this.ast) return undefined;
+    const nameUpper = name.toUpperCase();
+    const blocks: VarBlock[] = [];
+
+    for (const prog of this.ast.programs) blocks.push(...prog.varBlocks);
+    for (const func of this.ast.functions) blocks.push(...func.varBlocks);
+    for (const fb of this.ast.functionBlocks) {
+      blocks.push(...fb.varBlocks);
+      for (const method of fb.methods) blocks.push(...method.varBlocks);
+    }
+    for (const iface of this.ast.interfaces) {
+      for (const method of iface.methods) blocks.push(...method.varBlocks);
+    }
+    blocks.push(...this.ast.globalVarBlocks);
+
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === nameUpper)) {
+          return decl;
+        }
+      }
+    }
+    return undefined;
   }
 
   /**
