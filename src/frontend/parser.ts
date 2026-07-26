@@ -7,7 +7,7 @@
  * Uses Chevrotain's embedded DSL for grammar definition.
  */
 
-import { CstParser, CstNode, type TokenType } from "chevrotain";
+import { CstParser, CstNode, type TokenType, type IToken } from "chevrotain";
 import * as tokens from "./lexer.js";
 import { resolveErrorMessageProvider } from "./parser-error-message-provider.js";
 
@@ -2087,6 +2087,7 @@ export const testParser = new STParser(tokens.allTestTokens);
 export function parse(source: string): {
   cst: CstNode | null;
   errors: unknown[];
+  comments: IToken[];
 } {
   const lexResult = tokens.tokenize(source);
 
@@ -2094,6 +2095,7 @@ export function parse(source: string): {
     return {
       cst: null,
       errors: lexResult.errors,
+      comments: [],
     };
   }
 
@@ -2103,6 +2105,8 @@ export function parse(source: string): {
   return {
     cst,
     errors: parser.errors,
+    comments:
+      (lexResult.groups as { comments?: IToken[] } | undefined)?.comments ?? [],
   };
 }
 
@@ -2115,6 +2119,7 @@ export function parse(source: string): {
 export function parseTestSource(source: string): {
   cst: CstNode | null;
   errors: unknown[];
+  comments: IToken[];
 } {
   const lexResult = tokens.tokenizeTest(source);
 
@@ -2122,6 +2127,7 @@ export function parseTestSource(source: string): {
     return {
       cst: null,
       errors: lexResult.errors,
+      comments: [],
     };
   }
 
@@ -2131,5 +2137,7 @@ export function parseTestSource(source: string): {
   return {
     cst,
     errors: testParser.errors,
+    comments:
+      (lexResult.groups as { comments?: IToken[] } | undefined)?.comments ?? [],
   };
 }

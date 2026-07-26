@@ -62,7 +62,11 @@ export function parseTestFile(
 
   // Build TestFile AST from CST
   try {
-    const testFile = buildTestAST(parseResult.cst, fileName);
+    const testFile = buildTestAST(
+      parseResult.cst,
+      fileName,
+      parseResult.comments,
+    );
     return { testFile, errors };
   } catch (e) {
     errors.push({
