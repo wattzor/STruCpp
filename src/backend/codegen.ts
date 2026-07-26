@@ -42,7 +42,10 @@ import type {
 } from "../frontend/ast.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry } from "../types.js";
-import { StdFunctionRegistry } from "../semantic/std-function-registry.js";
+import {
+  StdFunctionRegistry,
+  type StdFunctionDescriptor,
+} from "../semantic/std-function-registry.js";
 import type {
   ProjectModel,
   ConfigurationDecl,
@@ -273,6 +276,14 @@ export interface CodeGenResult {
     column?: number;
     file?: string;
   }>;
+
+  /** Errors emitted during code generation */
+  errors: Array<{
+    message: string;
+    line?: number;
+    column?: number;
+    file?: string;
+  }>;
 }
 
 // =============================================================================
@@ -340,6 +351,14 @@ export class CodeGenerator {
 
   /** Warnings collected during code generation */
   private codegenWarnings: Array<{
+    message: string;
+    line?: number;
+    column?: number;
+    file?: string;
+  }> = [];
+
+  /** Errors collected during code generation */
+  private codegenErrors: Array<{
     message: string;
     line?: number;
     column?: number;
@@ -1015,6 +1034,7 @@ export class CodeGenerator {
     this.currentHeaderLine = 1;
     this.locatedVars = [];
     this.codegenWarnings = [];
+    this.codegenErrors = [];
     this.tempVarCounter = 0;
     this.varInfoCounter = 0;
     this.varInfoSymbolIds = new Map();
@@ -1179,6 +1199,7 @@ export class CodeGenerator {
       lineMap: this.lineMap,
       headerLineMap: this.headerLineMap,
       warnings: this.codegenWarnings,
+      errors: this.codegenErrors,
     };
   }
 
@@ -5474,116 +5495,239 @@ export class CodeGenerator {
   }
 
   /**
-   * For std-lib template functions (like LIMIT, MAX, MIN) where all params
-   * share the same generic constraint, harmonize argument types so C++ template
-   * deduction succeeds. Casts literals to the dominant variable type, or widens
-   * all args to the widest type if variables differ.
+   * Add a codegen-level error tied to an expression's source location.
+   */
+  private addCodegenError(message: string, expr?: Expression): void {
+    const span = expr?.sourceSpan;
+    const err: (typeof this.codegenErrors)[0] = { message };
+    if (span?.startLine !== undefined) err.line = span.startLine;
+    if (span?.startCol !== undefined) err.column = span.startCol;
+    if (span?.file !== undefined) err.file = span.file;
+    this.codegenErrors.push(err);
+  }
+
+  /**
+   * Determine the argument range to harmonize for variadic/mixed standard
+   * functions.  For functions with a leading selector (MUX, SEL) the selector
+   * is skipped so the value arguments can be unified independently.
+   */
+  private getHarmonizableRange(
+    stdFunc: StdFunctionDescriptor,
+    argCount: number,
+  ): { start: number; end: number } | undefined {
+    if (stdFunc.params.length === 0) return undefined;
+    const firstConstraint = stdFunc.params[0]!.constraint;
+    let start = 0;
+    if (firstConstraint === "BOOL" || firstConstraint === "specific") {
+      start = 1;
+    }
+    if (argCount <= start + 1) return undefined;
+    const restConstraint = stdFunc.params[start]!.constraint;
+    for (let i = start; i < stdFunc.params.length; i++) {
+      if (stdFunc.params[i]!.constraint !== restConstraint) return undefined;
+    }
+    return { start, end: argCount };
+  }
+
+  /**
+   * Only a subset of standard functions require a single common C++ template
+   * type across all value arguments.  Others (LIMIT, SEL, comparisons,
+   * two-argument MIN/MAX, EXPT) have mixed-type runtime overloads and must not
+   * be forced into a common type here.
+   */
+  private shouldHarmonizeStdFuncArgs(
+    stdFunc: StdFunctionDescriptor,
+    _argCount: number,
+  ): boolean {
+    const name = stdFunc.cppName.toUpperCase();
+    // MIN/MAX have runtime mixed-type overloads that handle cross-sign
+    // comparisons and selections correctly; forcing a common type here would
+    // reject valid pairs like MAX(-LINT#1, ULINT#1).  MUX does not have a
+    // mixed-type overload for same-typed leading inputs, so it is harmonised.
+    return ["ADD", "MUL", "SUB", "DIV", "MOD", "MUX"].includes(name);
+  }
+
+  /**
+   * Compute a single IEC type that every argument in the range can be cast to
+   * without losing the sign of any value.  Mixed signed/unsigned integers are
+   * widened to a signed type large enough for both ranges.  If no such type
+   * exists (e.g. LINT + ULINT) the function returns undefined.
+   */
+  private computeCommonHarmonizedType(
+    argTypes: (string | undefined)[],
+    start: number,
+    end: number,
+  ): string | undefined {
+    const types: string[] = [];
+    for (let i = start; i < end; i++) {
+      const t = argTypes[i];
+      if (!t) return undefined;
+      types.push(t);
+    }
+
+    const first = types[0]!;
+    if (types.every((t) => t === first)) return first;
+
+    const cats = types.map((t) => getTypeCategory(t));
+    if (cats.some((c) => !c)) return undefined;
+
+    // REAL/LREAL: promote to LREAL if any operand is LREAL or a 64-bit integer.
+    const hasReal = cats.some((c) => c === "REAL");
+    if (hasReal) {
+      const hasLReal = types.some((t) => t.toUpperCase() === "LREAL");
+      const has64Int = types.some((t) => {
+        const bits = getTypeBits(t) ?? 0;
+        const cat = getTypeCategory(t);
+        return (
+          (cat === "SINT" || cat === "UINT" || cat === "BIT") && bits === 64
+        );
+      });
+      if (hasLReal || has64Int) return "LREAL";
+      return "REAL";
+    }
+
+    // All integer-like (BIT/SINT/UINT)
+    let maxSignedWidth = 0;
+    let maxUnsignedWidth = 0;
+    for (const t of types) {
+      const cat = getTypeCategory(t)!;
+      const bits = getTypeBits(t) ?? 0;
+      if (cat === "SINT") {
+        if (bits > maxSignedWidth) maxSignedWidth = bits;
+      } else if (cat === "UINT" || cat === "BIT") {
+        if (bits > maxUnsignedWidth) maxUnsignedWidth = bits;
+      }
+    }
+    const anySigned = maxSignedWidth > 0;
+    const anyUnsigned = maxUnsignedWidth > 0;
+
+    if (anySigned && anyUnsigned) {
+      const needed = Math.max(maxSignedWidth, maxUnsignedWidth + 1);
+      if (needed <= 8) return "SINT";
+      if (needed <= 16) return "INT";
+      if (needed <= 32) return "DINT";
+      if (needed <= 64) return "LINT";
+      return undefined;
+    }
+
+    if (anySigned) {
+      if (maxSignedWidth <= 8) return "SINT";
+      if (maxSignedWidth <= 16) return "INT";
+      if (maxSignedWidth <= 32) return "DINT";
+      return "LINT";
+    }
+
+    if (anyUnsigned) {
+      // Prefer UINT category names (USINT/UINT/UDINT/ULINT) when one exists at
+      // the widest width; otherwise use the BIT category name.
+      const uintAtWidth = types.find(
+        (t) =>
+          getTypeCategory(t) === "UINT" &&
+          (getTypeBits(t) ?? 0) === maxUnsignedWidth,
+      );
+      if (uintAtWidth) return uintAtWidth;
+      const bitAtWidth = types.find(
+        (t) =>
+          getTypeCategory(t) === "BIT" &&
+          (getTypeBits(t) ?? 0) === maxUnsignedWidth,
+      );
+      if (bitAtWidth) return bitAtWidth;
+      if (maxUnsignedWidth <= 8) return "USINT";
+      if (maxUnsignedWidth <= 16) return "UINT";
+      if (maxUnsignedWidth <= 32) return "UDINT";
+      return "ULINT";
+    }
+
+    return undefined;
+  }
+
+  /**
+   * For std-lib template functions (LIMIT, MAX, MIN, MUX, ADD, MUL, etc.)
+   * where the value parameters share a generic constraint, cast all value
+   * arguments to a single common IEC type so C++ template deduction succeeds
+   * and sign is preserved.  If no common type exists (e.g. LINT mixed with
+   * ULINT) a codegen error is recorded instead of emitting code that will not
+   * compile.
    */
   private harmonizeStdFuncArgs(
     args: string[],
     argExprs: FunctionCallExpression["arguments"],
-    stdFunc: { params: Array<{ constraint: string }> },
+    stdFunc: StdFunctionDescriptor,
   ): void {
-    // Only harmonize when all params share the same generic constraint
-    if (stdFunc.params.length === 0) return;
-    const firstConstraint = stdFunc.params[0]!.constraint;
-    if (firstConstraint === "specific" || firstConstraint === "BOOL") return;
-    const allSame = stdFunc.params.every(
-      (p) => p.constraint === firstConstraint,
-    );
-    if (!allSame) return;
+    const range = this.getHarmonizableRange(stdFunc, args.length);
+    if (!range || !this.shouldHarmonizeStdFuncArgs(stdFunc, args.length))
+      return;
 
-    // Infer types for all arguments
-    const argTypes: (string | undefined)[] = argExprs.map((a) =>
-      this.inferExprType(a.value),
-    );
-
-    // Separate variable types from literal types
-    const varTypes: string[] = [];
-    const literalIndices: number[] = [];
+    const argTypes: (string | undefined)[] = [];
     for (let i = 0; i < argExprs.length && i < args.length; i++) {
-      const expr = argExprs[i]!.value;
+      argTypes[i] = this.inferExprType(argExprs[i]!.value);
+    }
+
+    // If we cannot infer a type for any value argument, leave the call as-is
+    // and let the C++ compiler handle it.  This avoids false positives when
+    // the type checker has not resolved a symbol (e.g. library string ops).
+    let hasUnknown = false;
+    for (let i = range.start; i < range.end; i++) {
+      if (!argTypes[i]) {
+        hasUnknown = true;
+        break;
+      }
+    }
+    if (hasUnknown) return;
+
+    const isBare: boolean[] = [];
+    for (let i = range.start; i < range.end; i++) {
+      isBare[i] = this.isBareLiteral(argExprs[i]!.value);
+    }
+
+    const nonBareTypes: string[] = [];
+    for (let i = range.start; i < range.end; i++) {
+      if (!isBare[i] && argTypes[i]) nonBareTypes.push(argTypes[i]!);
+    }
+
+    let commonType: string | undefined;
+    if (
+      nonBareTypes.length > 0 &&
+      nonBareTypes.every((t) => t === nonBareTypes[0]!)
+    ) {
+      // All non-bare arguments share one type; use it for bare-literal casts.
+      commonType = nonBareTypes[0]!;
+    } else {
+      // Mixed concrete types: pick a single type that can hold every value.
+      commonType = this.computeCommonHarmonizedType(
+        argTypes,
+        range.start,
+        range.end,
+      );
+    }
+
+    if (!commonType) {
+      const argTypeList = argTypes
+        .slice(range.start, range.end)
+        .map((t) => t ?? "UNKNOWN")
+        .join(", ");
+      this.addCodegenError(
+        `Cannot unify argument types for ${stdFunc.cppName}(${argTypeList}) — no common IEC type can represent all values without loss`,
+        argExprs[range.start]?.value,
+      );
+      return;
+    }
+
+    const commonCat = getTypeCategory(commonType);
+    for (let i = range.start; i < range.end; i++) {
       const t = argTypes[i];
       if (!t) continue;
-      if (
-        expr.kind === "LiteralExpression" ||
-        (expr.kind === "UnaryExpression" &&
-          expr.operand.kind === "LiteralExpression")
-      ) {
-        literalIndices.push(i);
-      } else {
-        varTypes.push(t);
-      }
-    }
+      const exprCat = getTypeCategory(t);
+      const bare = isBare[i]!;
 
-    // Find dominant type from variable types, or from literal types if all args are literals
-    let dominant: string;
-    if (varTypes.length === 0) {
-      // All literals — pick the widest literal type as dominant
-      const litTypes = literalIndices
-        .map((i) => argTypes[i])
-        .filter((t): t is string => !!t);
-      if (litTypes.length === 0) return;
-      dominant = litTypes[0]!;
-      for (let i = 1; i < litTypes.length; i++) {
-        const bits1 = getTypeBits(dominant) ?? 0;
-        const bits2 = getTypeBits(litTypes[i]!) ?? 0;
-        if (bits2 > bits1) dominant = litTypes[i]!;
-      }
-    } else {
-      // Find dominant type: if all var types agree, use that; otherwise pick widest
-      dominant = varTypes[0]!;
-      for (let i = 1; i < varTypes.length; i++) {
-        if (varTypes[i] !== dominant) {
-          // Pick wider type
-          const bits1 = getTypeBits(dominant) ?? 0;
-          const bits2 = getTypeBits(varTypes[i]!) ?? 0;
-          if (bits2 > bits1) dominant = varTypes[i]!;
-        }
-      }
-    }
+      if (t === commonType && !bare) continue;
 
-    // Cast literals to dominant type.
-    // Bare literals (no typePrefix) are untyped — castable to dominant unless
-    // this would narrow a REAL/LREAL literal to an integer type (losing
-    // precision).  When the call also carries a variable argument we must
-    // ALWAYS wrap bare literals: the variable side is an `IECVar<T>` but a
-    // bare literal lowers to a raw `int`/`double`, so C++ template deduction
-    // sees conflicting `T`s (`IECVar<int>` vs `int`) even when both share
-    // the same IEC type name on our side.
-    for (const i of literalIndices) {
-      const litType = argTypes[i];
-      if (!litType) continue;
-      const expr = argExprs[i]!.value;
-      const litCat = getTypeCategory(litType);
-      const domCat = getTypeCategory(dominant);
-      // Never narrow a REAL literal to integer — that truncates (e.g. 1.5 → 1)
-      if (litCat === "REAL" && domCat !== "REAL" && this.isBareLiteral(expr)) {
+      // Don't truncate a REAL literal by casting it to an integer type.
+      if (bare && exprCat === "REAL" && commonCat !== "REAL") {
         continue;
       }
-      // Bare literal paired with at least one IEC variable: cast even when
-      // the inferred IEC type matches `dominant`, to lift raw C++ literals
-      // into the IECVar<> template space.
-      if (this.isBareLiteral(expr) && varTypes.length > 0) {
-        args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
-        continue;
-      }
-      if (litType === dominant) continue;
-      if (
-        this.isBareLiteral(expr) ||
-        this.canImplicitWiden(litType, dominant)
-      ) {
-        args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
-      }
-    }
 
-    // Cast variable args that need widening to dominant type
-    for (let i = 0; i < args.length && i < argExprs.length; i++) {
-      if (literalIndices.includes(i)) continue;
-      const t = argTypes[i];
-      if (t && t !== dominant && this.canImplicitWiden(t, dominant)) {
-        args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
-      }
+      args[i] = `static_cast<IEC_${commonType}>(${args[i]})`;
     }
   }
 

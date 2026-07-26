@@ -513,11 +513,15 @@ inline auto MUX(IEC_INT k, T in0, U in1, Args... rest) noexcept {
 // `EQ(my_int, 0)` (where the literal is int / IEC_INT) both type-check
 // without forcing the caller to wrap every literal in a cast. Each side
 // only has to land on an IEC elementary type after `iec_unwrap`; the
-// comparison uses the sign-aware `iec_cmp_*` helpers, so mixed signed/
-// unsigned operands compare as mathematical integer values (e.g.
-// `-1 < 0xFFFFFFFFu` is TRUE and `-1 = 1u` is FALSE), even for same-width
-// pairs like `LINT` vs `ULINT` where C++ usual arithmetic conversions would
-// silently promote to unsigned.
+// comparison uses the sign-aware `iec_cmp_*` helpers in `iec_var.hpp`, so
+// mixed signed/unsigned operands compare as mathematical integer values (e.g.
+// `IEC_INT(-1) < IEC_UDINT(1)` is TRUE and `IEC_INT(-1) = IEC_UDINT(1)` is
+// FALSE), even for same-width pairs like `IEC_LINT` vs `IEC_ULINT` where C++
+// usual arithmetic conversions would silently promote to unsigned.
+//
+// CONVERSION SEMANTICS — read this before writing cross-sign tests:
+// Mixed signed/unsigned integer comparisons are performed mathematically,
+// not by converting the signed side to unsigned.
 template<typename A, typename B>
 using enable_if_two_elementary = std::enable_if_t<
     is_any_elementary_v<iec_underlying_type_t<std::decay_t<A>>> &&

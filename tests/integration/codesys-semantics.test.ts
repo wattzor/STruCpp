@@ -1140,4 +1140,63 @@ int main() {
     });
     expect(stdout).toBe(expected);
   });
+
+  // C11: variadic std functions with mixed signed/unsigned arguments must be
+  // harmonized to a common type instead of producing a g++ template error.
+  it("C11: variadic MIN/MAX/MUX/ADD harmonize mixed signed/unsigned operands", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        min_v, max_v, mux0, mux1, add_v : DINT;
+      END_VAR
+        min_v := MIN(-INT#5, UDINT#3, -DINT#7);
+        max_v := MAX(-INT#5, UDINT#3, -DINT#7);
+        mux0  := MUX(0, -INT#5, UDINT#3, -DINT#7);
+        mux1  := MUX(1, -INT#5, UDINT#3, -DINT#7);
+        add_v := ADD(-INT#5, UDINT#3, -DINT#7);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const mainCode = `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout
+      << static_cast<long long>(prog.MIN_V) << '\\n'
+      << static_cast<long long>(prog.MAX_V) << '\\n'
+      << static_cast<long long>(prog.MUX0) << '\\n'
+      << static_cast<long long>(prog.MUX1) << '\\n'
+      << static_cast<long long>(prog.ADD_V) << std::endl;
+    return 0;
+}
+`;
+    const expected = ["-7", "3", "-5", "3", "-9"].join("\n");
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "variadic_harmonize",
+      mainCode,
+    });
+    expect(stdout).toBe(expected);
+  });
+
+  it("C11b: mixing LINT and ULINT in an arithmetic/variadic call with no common type is reported as a compile error", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        v : DINT;
+      END_VAR
+        v := ADD(-LINT#5, ULINT#3, -LINT#7);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(false);
+    expect(result.errors[0]?.message).toContain(
+      "Cannot unify argument types for ADD",
+    );
+  });
 });
