@@ -740,7 +740,17 @@ export class TypeChecker {
 
     let type: IECType | undefined;
     if (expr.operator === "NOT") {
-      // NOT preserves the operand type for bit types (NOT BYTE returns BYTE)
+      // NOT is a bitwise operator on ANY_BIT operands. CODESYS only permits
+      // BOOL, BYTE, WORD, DWORD, and LWORD (NOT on signed integers is not
+      // defined and produces logical ! in codegen, which is incorrect).
+      if (!_isTypeInCategory(operandType, "ANY_BIT")) {
+        this.addError(
+          `Operator 'NOT' requires an ANY_BIT operand, got ${typeNameUtil(operandType)}`,
+          expr.sourceSpan.startLine,
+          expr.sourceSpan.startCol,
+          expr.sourceSpan.file,
+        );
+      }
       type = operandType;
     } else {
       // Unary + and - preserve the operand type
@@ -1365,8 +1375,17 @@ export class TypeChecker {
       };
       return _isTypeInCategory(elemType, "ANY_INT");
     }
-    // ANY_NUM: bit types can be promoted to numeric
+    // ANY_NUM: only numeric (integer or real) types can be widened to ANY_NUM.
     if (constraint === "ANY_NUM") {
+      const elemType: ElementaryType = ELEMENTARY_TYPES[upper] ?? {
+        typeKind: "elementary" as const,
+        name: upper,
+        sizeBits: 0,
+      };
+      return _isTypeInCategory(elemType, "ANY_NUM");
+    }
+    // ANY_BIT: bit-string types only. Bit shifts use ANY_BIT_OR_INT instead.
+    if (constraint === "ANY_BIT") {
       const elemType: ElementaryType = ELEMENTARY_TYPES[upper] ?? {
         typeKind: "elementary" as const,
         name: upper,
@@ -1374,14 +1393,17 @@ export class TypeChecker {
       };
       return _isTypeInCategory(elemType, "ANY_BIT");
     }
-    // ANY_BIT: integer types can be used in bit operations (CODESYS compat)
-    if (constraint === "ANY_BIT") {
+    // ANY_BIT_OR_INT: CODESYS extension for SHL/SHR/ROL/ROR.
+    if (constraint === "ANY_BIT_OR_INT") {
       const elemType: ElementaryType = ELEMENTARY_TYPES[upper] ?? {
         typeKind: "elementary" as const,
         name: upper,
         sizeBits: 0,
       };
-      return _isTypeInCategory(elemType, "ANY_INT");
+      return (
+        _isTypeInCategory(elemType, "ANY_BIT") ||
+        _isTypeInCategory(elemType, "ANY_INT")
+      );
     }
     return false;
   }

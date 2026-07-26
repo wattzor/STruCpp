@@ -259,6 +259,15 @@ export function matchesConstraint(
   // "BOOL" is a special single-type constraint
   if (constraint === "BOOL") return upper === "BOOL";
 
+  // CODESYS extension: bit shifts accept both ANY_BIT and ANY_INT operands.
+  if (constraint === "ANY_BIT_OR_INT") {
+    const categories = TYPE_CATEGORIES[upper];
+    return (
+      !!categories &&
+      (categories.includes("ANY_BIT") || categories.includes("ANY_INT"))
+    );
+  }
+
   // Map constraint to TypeCategory and check membership
   const elem = ELEMENTARY_TYPES[upper];
   if (!elem) {

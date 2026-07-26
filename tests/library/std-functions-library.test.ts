@@ -122,14 +122,16 @@ describe("iec-std-functions.stlib synthesis", () => {
     });
   });
 
-  it("SHL mixes a generic ANY_BIT input with a concrete INT shift count", () => {
+  it("SHL mixes a generic ANY_BIT_OR_INT input with a concrete INT shift count", () => {
     // The shift count is always INT regardless of the operand width;
     // pin it so a registry change that drops the specific-type
-    // constraint doesn't silently turn N into ANY_INT.
+    // constraint doesn't silently turn N into ANY_INT. The input is
+    // ANY_BIT_OR_INT because CODESYS permits bit shifts on signed and
+    // unsigned integer types in addition to the IEC bit-string types.
     const shl = fnByName.get("SHL")!;
     expect(shl.returnType).toBe("ANY_BIT");
     expect(shl.parameters).toEqual([
-      { name: "IN", type: "ANY_BIT", direction: "input" },
+      { name: "IN", type: "ANY_BIT_OR_INT", direction: "input" },
       { name: "N", type: "INT", direction: "input" },
     ]);
     expect(shl.variadic).toBeUndefined();
