@@ -213,7 +213,7 @@ export const Comment = createToken({
   name: "Comment",
   pattern: matchComment,
   line_breaks: true, // Essential for multi-line block comments
-  group: Lexer.SKIPPED,
+  group: "comments",
 });
 
 // =============================================================================

@@ -242,6 +242,8 @@ export interface VarDeclaration extends ASTNode {
   type: TypeReference;
   initialValue?: Expression;
   address?: string;
+  /** Declaration comment, bound by the trailing-or-preceding-line rule. */
+  comment?: string;
 }
 
 // =============================================================================
