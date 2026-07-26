@@ -38,6 +38,7 @@
 #include "iec_date.hpp"
 #include "iec_dt.hpp"
 #include "iec_tod.hpp"
+#include "iec_fault.hpp"
 #include <cmath>
 #include <algorithm>
 #include <chrono>
@@ -45,6 +46,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
+#if STRUCPP_HAS_EXCEPTIONS
+#include <stdexcept>
+#endif
 
 // Undefine AVR `<time.h>` macros that collide with common IEC
 // identifiers.  `<chrono>` above pulls in `<ctime>` → `<time.h>`,
@@ -68,6 +72,22 @@
 #undef NTP_OFFSET
 
 namespace strucpp {
+
+/**
+ * Raise a null-reference fault using the appropriate mechanism for the target.
+ * On hosted/exception builds this throws std::runtime_error so the runtime can
+ * catch it per-task. On -fno-exceptions firmware targets it calls the platform
+ * iec_runtime_fault() hook.
+ */
+#if STRUCPP_HAS_EXCEPTIONS
+inline void iec_null_reference_fault(const char* context) {
+    throw std::runtime_error(context ? context : "Null reference");
+}
+#else
+[[noreturn]] inline void iec_null_reference_fault(const char* context) noexcept {
+    iec_runtime_fault(IecFault::NullReference, context);
+}
+#endif
 
 // =============================================================================
 // Base Classes for Runtime

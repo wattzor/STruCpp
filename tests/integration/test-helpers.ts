@@ -242,6 +242,8 @@ export interface RunE2ETestPipelineOptions {
   tempDirPrefix?: string;
   /** Additional compile options passed to compile() */
   compileOptions?: Record<string, unknown>;
+  /** Extra g++ flags, e.g. ['-fsanitize=address,undefined'] */
+  extraFlags?: string[];
 }
 
 /**
@@ -313,6 +315,7 @@ export function runE2ETestPipeline(
     const gppCommand = [
       'g++',
       '-std=c++17',
+      ...(opts.extraFlags ?? []),
       `-I${RUNTIME_INCLUDE_PATH}`,
       `-I${TEST_RUNTIME_PATH}`,
       `-I${tempDir}`,

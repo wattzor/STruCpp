@@ -182,4 +182,148 @@ int main() {
     });
     expect(stdout).toBe("42,100");
   });
+
+  it("calls FB_Init for every element in an array of FB instances", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Counter
+      VAR_EXTERNAL
+        gInit : INT;
+      END_VAR
+      VAR
+        count : INT;
+      END_VAR
+
+      METHOD FB_Init : BOOL
+      VAR_INPUT
+        bInitRetains : BOOL;
+        bInCopyCode : BOOL;
+      END_VAR
+        gInit := gInit + 1;
+        count := 42;
+        FB_Init := TRUE;
+      END_METHOD
+
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR_EXTERNAL
+        gInit : INT;
+      END_VAR
+      VAR
+        arr : ARRAY[1..3] OF Counter;
+        result : INT;
+      END_VAR
+        result := gInit;
+      END_PROGRAM
+
+      CONFIGURATION MyConfig
+      VAR_GLOBAL
+        gInit : INT;
+      END_VAR
+      RESOURCE MyResource ON PLC
+        TASK MainTask(INTERVAL := T#100ms, PRIORITY := 1);
+        PROGRAM MainTask WITH MainTask : Main;
+      END_RESOURCE
+      END_CONFIGURATION
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "fb_init_array",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog(&strucpp::GINIT);
+    prog.run();
+    std::cout << static_cast<int>(prog.RESULT) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("3");
+  });
+
+  it("calls FB_Init and FB_Exit on nested function blocks", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Inner
+      VAR_EXTERNAL
+        gInit : INT;
+        gExit : INT;
+      END_VAR
+
+      METHOD FB_Init : BOOL
+      VAR_INPUT
+        bInitRetains : BOOL;
+        bInCopyCode : BOOL;
+      END_VAR
+        gInit := gInit + 10;
+        FB_Init := TRUE;
+      END_METHOD
+
+      METHOD FB_Exit : BOOL
+      VAR_INPUT
+        bInCopyCode : BOOL;
+      END_VAR
+        gExit := gExit + 10;
+        FB_Exit := TRUE;
+      END_METHOD
+
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Outer
+      VAR
+        inner : Inner;
+      END_VAR
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR_EXTERNAL
+        gInit : INT;
+        gExit : INT;
+      END_VAR
+      VAR
+        o : Outer;
+        afterInit : INT;
+      END_VAR
+        afterInit := gInit;
+      END_PROGRAM
+
+      CONFIGURATION MyConfig
+      VAR_GLOBAL
+        gInit : INT;
+        gExit : INT;
+      END_VAR
+      RESOURCE MyResource ON PLC
+        TASK MainTask(INTERVAL := T#100ms, PRIORITY := 1);
+        PROGRAM MainTask WITH MainTask : Main;
+      END_RESOURCE
+      END_CONFIGURATION
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "fb_init_nested",
+      mainCode: `
+#include <iostream>
+int main() {
+    {
+        strucpp::Program_MAIN prog(&strucpp::GINIT, &strucpp::GEXIT);
+        prog.run();
+        std::cout << static_cast<int>(strucpp::GINIT.read()) << "," << static_cast<int>(prog.AFTERINIT) << std::endl;
+    }
+    std::cout << static_cast<int>(strucpp::GEXIT.read()) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("10,10\n10");
+  });
 });
