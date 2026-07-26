@@ -263,6 +263,29 @@ function getAllIdentifierOrKeywordImages(
 }
 
 /**
+ * Parse a CODESYS bit/byte/word/dword access token (%X0, %B1, %W0, %D0).
+ * Returns the access kind and the numeric index as a string.
+ */
+function parseBitAccessToken(raw: string): {
+  kind: "bit" | "byte" | "word" | "dword";
+  prefix: string;
+  index: string;
+} {
+  const upper = raw.toUpperCase();
+  const match = upper.match(/^%([XBWDL])(\d+)$/);
+  const prefix = match?.[1] ?? "X";
+  const index = match?.[2] ?? "0";
+  const kindMap: Record<string, "bit" | "byte" | "word" | "dword"> = {
+    X: "bit",
+    B: "byte",
+    W: "word",
+    D: "dword",
+    L: "dword",
+  };
+  return { kind: kindMap[prefix] ?? "bit", prefix, index };
+}
+
+/**
  * Parse an IEC 61131-3 integer literal that may use based notation (16#FF, 8#77, 2#1010).
  */
 function parseIECInteger(raw: string): number {
@@ -2748,7 +2771,9 @@ export class ASTBuilder {
 
     // Get additional field access from identifierOrKeyword nodes (index 1+)
     // Also include IntegerLiteral tokens for bit access (var.0, var.31)
+    // and CODESYS-style BitAccess tokens (var.%X0, var.%B1)
     const allIntLiterals = getAllTokens(children.IntegerLiteral);
+    const bitAccessTokens = getAllTokens(children.BitAccess);
     const fieldAccess: string[] = [];
     for (let i = 1; i < idOrKwNodes.length; i++) {
       const node = idOrKwNodes[i];
@@ -2757,6 +2782,16 @@ export class ASTBuilder {
     // Bit access indices appear as IntegerLiteral tokens after Dot
     for (const intToken of allIntLiterals) {
       fieldAccess.push(intToken.image);
+    }
+    // CODESYS bit/byte/word/dword access suffixes: %Xn, %Bn, %Wn, %Dn
+    for (const bitToken of bitAccessTokens) {
+      const parsed = parseBitAccessToken(bitToken.image);
+      if (parsed.kind === "bit") {
+        fieldAccess.push(parsed.index);
+      } else {
+        // byte/word/dword access — keep the original prefix+index as a field name
+        fieldAccess.push(`${parsed.prefix}${parsed.index}`);
+      }
     }
 
     // Extract subscript expressions from array access: arr[i], arr[i,j], etc.
@@ -2797,12 +2832,13 @@ export class ASTBuilder {
 
     const markers: Marker[] = [];
 
-    // Collect field access markers (Dot tokens followed by identifierOrKeyword or IntegerLiteral)
+    // Collect field access markers (Dot tokens followed by identifierOrKeyword, IntegerLiteral, or BitAccess)
     const dotTokens = getAllTokens(children.Dot);
     const idOrKwNodes = getAllNodes(children.identifierOrKeyword);
     const intLiteralTokens = getAllTokens(children.IntegerLiteral);
+    const bitAccessTokens = getAllTokens(children.BitAccess);
 
-    // Build a list of field targets sorted by offset: identifier and integer literal tokens after dots
+    // Build a list of field targets sorted by offset: identifier, integer literal, and bit-access tokens after dots
     const fieldTargets: Array<{ offset: number; name: string }> = [];
     for (let i = 1; i < idOrKwNodes.length; i++) {
       const n = idOrKwNodes[i]!;
@@ -2813,6 +2849,16 @@ export class ASTBuilder {
     }
     for (const t of intLiteralTokens) {
       fieldTargets.push({ offset: t.startOffset, name: t.image });
+    }
+    for (const t of bitAccessTokens) {
+      const parsed = parseBitAccessToken(t.image);
+      fieldTargets.push({
+        offset: t.startOffset,
+        name:
+          parsed.kind === "bit"
+            ? parsed.index
+            : `${parsed.prefix}${parsed.index}`,
+      });
     }
     fieldTargets.sort((a, b) => a.offset - b.offset);
 

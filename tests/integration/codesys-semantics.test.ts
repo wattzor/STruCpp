@@ -595,4 +595,57 @@ int main() {
     });
     expect(stdout).toBe(["67305985", "1,2,3,4"].join("\n"));
   });
+
+  it("B4/B5: CODESYS bit access %Xn reads and writes on BYTE/WORD/DWORD/LWORD boundaries", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        b : BYTE;
+        w : WORD;
+        dw : DWORD;
+        lw : LWORD;
+        fb, fw, fdw, flw : BOOL;
+      END_VAR
+        b.%X0 := TRUE;
+        b.%X7 := TRUE;
+        w.%X0 := TRUE;
+        w.%X15 := TRUE;
+        dw.%X0 := TRUE;
+        dw.%X31 := TRUE;
+        lw.%X0 := TRUE;
+        lw.%X63 := TRUE;
+
+        fb := b.%X0;
+        fw := w.%X15;
+        fdw := dw.%X31;
+        flw := lw.%X63;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "bit_access",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.B) << ','
+              << static_cast<int>(prog.FB) << ','
+              << static_cast<unsigned int>(prog.W) << ','
+              << static_cast<int>(prog.FW) << ','
+              << static_cast<unsigned long>(prog.DW) << ','
+              << static_cast<int>(prog.FDW) << ','
+              << static_cast<unsigned long long>(prog.LW) << ','
+              << static_cast<int>(prog.FLW) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("129,1,32769,1,2147483649,1,9223372036854775809,1");
+  });
 });

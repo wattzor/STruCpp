@@ -175,13 +175,13 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 | FB_Init / FB_Exit | Supported | Called automatically from constructor/destructor |
 | FB_Reinit | Supported | Explicit calls; automatic online-change copy not modeled |
 | __QUERYINTERFACE | Supported | Runtime interface query |
+| Bit access (var.%X0) | Supported | Read/write on BYTE/WORD/DWORD/LWORD |
 
 ## Not Yet Implemented
 
 | Feature | Notes |
 |---------|-------|
 | UNION | CODESYS union type |
-| Bit access (var.%X0) | Individual bit addressing |
 | ACTION blocks | Named action blocks |
 | TRY/CATCH/FINALLY | Exception handling |
 | Generics | Parameterized types |

@@ -1723,6 +1723,8 @@ export class STParser extends CstParser {
                 { ALT: () => this.SUBRULE2(this.identifierOrKeyword) },
                 // Bit access: var.0, var.31
                 { ALT: () => this.CONSUME(tokens.IntegerLiteral) },
+                // CODESYS bit access: var.%X0, var.%B1, var.%W0, var.%D0
+                { ALT: () => this.CONSUME(tokens.BitAccess) },
               ],
               IGNORE_AMBIGUITIES: true,
             });
