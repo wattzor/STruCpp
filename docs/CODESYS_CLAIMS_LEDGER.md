@@ -126,13 +126,13 @@ CODESYS source**. Every one needs either a documentation link or an oracle run.
 ### Arithmetic and conversion
 | # | Claim | Status |
 |---|---|---|
-| C1 | `BYTE * BYTE` result stays `BYTE` and wraps | Implemented; snapshot 144. No source. |
-| C2 | Mixed-width result takes the larger operand type and wraps there | Implemented in `e79eee4`; F4=64, F5=4464. **No source.** |
-| C3 | `INT + UINT` is permitted rather than a type error | Implemented as permitted. No source. |
-| C4 | `TO_INT` rounds to nearest | Implemented. No source. |
-| C5 | The `.5` tie rule is half-away-from-zero | Snapshot shows 2/3/−2. **No source.** Banker's rounding is equally plausible. |
+| C1 | `BYTE * BYTE` result stays `BYTE` and wraps | Implemented; snapshot 144. **Partial source:** CODESYS says overflow/underflow in the data type is not truncated on x86/ARM/x64 and depends on the native width of the target processor. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html |
+| C2 | Mixed-width result takes the larger operand type and wraps there | Implemented in `e79eee4`; F4=64, F5=4464. **Partial source:** Vendor docs (PLCnext, Fernhill) agree promotion is to the larger type within the same category; CODESYS states temporary results use the target processor's native width. Exact width selection for mixed `INT + UINT` is `@oracle: assumed` until a CODESYS runtime measurement. Sources: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html; https://engineer.plcnext.help/2025.0_en/DataTypes_ImpliciteTypeConversion.htm; https://www.fernhillsoftware.com/help/iec-61131/common-elements/datatypes-elementary.html |
+| C3 | `INT + UINT` is permitted rather than a type error | Implemented as permitted. **Partial source:** PLCnext table allows `UINT` → `DINT`/`LINT`/`REAL`/`LREAL` implicit conversion, which makes `INT + UINT` valid by promoting `UINT`. CODESYS does not explicitly state this combination; `@oracle: assumed`. Source: https://engineer.plcnext.help/2025.0_en/DataTypes_ImpliciteTypeConversion.htm |
+| C4 | `TO_INT` rounds to nearest | Implemented. **Partial source:** CODESYS conversion operators page notes rounding for borderline cases depends on the target FPU, so the tie rule is not universally fixed. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html |
+| C5 | The `.5` tie rule is half-away-from-zero | **Target-dependent per CODESYS docs.** `ROUND` borderline cases depend on the target FPU; CODESYS gives `-1.5` as an example of target-specific behavior. STruCpp uses `std::round` (half-away-from-zero on Linux/x86_64); snapshot is `@oracle: host-x86_64-fpu`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html |
 | C6 | `TRUNC`/`ROUND` return `DINT` | **Verified and implemented.** CODESYS V3: `TRUNC` converts `REAL` → `DINT`; `ROUND` returns the nearest `DINT`. STruCpp now returns `IEC_DINT` for both. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_trunc.html |
-| C7 | `TRUNC_INT` exists and returns `INT` | No source. |
+| C7 | `TRUNC_INT` exists and returns `INT` | Sourced. CODESYS V3: `TRUNC_INT` converts `REAL` to `INT`; it is the V2.3 spelling of `TRUNC`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_trunc_int.html |
 
 ### Boolean evaluation
 | # | Claim | Status |
@@ -154,18 +154,18 @@ CODESYS source**. Every one needs either a documentation link or an oracle run.
 | # | Claim | Status |
 |---|---|---|
 | C16 | `__VARINFO` on a `VAR_IN_OUT` describes the parameter, not the caller's argument | A Forge thread implies it; not authoritative. |
-| C17 | `NumElements` for a non-array | **Unverified.** A1 documents `NumElements` for arrays only. Currently hardcoded to `0`; tagged `@oracle: assumed` until a source or oracle run confirms it. |
+| C17 | `NumElements` for a non-array | **Still unverified.** A1 documents `NumElements` only for `ARRAY` variables. CODESYS `__VARINFO` examples only show arrays. STruCpp hardcodes `0` for non-arrays; tagged `@oracle: assumed`. Sources: A1; https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_varinfo.html |
 | C18 | `TYPE_CLASS` values 39–48 (`TYPE_UXINT` … `TYPE_LTIMEOFDAY`) | **No source found; implementation now avoids them.** The documented enum ends at 38. STruCpp exposes only 0–38 and maps undocumented elementary types (e.g. `__XWORD`) to `TYPE_USERDEF` instead of inventing values. |
-| C19 | `AnyType` memory layout — padding and alignment | Declaration order is documented (A4). Actual in-memory layout is not. |
-| C20 | `VAR_INFO` members accessible case-insensitively (`vi.ByteAddress`) | ST is case-insensitive in general, but untested here. |
+| C19 | `AnyType` memory layout — padding and alignment | Field order and types documented (A4 and the CODESYS `AnyType` definition). In-memory padding/alignment is not specified and is effectively `@oracle: host-compiler`. Sources: A4; https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_datatype_any.html |
+| C20 | `VAR_INFO` members accessible case-insensitively (`vi.ByteAddress`) | Implemented and tested. `tests/integration/var-info.test.ts` asserts `vi.ByteAddress`, `vi.BYTEADDRESS`, etc. resolve to the same value. |
 
 ### Everything else touched
 | # | Claim | Status |
 |---|---|---|
-| C21 | `SIZEOF` returns logical IEC byte sizes | Implemented in `aff7bda`. No source. |
-| C22 | `XSIZEOF` returns `__XWORD` | No source. |
-| C23 | `INDEXOF` / `BITADR` semantics | No source. |
-| C24 | `ANY_BIT` / `ANY_INT` / `ANY_NUM` / `ANY_REAL` / `ANY_DATE` / `ANY_STRING` membership sets | Partly inferable from A6; the exact sets are not documented in what I found. |
+| C21 | `SIZEOF` returns logical IEC byte sizes | Sourced. CODESYS `SIZEOF` returns the number of bytes needed by the variable or type, always unsigned. STruCpp `IEC_SIZEOF` matches logical byte sizes. Return-type adaptation is contradictory in the doc (`adapted to operand` vs. implicit `USINT` example); currently returns `IEC_UDINT` and is `@oracle: assumed` for width. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_sizeof.html |
+| C22 | `XSIZEOF` returns platform-width unsigned | Sourced. CODESYS V3: `XSIZEOF` returns the number of bytes, always unsigned; return type is `ULINT` on 64-bit platforms and `UDINT` otherwise; recommended target type is `__UXINT`. Not yet implemented. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_xsizeof.html |
+| C23 | `INDEXOF` / `BITADR` semantics | Sourced. `INDEXOF` is deprecated in V3; use `ADR` instead. `BITADR` yields a `DWORD` bit offset; the top nibble encodes the memory range (`16#4` marker, `16#8` input, `16#C` output) and the rest encodes the bit offset, affected by the target's "Byte addressing" setting. Sources: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_indexof.html; https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_bitadr.html |
+| C24 | `ANY_BIT` / `ANY_INT` / `ANY_NUM` / `ANY_REAL` / `ANY_DATE` / `ANY_STRING` membership sets | Sourced. `ANY` accepts `ANY_BIT` + `ANY_DATE` + `ANY_NUM` + `ANY_STRING`. `ANY_NUM` = `ANY_REAL` + `ANY_INT`. `ANY_BIT` = `BYTE`/`WORD`/`DWORD`/`LWORD`. `ANY_INT` = signed + unsigned integers. `ANY_DATE` includes `DATE`, `DT`, `TOD`, `LDATE`, `LDT`, `LTOD`. `ANY_STRING` = `STRING`/`WSTRING`. `ANY_REAL` = `REAL`/`LREAL`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_datatype_any.html |
 | C25 | Struct packing and member offsets | No source. `{attribute 'pack_mode'}` exists but its exact effect is unverified. |
 
 ### Environment claims used for process decisions
@@ -194,6 +194,16 @@ expectations — getting them wrong means rework, not a re-baseline. C18 is a li
 C2 and C5 are already in the compiler and load-bearing. Those five first.
 
 ---
+
+## L1 — Oracle for Tier C claims
+
+The partial oracle compiled for Tier C is in `research/oracle-tier-c.md`. It contains:
+
+- Direct CODESYS Development System and Library Development Summary URLs for each claim.
+- Vendor-derived cross-checks (Beckhoff, PLCnext, Fernhill, OpenPLC) where CODESYS is silent.
+- A note that CODESYS explicitly marks `ROUND` tie-rule and overflow/conversion behavior as **target-dependent** (FPU / processor width), so host-machine snapshots are `@oracle: host-x86_64-fpu` rather than universal truth.
+- A plan for a real runtime oracle using CODESYS Control Win V3 or a vendor runtime to settle C1–C5, C17, C21, and C25.
+
 
 ## A note on why this document exists
 
