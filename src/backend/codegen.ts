@@ -35,6 +35,7 @@ import type {
   QueryInterfaceExpression,
   Visibility,
   ReferenceKind,
+  IECType,
 } from "../frontend/ast.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry } from "../types.js";
@@ -2100,15 +2101,9 @@ export class CodeGenerator {
           // its return name with `<Method> ref= ...`; if it was not, fail
           // cleanly rather than dereferencing a null pointer.
           this.emit(`    if (${method.name}_result == nullptr) {`);
-          this.emit("#if STRUCPP_HAS_EXCEPTIONS");
           this.emit(
-            `        throw std::runtime_error("Unbound REFERENCE TO return value in method '${method.name}'");`,
+            `        strucpp::iec_null_reference_fault("Unbound REFERENCE TO return value in method '${method.name}'");`,
           );
-          this.emit("#else");
-          this.emit(
-            `        strucpp::iec_runtime_fault(strucpp::IecFault::NullReference, "Unbound REFERENCE TO return value in method '${method.name}'");`,
-          );
-          this.emit("#endif");
           this.emit("    }");
           this.emit(`    return *${method.name}_result;`);
         } else {
@@ -4508,11 +4503,13 @@ export class CodeGenerator {
     const resolvedName = objType
       ? this.resolveMethodName(objType, expr.methodName)
       : this.resolveMethodNameGlobal(expr.methodName);
-    const accessOp =
-      objType && this.knownInterfaceTypes.has(objType.toUpperCase())
-        ? "->"
-        : ".";
-    return `${obj}${accessOp}${resolvedName}(${args})`;
+    if (objType && this.knownInterfaceTypes.has(objType.toUpperCase())) {
+      // Interface pointer: guard against null before dispatch so a failed
+      // __QUERYINTERFACE (or an uninitialised interface variable) cannot be
+      // dereferenced. The lambda evaluates the object expression exactly once.
+      return `([&](auto* __itf){ if (!__itf) strucpp::iec_null_reference_fault("Null interface pointer in call to '${resolvedName}'"); return __itf->${resolvedName}(${args}); }(${obj}))`;
+    }
+    return `${obj}.${resolvedName}(${args})`;
   }
 
   // ===========================================================================
@@ -4533,9 +4530,20 @@ export class CodeGenerator {
    * variable type map. Returns the IEC type name (upper case) or undefined.
    */
   private inferExprType(expr: Expression): string | undefined {
-    // Use pre-computed type from semantic analysis when available
+    // Use pre-computed type from semantic analysis when available.
+    // Unwrap POINTER TO / REF_TO / REFERENCE TO so callers see the FB,
+    // interface, or elementary type being pointed to.
     if (expr.resolvedType) {
-      const name = typeNameUtil(expr.resolvedType);
+      const baseTypeName = (type: IECType): string | undefined => {
+        if (type.typeKind === "reference") {
+          const refType = type as import("../frontend/ast.js").ReferenceType;
+          if (refType.referencedType) {
+            return baseTypeName(refType.referencedType);
+          }
+        }
+        return typeNameUtil(type);
+      };
+      const name = baseTypeName(expr.resolvedType);
       if (name) return name.toUpperCase();
     }
     // Fallback to ad-hoc inference for standalone codegen (tests without semantic analysis)
@@ -4969,7 +4977,6 @@ export class CodeGenerator {
         const prefixType = this.currentScopeVarTypes.get(prefixUpper);
         const isInterfacePointer =
           prefixType && this.knownInterfaceTypes.has(prefixType.toUpperCase());
-        const accessOp = isInterfacePointer ? "->" : ".";
         // VAR_IN_OUT FB-instance members are stored as C++ pointers and must be
         // dereferenced when used as the object of a method call.
         const mangledPrefix =
@@ -4979,7 +4986,10 @@ export class CodeGenerator {
         const prefixExpr = this.currentScopeInoutFBPointers.has(prefixUpper)
           ? `(*${mangledPrefix})`
           : mangledPrefix;
-        return `${prefixExpr}${accessOp}${resolvedMethod}(${args.join(", ")})`;
+        if (isInterfacePointer) {
+          return `([&](auto* __itf){ if (!__itf) strucpp::iec_null_reference_fault("Null interface pointer in call to '${resolvedMethod}'"); return __itf->${resolvedMethod}(${args.join(", ")}); }(${prefixExpr}))`;
+        }
+        return `${prefixExpr}.${resolvedMethod}(${args.join(", ")})`;
       }
     }
 

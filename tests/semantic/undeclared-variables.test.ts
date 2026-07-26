@@ -180,6 +180,34 @@ describe("Undeclared Variables - Positive (no false errors)", () => {
     expect(undeclaredErrors(result)).toHaveLength(0);
   });
 
+  it("should accept THIS^ passed as an argument and as a REF= source", () => {
+    const result = analyzeSource(`
+      FUNCTION_BLOCK Worker
+      VAR
+        target : POINTER TO Worker;
+      END_VAR
+        METHOD PUBLIC GetPtr : REFERENCE TO Worker
+          GetPtr ref= THIS^;
+        END_METHOD
+
+        METHOD PUBLIC TakeSelf : INT
+        VAR_INPUT
+          self : POINTER TO Worker;
+        END_VAR
+          TakeSelf := 1;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Child EXTENDS Worker
+        METHOD PUBLIC UseThis
+          THIS.TakeSelf(THIS^);
+        END_METHOD
+      END_FUNCTION_BLOCK
+    `);
+    expect(undeclaredErrors(result)).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
   it("should accept method return variable", () => {
     const result = analyzeSource(`
       FUNCTION_BLOCK MyFB
@@ -615,6 +643,35 @@ describe("Undeclared Variables - Enum members", () => {
 // =============================================================================
 // REF= diagnostics
 // =============================================================================
+
+describe("Reserved keyword identifiers", () => {
+  it("should reject THIS used as a variable name", () => {
+    const result = analyzeSource(`
+      PROGRAM Main
+        VAR THIS : INT; END_VAR
+        THIS := 1;
+      END_PROGRAM
+    `);
+    const errors = result.errors.filter((e) =>
+      e.message.includes("reserved and cannot be used"),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message.toUpperCase()).toContain("THIS");
+  });
+
+  it("should reject THIS used as a function name", () => {
+    const result = analyzeSource(`
+      FUNCTION THIS : INT
+        THIS := 1;
+      END_FUNCTION
+    `);
+    const errors = result.errors.filter((e) =>
+      e.message.includes("reserved and cannot be used"),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message.toUpperCase()).toContain("THIS");
+  });
+});
 
 describe("REF= assignment diagnostics", () => {
   it("should reject REF= on a non-reference variable", () => {
