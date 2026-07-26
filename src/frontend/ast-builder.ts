@@ -238,6 +238,7 @@ function getIdentifierOrKeywordImage(node: CstNode): string {
     "OVERRIDE",
     "ABSTRACT",
     "FINAL",
+    "THIS",
     "AND",
     "OR",
     "XOR",
