@@ -27,6 +27,7 @@ import type {
   UnaryExpression,
   LiteralExpression,
   VariableExpression,
+  VarInfoExpression,
   AccessStep,
   ExternalCodePragma,
   MethodDeclaration,
@@ -3924,7 +3925,18 @@ export class CodeGenerator {
       case "QueryInterfaceExpression": {
         return this.generateQueryInterfaceExpression(expr);
       }
+      case "VarInfoExpression": {
+        return this.generateVarInfoExpression(expr);
+      }
     }
+    throw new Error("Unsupported expression kind");
+  }
+
+  /**
+   * Generate C++ for a __VARINFO(variable) expression.
+   */
+  private generateVarInfoExpression(_expr: VarInfoExpression): string {
+    return "strucpp::VAR_INFO{}";
   }
 
   /**

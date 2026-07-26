@@ -361,6 +361,12 @@ export const __QUERYINTERFACE = createToken({
   pattern: /__QUERYINTERFACE/i,
 });
 
+// Variable reflection (CODESYS extension)
+export const __VARINFO = createToken({
+  name: "__VARINFO",
+  pattern: /__VARINFO/i,
+});
+
 // Test framework keywords (only active in test file lexing)
 export const TEST = createToken({ name: "TEST", pattern: /TEST/i });
 export const END_TEST = createToken({
@@ -717,6 +723,7 @@ const keywordTokens = [
   __NEW,
   __DELETE,
   __QUERYINTERFACE,
+  __VARINFO,
   METHOD,
   END_METHOD,
   INTERFACE,
@@ -845,6 +852,7 @@ export const allTokens = [
   __NEW,
   __DELETE,
   __QUERYINTERFACE,
+  __VARINFO,
   END_METHOD,
   END_INTERFACE,
   END_PROPERTY,
