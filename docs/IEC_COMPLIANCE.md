@@ -195,18 +195,17 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 
 | ID | Feature | CODESYS Behaviour | STruC++ Behaviour |
 |----|---------|-------------------|-------------------|
-| D1 | `__VARINFO` address fields | `ByteAddress`, `ByteOffset`, `Area`, `BitAddress`, and `MemoryArea` reflect the real PLC memory layout | Fields are populated at compile time with synthetic byte/bit addresses and a fixed `MEM_LOCAL` memory area; `ByteAddress` values start at a recognisable base (`0xCA000000`) and are allocated per descriptor to avoid accidental use as real pointers |
+| D1 | `__VARINFO` address fields | `ByteAddress`, `ByteOffset`, `Area`, `BitAddress`, and `MemoryArea` reflect the real PLC memory layout | Fields are populated at compile time. `ByteAddress` is a stable synthetic descriptor id allocated per qualified symbol. `Area`, `ByteOffset`, and `BitAddress` are synthetic. `MemoryArea` is derived from the owning `VarBlock` and any `AT %I/%Q/%M` address (`MEM_LOCAL`, `MEM_GLOBAL`, `MEM_RETAIN`, `MEM_INPUT`, `MEM_OUTPUT`, or `MEM_MEMORY`) |
 | D2 | `__SYSTEM` enum emission | Enums defined per project or in the runtime as CODESYS sees fit | `__SYSTEM.TYPE_CLASS` and `__SYSTEM.MEMORY_AREA` are emitted as fixed `enum class` definitions in the runtime header (`iec_system.hpp`) and wrapped with `IEC_ENUM_Var<>` |
-| D3 | `ANY` / `ANY_*` generic parameters | CODESYS accepts `ANY`, `ANY_BIT`, `ANY_INT`, `ANY_REAL`, `ANY_NUM`, `ANY_DATE`, `ANY_STRING` only in `VAR_INPUT`; any variable expression may be passed and is exposed as an `AnyType` descriptor | STruCpp passes a `strucpp::AnyType` descriptor with `typeclass`, `pvalue`, `diSize`; generic parameters are rejected outside `VAR_INPUT` |
-| D4 | `__VARINFO` field population | `__VARINFO` returns a live view of the variable, including any runtime changes to values or location | The returned `VAR_INFO` descriptor is a compile-time constant; string fields (`TypeName`, `Symbol`, `Comment`) are baked into the binary and numeric fields (`BitSize`, `TypeClass`, etc.) are derived from the declaration type. Member/element enumeration is not implemented |
+| D3 | `ANY` / `ANY_*` generic parameters | CODESYS accepts `ANY`, `ANY_BIT`, `ANY_INT`, `ANY_REAL`, `ANY_NUM`, `ANY_DATE`, `ANY_STRING` only in `VAR_INPUT`; any variable expression may be passed and is exposed as an `AnyType` descriptor | STruCpp passes a `strucpp::AnyType` descriptor with `typeclass`, `pvalue`, `diSize`; generic parameters are rejected outside `VAR_INPUT`. `pvalue` points to the C++ object for the argument, so byte-level generic functions (e.g. `funGenericCompare`) work for elementary types but not yet for arrays/structs/strings whose in-memory layout is not byte-flat |
+| D4 | `__VARINFO` field population | `__VARINFO` returns a live view of the variable, including any runtime changes to values or location | The returned `VAR_INFO` descriptor is a compile-time constant. String fields (`TypeName`, `Symbol`, `Comment`) are baked into the binary. Numeric fields (`BitSize`, `TypeClass`, `NumElements`, `ElemBitSize`, `BaseTypeClass`, `MemoryArea`, etc.) are derived from the declaration type. The descriptor is still not a live runtime view |
 
 ## Not Yet Implemented
 
 | Feature | Notes |
 |---------|-------|
 | UNION | CODESYS union type |
-| FB_Init / FB_Exit | Constructor/destructor lifecycle methods |
-| Bit access (var.%X0) | Individual bit addressing |
+
 | ACTION blocks | Named action blocks |
 | TRY/CATCH/FINALLY | Exception handling |
 | Conditional compilation | Preprocessor-style conditionals |

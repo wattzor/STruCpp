@@ -155,7 +155,7 @@ CODESYS source**. Every one needs either a documentation link or an oracle run.
 |---|---|---|
 | C16 | `__VARINFO` on a `VAR_IN_OUT` describes the parameter, not the caller's argument | A Forge thread implies it; not authoritative. |
 | C17 | `NumElements` for a non-array | **Unverified.** A1 documents `NumElements` for arrays only. Currently hardcoded to `0`; tagged `@oracle: assumed` until a source or oracle run confirms it. |
-| C18 | `TYPE_CLASS` values 39–48 (`TYPE_UXINT` … `TYPE_LTIMEOFDAY`) | **No source found.** I searched and fetched the enum page; it ends at 38. Review blocker B1. |
+| C18 | `TYPE_CLASS` values 39–48 (`TYPE_UXINT` … `TYPE_LTIMEOFDAY`) | **No source found; implementation now avoids them.** The documented enum ends at 38. STruCpp exposes only 0–38 and maps undocumented elementary types (e.g. `__XWORD`) to `TYPE_USERDEF` instead of inventing values. |
 | C19 | `AnyType` memory layout — padding and alignment | Declaration order is documented (A4). Actual in-memory layout is not. |
 | C20 | `VAR_INFO` members accessible case-insensitively (`vi.ByteAddress`) | ST is case-insensitive in general, but untested here. |
 

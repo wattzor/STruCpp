@@ -233,4 +233,40 @@ END_TEST
     expect(exitCode).toBe(0);
     expect(stdout).not.toContain("[FAIL]");
   });
+
+  it("accesses VAR_INFO members case-insensitively", () => {
+    const sourceST = `
+PROGRAM VarInfoCaseTest
+  VAR
+    iCounter : INT; (* Counts the calls *)
+    info : __SYSTEM.VAR_INFO;
+  END_VAR
+  info := __VARINFO(iCounter);
+END_PROGRAM
+`;
+
+    const testST = `
+TEST '__VARINFO case-insensitive members'
+  VAR uut : VarInfoCaseTest; END_VAR
+  uut();
+  ASSERT_EQ(uut.info.typeclass, __SYSTEM.TYPE_CLASS.TYPE_INT);
+  ASSERT_EQ(uut.info.typename, 'INT');
+  ASSERT_EQ(uut.info.bitsize, 16);
+  ASSERT_EQ(uut.info.numelements, 0);
+  ASSERT_EQ(uut.info.memoryarea, __SYSTEM.MEMORY_AREA.MEM_LOCAL);
+  ASSERT_EQ(uut.info.byteaddress, uut.info.ByteAddress);
+END_TEST
+`;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "test_var_info_case.st",
+      tempDirPrefix: "strucpp-varinfo-case-",
+      isTestBuild: true,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("[FAIL]");
+  });
 });
