@@ -1032,9 +1032,9 @@ export class ASTBuilder {
     let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
-      const elemNameToken = getFirstToken(elemChildren.Identifier);
-      if (elemNameToken) {
-        elementTypeName = elemNameToken.image;
+      const elemNameTokens = getAllTokens(elemChildren.Identifier);
+      if (elemNameTokens.length > 0) {
+        elementTypeName = elemNameTokens.map((t) => t.image).join(".");
       }
       if (getAllTokens(elemChildren.POINTER).length > 0) {
         elementReferenceKind = "pointer_to";
@@ -1517,9 +1517,9 @@ export class ASTBuilder {
     let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
-      const elemNameToken = getFirstToken(elemChildren.Identifier);
-      if (elemNameToken) {
-        elementTypeName = elemNameToken.image;
+      const elemNameTokens = getAllTokens(elemChildren.Identifier);
+      if (elemNameTokens.length > 0) {
+        elementTypeName = elemNameTokens.map((t) => t.image).join(".");
       }
       if (getAllTokens(elemChildren.POINTER).length > 0) {
         elementReferenceKind = "pointer_to";
