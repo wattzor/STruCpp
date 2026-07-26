@@ -45,7 +45,7 @@ import {
   type EnumMemberEntry,
 } from "./type-utils.js";
 import {
-  getSystemEnumType,
+  getSystemType,
   isSystemNamespaceName,
   isSystemTypeReference,
   resolveSystemAccess,
@@ -243,8 +243,8 @@ export class SemanticAnalyzer {
     referenceKind?: ReferenceKind,
   ): IECType {
     if (isSystemTypeReference(typeName)) {
-      const systemEnum = getSystemEnumType(typeName);
-      if (systemEnum) return systemEnum;
+      const systemType = getSystemType(typeName);
+      if (systemType) return systemType;
     }
 
     const typeSymbol = this.symbolTables.globalScope.lookup(typeName);
@@ -2376,9 +2376,9 @@ export class SemanticAnalyzer {
     if (upper.startsWith("__VLA_") || upper.startsWith("__INLINE_ARRAY_")) {
       return true;
     }
-    // CODESYS __SYSTEM qualified enum types
+    // CODESYS __SYSTEM qualified types (enums and VAR_INFO)
     if (isSystemTypeReference(name)) {
-      return getSystemEnumType(name) !== undefined;
+      return getSystemType(name) !== undefined;
     }
     const sym = this.symbolTables.globalScope.lookup(upper);
     if (!sym) return false;
@@ -2830,6 +2830,9 @@ export class SemanticAnalyzer {
         if (expr.arraySize) {
           this.checkExpressionForUndeclaredVars(expr.arraySize, scope, ctx);
         }
+        break;
+      case "VarInfoExpression":
+        this.checkExpressionForUndeclaredVars(expr.argument, scope, ctx);
         break;
     }
   }
