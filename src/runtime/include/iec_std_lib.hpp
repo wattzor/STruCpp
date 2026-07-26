@@ -26,6 +26,7 @@
 #include "iec_ptr.hpp"
 #include "iec_array.hpp"
 #include "iec_enum.hpp"
+#include "iec_any.hpp"
 #include "iec_string.hpp"
 #include "iec_wstring.hpp"
 // IEC 61131-3 temporal types — pulled in here so the standard
