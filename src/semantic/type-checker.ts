@@ -692,7 +692,9 @@ export class TypeChecker {
       type = ELEMENTARY_TYPES["BOOL"];
     }
     // Logical operators return BOOL
-    else if (["AND", "OR", "XOR"].includes(expr.operator)) {
+    else if (
+      ["AND", "AND_THEN", "OR", "OR_ELSE", "XOR"].includes(expr.operator)
+    ) {
       type = ELEMENTARY_TYPES["BOOL"];
     }
     // IEC 61131-3 date/time arithmetic (table 30 of the standard).

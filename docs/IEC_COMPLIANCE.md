@@ -86,7 +86,8 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 |----------|-----------|--------|
 | Arithmetic | `+`, `-`, `*`, `/`, `MOD`, `**` | Supported |
 | Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=` | Supported |
-| Logical | `AND`, `OR`, `XOR`, `NOT` | Supported |
+| Logical | `AND`, `OR`, `XOR`, `NOT` | Supported | Plain `AND`/`OR` evaluate both operands (no short-circuit), matching CODESYS V3 |
+| Short-circuit logical | `AND_THEN`, `OR_ELSE` | Supported | Evaluate the right operand only when the left result does not determine the outcome |
 | Bitwise | `AND`, `OR`, `XOR`, `NOT` (on bit types) | Supported |
 | Bit shift | `SHL`, `SHR`, `ROL`, `ROR` | Supported |
 | Assignment | `:=` | Supported |
@@ -135,7 +136,8 @@ All IEC 61131-3 standard functions are implemented in the C++ runtime:
 
 | Category | Functions |
 |----------|-----------|
-| Numeric | ABS, SQRT, LN, LOG, EXP, EXPT |
+| Numeric | ABS, SQRT, LN, LOG, EXP, EXPT, TRUNC, ROUND |
+| Numeric notes | `TRUNC` and `ROUND` convert `ANY_REAL` to `DINT` (CODESYS V3). `ROUND` uses half-away-from-zero ties. |
 | Trigonometric | SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2 |
 | Selection | SEL, MIN, MAX, LIMIT, MUX |
 | Comparison | GT, GE, EQ, LE, LT, NE |

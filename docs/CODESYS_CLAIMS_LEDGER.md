@@ -103,8 +103,8 @@ behaviour is vendor-specific and must not be treated as CODESYS canon.
 
 | # | Fact | How to reproduce |
 |---|---|---|
-| B1 | `TRUNC`/`ROUND` registered as `ANY_REAL → ANY_REAL` | `grep -n '"TRUNC"' src/semantic/std-function-registry.ts` → line 232 |
-| B2 | `AND_THEN` / `OR_ELSE` do not exist | `grep -rn "AND_THEN\|OR_ELSE" src/` → empty |
+| B1 | `TRUNC`/`ROUND` now registered as `ANY_REAL → DINT` | `src/semantic/std-function-registry.ts` lines 245-258; `src/runtime/include/iec_std_lib.hpp` lines 354-378 |
+| B2 | `AND_THEN` / `OR_ELSE` are parsed, typed, and code-gened | `src/frontend/lexer.ts`, `src/frontend/parser.ts`, `src/frontend/ast.ts`, `src/frontend/ast-builder.ts`, `src/backend/codegen.ts` |
 | B3 | Declaration comments are bound to `VarDeclaration.comment` | `src/frontend/ast-builder.ts` (`findComment`) |
 | B4 | Identifiers accept a leading underscore | `src/frontend/lexer.ts:615` |
 | B5 | `qualifiedIdentifier` accepts arbitrary depth | `src/frontend/parser.ts:2038` |
@@ -131,14 +131,14 @@ CODESYS source**. Every one needs either a documentation link or an oracle run.
 | C3 | `INT + UINT` is permitted rather than a type error | Implemented as permitted. No source. |
 | C4 | `TO_INT` rounds to nearest | Implemented. No source. |
 | C5 | The `.5` tie rule is half-away-from-zero | Snapshot shows 2/3/−2. **No source.** Banker's rounding is equally plausible. |
-| C6 | `TRUNC`/`ROUND` return `DINT` | From the developer's gap list. I confirmed the code *diverges* from it — not that the claim is right. |
+| C6 | `TRUNC`/`ROUND` return `DINT` | **Verified and implemented.** CODESYS V3: `TRUNC` converts `REAL` → `DINT`; `ROUND` returns the nearest `DINT`. STruCpp now returns `IEC_DINT` for both. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_trunc.html |
 | C7 | `TRUNC_INT` exists and returns `INT` | No source. |
 
 ### Boolean evaluation
 | # | Claim | Status |
 |---|---|---|
-| C8 | Plain `AND`/`OR` evaluate both operands (no short-circuit) | **No source.** Shapes codegen for every boolean expression — verify before W1.1. |
-| C9 | `AND_THEN`/`OR_ELSE` short-circuit | No source. |
+| C8 | Plain `AND`/`OR` evaluate both operands (no short-circuit) | **Verified.** CODESYS docs state plain `AND` always evaluates all operands; `AND_THEN` is the short-circuit form. STruCpp codegen uses `&`/`|` for plain `AND`/`OR`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_and_then.html |
+| C9 | `AND_THEN`/`OR_ELSE` short-circuit | **Verified and implemented.** CODESYS docs state `AND_THEN` only evaluates the right operand when the left is `TRUE`; `OR_ELSE` only when left is `FALSE`. STruCpp codegen uses `&&`/`||`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_and_then.html |
 
 ### Strings, time, loops, FBs
 | # | Claim | Status |

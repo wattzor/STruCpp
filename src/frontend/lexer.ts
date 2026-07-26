@@ -330,7 +330,9 @@ export const FALSE = createToken({ name: "FALSE", pattern: /FALSE/i });
 
 // Logical operators
 export const AND = createToken({ name: "AND", pattern: /AND/i });
+export const AND_THEN = createToken({ name: "AND_THEN", pattern: /AND_THEN/i });
 export const OR = createToken({ name: "OR", pattern: /OR/i });
+export const OR_ELSE = createToken({ name: "OR_ELSE", pattern: /OR_ELSE/i });
 export const XOR = createToken({ name: "XOR", pattern: /XOR/i });
 export const NOT = createToken({ name: "NOT", pattern: /NOT/i });
 export const MOD = createToken({ name: "MOD", pattern: /MOD/i });
@@ -709,7 +711,9 @@ const keywordTokens = [
   RETURN,
   TRUE,
   FALSE,
+  AND_THEN,
   AND,
+  OR_ELSE,
   OR,
   XOR,
   NOT,
@@ -838,7 +842,9 @@ export const allTokens = [
   RETURN,
   TRUE,
   FALSE,
+  AND_THEN,
   AND,
+  OR_ELSE,
   OR,
   XOR,
   NOT,

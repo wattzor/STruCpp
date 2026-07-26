@@ -5009,7 +5009,9 @@ export class CodeGenerator {
     "/": "/",
     MOD: "%",
     AND: "&",
+    AND_THEN: "&&",
     OR: "|",
+    OR_ELSE: "||",
     XOR: "^",
     "=": "==",
     "<>": "!=",
@@ -5033,13 +5035,15 @@ export class CodeGenerator {
 
     const cppOp = CodeGenerator.BINARY_OP_MAP[expr.operator] ?? expr.operator;
 
-    // IEC 61131-3 AND/OR/XOR are always bitwise. C++ bitwise & | ^ have
-    // higher precedence than comparison operators (== != < >), unlike ST
-    // where AND/OR have lower precedence. Parenthesize operands to preserve
-    // the correct evaluation order.
+    // IEC 61131-3 AND/OR/XOR are always bitwise. C++ bitwise & | ^ and the
+    // short-circuit forms && || have different precedence than comparison
+    // operators, unlike ST where AND/OR have lower precedence. Parenthesize
+    // operands to preserve the correct evaluation order.
     if (
       expr.operator === "AND" ||
+      expr.operator === "AND_THEN" ||
       expr.operator === "OR" ||
+      expr.operator === "OR_ELSE" ||
       expr.operator === "XOR"
     ) {
       return `(${left}) ${cppOp} (${right})`;

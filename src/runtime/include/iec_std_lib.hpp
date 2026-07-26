@@ -353,21 +353,28 @@ inline T ATAN2(T y, T x) noexcept {
 
 /**
  * TRUNC - Truncate toward zero
- * Input: ANY_REAL, Output: ANY_REAL (integer part)
+ * Input: ANY_REAL, Output: DINT
+ * Returns the integer part of a REAL/LREAL value as DINT.
  */
-template<typename T, enable_if_any_real<T> = 0>
-inline T TRUNC(T value) noexcept {
-    return T(std::trunc(static_cast<double>(iec_unwrap(value))));
+inline IEC_DINT TRUNC(const IEC_REAL& value) noexcept {
+    return IEC_DINT(static_cast<int32_t>(std::trunc(static_cast<double>(iec_unwrap(value)))));
+}
+
+inline IEC_DINT TRUNC(const IEC_LREAL& value) noexcept {
+    return IEC_DINT(static_cast<int32_t>(std::trunc(iec_unwrap(value))));
 }
 
 /**
  * ROUND - Round to nearest integer
- * Input: ANY_REAL, Output: ANY_REAL
- * Rounds half away from zero (banker's rounding not used)
+ * Input: ANY_REAL, Output: DINT
+ * Half-way cases are rounded away from zero (not banker's rounding).
  */
-template<typename T, enable_if_any_real<T> = 0>
-inline T ROUND(T value) noexcept {
-    return T(std::round(static_cast<double>(iec_unwrap(value))));
+inline IEC_DINT ROUND(const IEC_REAL& value) noexcept {
+    return IEC_DINT(static_cast<int32_t>(std::round(static_cast<double>(iec_unwrap(value)))));
+}
+
+inline IEC_DINT ROUND(const IEC_LREAL& value) noexcept {
+    return IEC_DINT(static_cast<int32_t>(std::round(iec_unwrap(value))));
 }
 
 // =============================================================================
