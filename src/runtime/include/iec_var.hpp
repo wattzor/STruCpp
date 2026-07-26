@@ -371,14 +371,13 @@ private:
 // -----------------------------------------------------------------------------
 // IEC arithmetic result type.
 //
-// C++ `std::common_type` performs the usual arithmetic conversions, which
-// promote every integer narrower than `int` to `int`.  That breaks CODESYS
-// semantics where BYTE + WORD must wrap at 16 bits and INT + UINT must wrap
-// at 16 bits.  Instead, pick the IEC result by bit-width and signedness:
-//   * width = max(width(T), width(U))
-//   * signedness = signedness of the wider operand; when widths are equal,
-//     unsigned if either operand is unsigned (C usual-arithmetic rule).
-// For non-IEC raw types, fall back to `std::common_type`.
+// CODESYS computes temporary results with the target device's native width
+// (at least 32-bit on x86/ARM, 64-bit on x64) and only truncates when the
+// value is assigned or an explicit conversion (e.g. TO_WORD) is used.  Each IEC
+// integer operand is promoted to a type of at least IEC_NATIVE_WIDTH that can
+// represent all its values, then the C usual-arithmetic common type of the
+// two promoted types is used.  Real operands keep their real type and the
+// wider real type is selected.
 // -----------------------------------------------------------------------------
 namespace detail {
 
@@ -415,47 +414,63 @@ template<> struct iec_arith_select<64, true,  false> { using type = int64_t; };
 template<> struct iec_arith_select<64, false, false> { using type = uint64_t; };
 template<> struct iec_arith_select<64, true,  true>  { using type = double; };
 
-// SFINAE-friendly detection of `std::common_type<T, U>::type`.
-// If no common type exists (e.g. T is an IEC type and U is an unrelated class
-// like IECVar), we fall back to T so the operator signatures remain valid
-// while their `enable_if` guards reject the overload.
+// Native integer width: use the host pointer size as a stand-in for the
+// CODESYS target processor word size (32-bit on x86, 64-bit on x64).  This can
+// be overridden at compile time with -DSTRUCPP_TARGET_WIDTH=32 (or 64) to
+// match the actual CODESYS target and the published doc examples.
+#ifndef STRUCPP_TARGET_WIDTH
+#define STRUCPP_TARGET_WIDTH (sizeof(void*) * 8)
+#endif
+using iec_native_int_t = typename iec_arith_select<STRUCPP_TARGET_WIDTH, true, false>::type;
+using iec_native_uint_t = typename iec_arith_select<STRUCPP_TARGET_WIDTH, false, false>::type;
+static constexpr unsigned iec_native_width = STRUCPP_TARGET_WIDTH;
+
+// Promote an IEC integer to a type of at least the native width.  Unsigned
+// types are promoted to signed when the signed native-min type can represent
+// all their values, matching C integer promotion (e.g. BYTE -> int).
+template<typename T, bool IsIEC = iec_arith_info<T>::is_iec, bool IsReal = iec_arith_info<T>::is_real>
+struct iec_promote { using type = T; };
+
+template<typename T>
+struct iec_promote<T, true, false> {
+    static constexpr unsigned width = iec_arith_info<T>::width;
+    static constexpr bool is_signed = iec_arith_info<T>::is_signed;
+    static constexpr unsigned target_width = (width > iec_native_width) ? width : iec_native_width;
+    // Use a signed promotion when the wider signed type can hold every value
+    // of the source type.  For an unsigned type of width w and a signed type
+    // of width W, that is true exactly when W > w.
+    static constexpr bool promote_signed = is_signed || (target_width > width);
+    using type = typename iec_arith_select<target_width, promote_signed, false>::type;
+};
+
+template<typename T>
+struct iec_promote<T, true, true> { using type = T; };
+
+template<typename T>
+using iec_promote_t = typename iec_promote<T>::type;
+
+// SFINAE-friendly detection of `std::common_type<T, U>::type`.  If the two
+// types have no common type (e.g. an IECVar wrapper and an arithmetic type),
+// `iec_common_type_select::type` is `void` rather than a substitution failure.
 template<typename...>
 struct iec_voider { using type = void; };
 template<typename... Ts>
 using iec_void_t = typename iec_voider<Ts...>::type;
 
 template<typename T, typename U, typename = void>
-struct iec_common_type_fallback { static constexpr bool has = false; using type = T; };
+struct iec_common_type_select { using type = void; };
 
 template<typename T, typename U>
-struct iec_common_type_fallback<T, U, iec_void_t<typename std::common_type<T, U>::type>> {
-    static constexpr bool has = true;
+struct iec_common_type_select<T, U, iec_void_t<typename std::common_type<T, U>::type>> {
     using type = typename std::common_type<T, U>::type;
 };
 
-template<typename T, typename U, bool BothIEC = iec_arith_info<T>::is_iec && iec_arith_info<U>::is_iec>
-struct iec_arith_result_impl;
-
 template<typename T, typename U>
-struct iec_arith_result_impl<T, U, false> {
-    using type = typename iec_common_type_fallback<T, U>::type;
-};
-
-template<typename T, typename U>
-struct iec_arith_result_impl<T, U, true> {
-    static constexpr unsigned width =
-        (iec_arith_info<T>::width > iec_arith_info<U>::width)
-            ? iec_arith_info<T>::width
-            : iec_arith_info<U>::width;
-    static constexpr bool same_width = iec_arith_info<T>::width == iec_arith_info<U>::width;
-    static constexpr bool is_real = iec_arith_info<T>::is_real || iec_arith_info<U>::is_real;
-    static constexpr bool is_signed = is_real ? true :
-        (same_width
-            ? (iec_arith_info<T>::is_signed && iec_arith_info<U>::is_signed)
-            : (iec_arith_info<T>::width > iec_arith_info<U>::width
-                ? iec_arith_info<T>::is_signed
-                : iec_arith_info<U>::is_signed));
-    using type = typename iec_arith_select<width, is_signed, is_real>::type;
+struct iec_arith_result_impl {
+    using type = typename iec_common_type_select<
+        iec_promote_t<T>,
+        iec_promote_t<U>
+    >::type;
 };
 
 } // namespace detail
