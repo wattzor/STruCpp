@@ -99,6 +99,30 @@ jobs:
           console.log('All ' + data.numPassedTests + ' tests executed (0 skipped, 0 failed)');
         "
 
+  test-32bit-target:
+    name: CODESYS Semantics (32-bit target width)
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    env:
+      STRUCPP_TARGET_WIDTH: "32"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run CODESYS semantics tests under 32-bit target width
+        run: npx vitest run tests/integration/codesys-semantics.test.ts tests/integration/codesys-semantics-assumed.test.ts tests/integration/codesys-semantics-target.test.ts
+
   extension:
     name: Extension Build & Test
     runs-on: ubuntu-latest

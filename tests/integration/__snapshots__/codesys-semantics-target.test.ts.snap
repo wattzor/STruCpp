@@ -1,0 +1,13 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`CODESYS semantics at target width 32 bit > DINT overflow temporary depends on target width @oracle: codesys-doc 1`] = `"-2147483648"`;
+
+exports[`CODESYS semantics at target width 32 bit > DINT overflow temporary sign test depends on target width @oracle: codesys-doc 1`] = `"1"`;
+
+exports[`CODESYS semantics at target width 32 bit > UDINT overflow temporary depends on target width @oracle: codesys-doc 1`] = `"1410065408"`;
+
+exports[`CODESYS semantics at target width 64 bit > DINT overflow temporary depends on target width @oracle: codesys-doc 1`] = `"2147483648"`;
+
+exports[`CODESYS semantics at target width 64 bit > DINT overflow temporary sign test depends on target width @oracle: codesys-doc 1`] = `"0"`;
+
+exports[`CODESYS semantics at target width 64 bit > UDINT overflow temporary depends on target width @oracle: codesys-doc 1`] = `"10000000000"`;

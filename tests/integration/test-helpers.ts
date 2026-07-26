@@ -80,6 +80,15 @@ export const hasCc = (() => {
 })();
 
 /**
+ * Extra C++ flags from the environment. Setting STRUCPP_TARGET_WIDTH=32/64
+ * lets the test suite run against a non-host CODESYS target width.
+ */
+function envCxxFlags(): string[] {
+  const w = process.env.STRUCPP_TARGET_WIDTH;
+  return w ? [`-DSTRUCPP_TARGET_WIDTH=${w}`] : [];
+}
+
+/**
  * Create a precompiled header in the given temp directory.
  * Returns the path to the .hpp file (g++ finds the .gch automatically).
  */
@@ -88,7 +97,7 @@ export function createPCH(tempDir: string, extraFlags: string[] = []): string {
   const pchGchPath = pchHppPath + '.gch';
 
   fs.writeFileSync(pchHppPath, PCH_INCLUDES);
-  const flagsStr = extraFlags.join(' ');
+  const flagsStr = [...envCxxFlags(), ...extraFlags].join(' ');
   execSync(
     `g++ -std=c++17 -x c++-header ${flagsStr} -I"${RUNTIME_INCLUDE_PATH}" "${pchHppPath}" -o "${pchGchPath}" 2>&1`,
     { encoding: 'utf-8', env: cxxEnv },
@@ -158,7 +167,7 @@ export function compileWithGpp(opts: CompileWithGppOptions): CompileResult {
     ...extraIncludes.map((p) => `-I"${p}"`),
   ].join(' ');
 
-  const flagsStr = extraFlags.join(' ');
+  const flagsStr = [...envCxxFlags(), ...extraFlags].join(' ');
   const objectsStr = extraObjects.map((o) => `"${o}"`).join(' ');
 
   try {

@@ -18,6 +18,7 @@
  *   --build                   Compile to executable binary with interactive REPL
  *   --gpp <path>              Custom g++ path (default: g++)
  *   --cc <path>               Custom C compiler path (default: cc)
+ *   --target-width <32|64>    CODESYS target integer width (default: 32)
  *   --cxx-flags <flags>       Extra C++ compiler flags
  *   -L, --lib-path <path>     Library search path (repeatable)
  *   --compile-lib             Compile sources into a library
@@ -79,6 +80,7 @@ interface CLIOptions {
   gpp: string;
   cc: string;
   cxxFlags: string;
+  targetWidth: 32 | 64;
   libraryPaths: string[];
   noDefaultLibs: boolean;
   compileLib: boolean;
@@ -149,6 +151,7 @@ function parseArgs(args: string[]): CLIOptions {
     gpp: "g++",
     cc: process.platform === "win32" ? "gcc" : "cc",
     cxxFlags: "",
+    targetWidth: 32,
     libraryPaths: [],
     noDefaultLibs: false,
     compileLib: false,
@@ -200,6 +203,12 @@ function parseArgs(args: string[]): CLIOptions {
       const nextArg = args[i];
       if (nextArg !== undefined) {
         options.cc = nextArg;
+      }
+    } else if (arg === "--target-width") {
+      i++;
+      const nextArg = args[i];
+      if (nextArg === "32" || nextArg === "64") {
+        options.targetWidth = parseInt(nextArg, 10) as 32 | 64;
       }
     } else if (arg === "--cxx-flags") {
       i++;
@@ -310,6 +319,7 @@ Options:
   --build                   Compile to executable with interactive REPL
   --gpp <path>              Custom g++ path (default: g++)
   --cc <path>               Custom C compiler path (default: cc)
+  --target-width <32|64>    CODESYS target integer width (default: 32)
   --cxx-flags <flags>       Extra C++ compiler flags
   -L, --lib-path <path>     Library search path (repeatable)
   --no-default-libs         Do not auto-add bundled library paths
@@ -746,6 +756,7 @@ function runTestMode(options: CLIOptions): void {
         options.gpp,
         [
           "-std=c++17",
+          `-DSTRUCPP_TARGET_WIDTH=${options.targetWidth}`,
           `-I${runtimeIncludeDir}`,
           `-I${testRuntimeDir}`,
           `-I${tempDir}`,
@@ -1167,6 +1178,7 @@ async function main(): Promise<void> {
     // Step 2: Compile C++ and link with isocline.o (uses execFileSync to avoid shell injection)
     const gppArgs = [
       "-std=c++17",
+      `-DSTRUCPP_TARGET_WIDTH=${options.targetWidth}`,
       `-I${runtimeIncludeDir}`,
       `-I${replDir}`,
       `-I${outputDir}`,
