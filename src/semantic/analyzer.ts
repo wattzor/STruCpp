@@ -16,8 +16,11 @@ import type {
   Expression,
   FunctionBlockDeclaration,
   FunctionCallExpression,
+  IECType,
   MethodDeclaration,
   MockFunctionStatement,
+  ReferenceKind,
+  ReferenceType,
   TypeDefinition,
   TypeReference,
   VarBlock,
@@ -225,12 +228,27 @@ export class SemanticAnalyzer {
   /**
    * Resolve a type name to its registered type (preserves enum typeKind)
    * or fall back to a generic elementary type for unknown/user-defined types.
+   * When a reference kind is supplied, wrap the base type in a ReferenceType
+   * so POINTER TO / REF_TO / REFERENCE TO variables keep their pointer/reference
+   * semantics during type checking.
    */
-  private resolveVarType(typeName: string): EnumType | ElementaryType {
+  private resolveVarType(
+    typeName: string,
+    referenceKind?: ReferenceKind,
+  ): IECType {
     const typeSymbol = this.symbolTables.globalScope.lookup(typeName);
-    return typeSymbol?.kind === "type" && typeSymbol.resolvedType
-      ? (typeSymbol.resolvedType as EnumType | ElementaryType)
-      : { typeKind: "elementary" as const, name: typeName, sizeBits: 0 };
+    const baseType: IECType =
+      typeSymbol?.kind === "type" && typeSymbol.resolvedType
+        ? (typeSymbol.resolvedType as EnumType | ElementaryType)
+        : { typeKind: "elementary" as const, name: typeName, sizeBits: 0 };
+    if (referenceKind && referenceKind !== "none") {
+      return {
+        typeKind: "reference",
+        referencedType: baseType,
+        isImplicitDeref: referenceKind === "reference_to",
+      } as ReferenceType;
+    }
+    return baseType;
   }
 
   /**
@@ -313,6 +331,7 @@ export class SemanticAnalyzer {
       try {
         const returnType = this.resolveVarType(
           funcDecl.returnType.name.toUpperCase(),
+          funcDecl.returnType.referenceKind,
         );
         this.symbolTables.globalScope.defineOrReplace({
           name: funcDecl.name,
@@ -379,7 +398,10 @@ export class SemanticAnalyzer {
             );
             // Register method return variable (MethodName := value)
             if (method.returnType) {
-              const retType = this.resolveVarType(method.returnType.name);
+              const retType = this.resolveVarType(
+                method.returnType.name,
+                method.returnType.referenceKind,
+              );
               methodScope.define({
                 name: method.name,
                 kind: "variable",
@@ -427,7 +449,10 @@ export class SemanticAnalyzer {
                 fbDecl.name,
               );
               // Register implicit result/input variable (PropName := value / := PropName)
-              const propType = this.resolveVarType(prop.type.name);
+              const propType = this.resolveVarType(
+                prop.type.name,
+                prop.type.referenceKind,
+              );
               propScope.define({
                 name: prop.name,
                 kind: "variable",
@@ -526,7 +551,10 @@ export class SemanticAnalyzer {
       for (const decl of block.declarations) {
         for (const name of decl.names) {
           try {
-            const varType = this.resolveVarType(decl.type.name);
+            const varType = this.resolveVarType(
+              decl.type.name,
+              decl.type.referenceKind,
+            );
             if (block.isConstant) {
               this.symbolTables.globalScope.define({
                 name,
@@ -580,7 +608,10 @@ export class SemanticAnalyzer {
       for (const decl of block.declarations) {
         for (const name of decl.names) {
           try {
-            const varType = this.resolveVarType(decl.type.name);
+            const varType = this.resolveVarType(
+              decl.type.name,
+              decl.type.referenceKind,
+            );
             if (block.isConstant) {
               scope.define({
                 name,
