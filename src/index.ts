@@ -381,6 +381,7 @@ function runPipeline(
       parseResult.cst,
       mergedOptions.fileName ?? "main.st",
       globalConstants,
+      parseResult.comments,
     );
     const units: CompilationUnit[] = [primaryAst];
 
@@ -443,6 +444,7 @@ function runPipeline(
                 addlParseResult.cst,
                 addlSource.fileName,
                 globalConstants,
+                addlParseResult.comments,
               ),
             );
           } catch (e) {
@@ -896,7 +898,12 @@ export function parse(source: string): {
     return { errors };
   }
   try {
-    const ast = buildAST(parseResult.cst);
+    const ast = buildAST(
+      parseResult.cst,
+      undefined,
+      undefined,
+      parseResult.comments,
+    );
     return { ast, errors };
   } catch (e) {
     errors.push({

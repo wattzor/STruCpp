@@ -93,6 +93,20 @@ function tokenToSourceSpan(token: IToken): SourceSpan {
 }
 
 /**
+ * Strip ST comment delimiters and trim whitespace.
+ * Preserves nested block-comment delimiters inside the body.
+ */
+function cleanCommentText(image: string): string {
+  if (image.startsWith("//")) {
+    return image.slice(2).trim();
+  }
+  if (image.startsWith("(*") && image.endsWith("*)")) {
+    return image.slice(2, -2).trim();
+  }
+  return image.trim();
+}
+
+/**
  * Create a source span from a CST node.
  */
 function nodeToSourceSpan(node: CstNode): SourceSpan {
@@ -326,9 +340,70 @@ export class ASTBuilder {
   /** Global constants that persist across POU scans (never cleared). */
   private globalConstantMap: Map<string, number> = new Map();
 
+  /** Captured comment tokens, sorted by source offset. */
+  private comments: IToken[];
+
+  /** Index of the next unused comment in the sorted list. */
+  private nextCommentIdx = 0;
+
+  constructor(comments?: IToken[]) {
+    this.comments = (comments ?? [])
+      .slice()
+      .sort((a, b) => a.startOffset - b.startOffset);
+  }
+
   /** Seed a global constant for dimension resolution. */
   setGlobalConstant(name: string, value: number): void {
     this.globalConstantMap.set(name.toUpperCase(), value);
+  }
+
+  /**
+   * Bind a comment token to a variable declaration.
+   * - trailing comment on the same line as the declaration binds to it
+   * - otherwise a comment on the immediately preceding line binds to it
+   * - anything else is discarded
+   */
+  private findComment(node: CstNode): string | undefined {
+    const span = nodeToSourceSpan(node);
+
+    while (this.nextCommentIdx < this.comments.length) {
+      const comment = this.comments[this.nextCommentIdx]!;
+      const commentStartLine = comment.startLine ?? 0;
+      const commentEndLine = comment.endLine ?? commentStartLine;
+      const commentStartColumn = comment.startColumn ?? 0;
+      const commentEndColumn = comment.endColumn ?? 0;
+
+      // Trailing: same line as declaration end, starting after the declaration
+      if (
+        commentStartLine === span.endLine &&
+        commentStartColumn > span.endCol
+      ) {
+        this.nextCommentIdx++;
+        return cleanCommentText(comment.image);
+      }
+
+      // Preceding: comment ends on the line immediately before the declaration
+      if (commentEndLine === span.startLine - 1) {
+        this.nextCommentIdx++;
+        return cleanCommentText(comment.image);
+      }
+
+      // Discard comments that are wholly before this declaration and cannot
+      // bind to any later declaration (they would be too far above).
+      if (
+        commentEndLine < span.startLine ||
+        (commentEndLine === span.startLine && commentEndColumn < span.startCol)
+      ) {
+        this.nextCommentIdx++;
+        continue;
+      }
+
+      // Comment is inside or after the node but does not match the binding
+      // rules; stop to avoid binding it to a later declaration by mistake.
+      break;
+    }
+
+    return undefined;
   }
 
   /**
@@ -1421,8 +1496,10 @@ export class ASTBuilder {
       }
     }
 
+    const comment = this.findComment(node);
+
     // Use conditional spreading for optional properties to comply with exactOptionalPropertyTypes
-    return {
+    const result: VarDeclaration = {
       kind: "VarDeclaration",
       sourceSpan: nodeToSourceSpan(node),
       names,
@@ -1430,6 +1507,10 @@ export class ASTBuilder {
       ...(initialValue !== undefined ? { initialValue } : {}),
       ...(address !== undefined ? { address } : {}),
     };
+    if (comment !== undefined) {
+      result.comment = comment;
+    }
+    return result;
   }
 
   /**
@@ -3812,8 +3893,9 @@ export function buildAST(
   cst: CstNode,
   fileName?: string,
   globalConstants?: Record<string, number>,
+  comments?: IToken[],
 ): CompilationUnit {
-  const builder = new ASTBuilder();
+  const builder = new ASTBuilder(comments);
   // Seed the constant map with global constants (e.g., STRING_LENGTH, LIST_LENGTH)
   // so inline array dimensions like ARRAY[0..STRING_LENGTH] resolve correctly.
   if (globalConstants) {
@@ -3837,8 +3919,9 @@ export function buildAST(
 export function buildTestAST(
   cst: CstNode,
   fileName: string,
+  comments?: IToken[],
 ): import("./ast.js").TestFile {
-  const builder = new ASTBuilder();
+  const builder = new ASTBuilder(comments);
   const testFile = builder.buildTestFile(cst);
   testFile.fileName = fileName;
   // Set file on all sourceSpan objects
