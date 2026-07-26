@@ -165,6 +165,11 @@ describe("system-types", () => {
       expect(ma?.name).toBe("MEMORY_AREA");
     });
 
+    it("requires the __SYSTEM prefix for enum type lookup", () => {
+      expect(getSystemEnumType("TYPE_CLASS")).toBeUndefined();
+      expect(getSystemEnumType("MEMORY_AREA")).toBeUndefined();
+    });
+
     it("resolves __SYSTEM enum member access", () => {
       const boolEntry = resolveSystemAccess(["TYPE_CLASS", "TYPE_BOOL"]);
       expect(boolEntry?.kind).toBe("enumValue");

@@ -234,13 +234,14 @@ export function resolveSystemAccess(
 
 /**
  * Resolve an IEC type name to the corresponding __SYSTEM enum type, if any.
- * Accepts both "TYPE_CLASS" and "__SYSTEM.TYPE_CLASS" forms.
+ * Requires the "__SYSTEM." prefix: TYPE_CLASS and MEMORY_AREA are
+ * `{attribute 'qualified_only'}` and must be referenced as
+ * `__SYSTEM.TYPE_CLASS` / `__SYSTEM.MEMORY_AREA`.
  */
 export function getSystemEnumType(name: string): EnumType | undefined {
-  let n = name.toUpperCase();
-  if (n.startsWith("__SYSTEM.")) {
-    n = n.slice("__SYSTEM.".length);
-  }
+  const upper = name.toUpperCase();
+  if (!upper.startsWith("__SYSTEM.")) return undefined;
+  const n = upper.slice("__SYSTEM.".length);
   if (!SYSTEM_ENUM_NAMES.has(n)) return undefined;
   return {
     typeKind: "enum",
@@ -262,12 +263,12 @@ export function isSystemTypeReference(name: string): boolean {
 
 /**
  * Resolve a __SYSTEM qualified type name to its IECType (enum or struct).
+ * The "__SYSTEM." prefix is required (`qualified_only`).
  */
 export function getSystemType(name: string): IECType | undefined {
   const upper = name.toUpperCase();
-  const suffix = upper.startsWith("__SYSTEM.")
-    ? upper.slice("__SYSTEM.".length)
-    : upper;
+  if (!upper.startsWith("__SYSTEM.")) return undefined;
+  const suffix = upper.slice("__SYSTEM.".length);
   if (suffix === "VAR_INFO") return VAR_INFO_TYPE;
   return getSystemEnumType(name);
 }
