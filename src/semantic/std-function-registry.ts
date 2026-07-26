@@ -228,13 +228,28 @@ export class StdFunctionRegistry {
       category: "numeric",
     });
 
-    // Real-only functions: SQRT, LN, LOG, EXP, TRUNC, ROUND
-    for (const fn of ["SQRT", "LN", "LOG", "EXP", "TRUNC", "ROUND"]) {
+    // Real-only functions: SQRT, LN, LOG, EXP -> ANY_REAL
+    for (const fn of ["SQRT", "LN", "LOG", "EXP"]) {
       this.register({
         name: fn,
         cppName: fn,
         returnConstraint: "ANY_REAL",
         returnMatchesFirstParam: true,
+        params: [{ name: "IN", constraint: "ANY_REAL", isByRef: false }],
+        isVariadic: false,
+        isConversion: false,
+        category: "numeric",
+      });
+    }
+
+    // TRUNC and ROUND convert ANY_REAL to DINT (CODESYS V3 / IEC 61131-3)
+    for (const fn of ["TRUNC", "ROUND"]) {
+      this.register({
+        name: fn,
+        cppName: fn,
+        returnConstraint: "specific",
+        returnMatchesFirstParam: false,
+        specificReturnType: "DINT",
         params: [{ name: "IN", constraint: "ANY_REAL", isByRef: false }],
         isVariadic: false,
         isConversion: false,
