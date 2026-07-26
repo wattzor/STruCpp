@@ -61,20 +61,6 @@ describe('Phase 2.4 - References and Pointers', () => {
       expect(decl?.type.name).toBe('MYSTRUCT');
     });
 
-    it.todo('should parse nested REF_TO REF_TO type (pending grammar extension)', () => {
-      // Note: Nested REF_TO types like `REF_TO REF_TO INT` require
-      // grammar changes to support recursive type references.
-      // This is tracked for a future enhancement.
-      const source = `
-        PROGRAM Main
-          VAR
-            nested_ref : REF_TO REF_TO INT;
-          END_VAR
-        END_PROGRAM
-      `;
-      const result = parse(source);
-      expect(result.errors).toHaveLength(0);
-    });
   });
 
   describe('Parser: REFERENCE_TO Type (CODESYS)', () => {

@@ -1704,6 +1704,14 @@ export class CodeGenerator {
       }
     }
 
+    if (fb.implements && fb.implements.length > 0) {
+      this.emitHeader("");
+      this.emitHeader("    // Interface query support");
+      this.emitHeader(
+        `    bool __strucpp_query_interface(const char* id, void*& out) const override;`,
+      );
+    }
+
     // Test build: add mock infrastructure
     if (this.options.isTestBuild) {
       this.emitHeader("");
@@ -1847,16 +1855,20 @@ export class CodeGenerator {
   private generateInterfaceHeaderDeclaration(
     iface: InterfaceDeclaration,
   ): void {
-    const extendsClause =
-      iface.extends && iface.extends.length > 0
-        ? ` : ${iface.extends.map((e) => `virtual public ${e}`).join(", ")}`
-        : "";
+    const bases: string[] = ["virtual public strucpp::__IInterface"];
+    if (iface.extends && iface.extends.length > 0) {
+      for (const e of iface.extends) bases.push(`virtual public ${e}`);
+    }
+    const extendsClause = bases.length > 0 ? ` : ${bases.join(", ")}` : "";
 
     this.emitHeaderLineDirective(iface.sourceSpan.startLine);
     const classLine = this.currentHeaderLine;
     this.emitHeader(`class ${iface.name}${extendsClause} {`);
     this.emitHeader("public:");
     this.emitHeader(`    virtual ~${iface.name}() = default;`);
+    this.emitHeader(
+      `    static const char* __strucpp_interface_name() { return "${iface.name.toUpperCase()}"; }`,
+    );
     this.recordHeaderLineMapping(iface.sourceSpan.startLine, classLine);
 
     for (const method of iface.methods) {
@@ -2401,6 +2413,24 @@ export class CodeGenerator {
       this.enterScope(fb.varBlocks);
       this.generatePropertyImplementation(prop, fb.name);
       this.exitScope();
+    }
+
+    // Interface query implementation
+    if (fb.implements && fb.implements.length > 0) {
+      this.emit(
+        `bool ${fb.name}::__strucpp_query_interface(const char* id, void*& out) const {`,
+      );
+      for (const { upper, original } of this.getImplementedInterfaceNames(fb)) {
+        this.emit(`    if (std::strcmp(id, "${upper}") == 0) {`);
+        this.emit(
+          `        out = static_cast<${original}*>(const_cast<${fb.name}*>(this));`,
+        );
+        this.emit(`        return true;`);
+        this.emit(`    }`);
+      }
+      this.emit(`    return false;`);
+      this.emit("}");
+      this.emit("");
     }
 
     this.currentFBName = undefined;
@@ -6119,6 +6149,45 @@ export class CodeGenerator {
         for (const m of methods) result.add(m);
       }
     }
+    return result;
+  }
+
+  /**
+   * Collect the (UPPER, original) names of every interface implemented by a FB,
+   * including interfaces inherited through interface EXTENDS and FB EXTENDS.
+   */
+  private getImplementedInterfaceNames(
+    fb: CompilationUnit["functionBlocks"][0],
+  ): Array<{ upper: string; original: string }> {
+    const result: Array<{ upper: string; original: string }> = [];
+    const seen = new Set<string>();
+    const ifaceMap = new Map(
+      this.ast!.interfaces.map((i) => [i.name.toUpperCase(), i] as const),
+    );
+    const fbMap = new Map(
+      this.ast!.functionBlocks.map((f) => [f.name.toUpperCase(), f] as const),
+    );
+    const visit = (name: string) => {
+      const upper = name.toUpperCase();
+      if (seen.has(upper)) return;
+      seen.add(upper);
+      const iface = ifaceMap.get(upper);
+      if (iface) {
+        result.push({ upper, original: iface.name });
+        if (iface.extends) {
+          for (const e of iface.extends) visit(e);
+        }
+      }
+    };
+    const visitFB = (fbName: string) => {
+      const f = fbMap.get(fbName.toUpperCase());
+      if (!f) return;
+      if (f.implements) {
+        for (const ifaceName of f.implements) visit(ifaceName);
+      }
+      if (f.extends) visitFB(f.extends);
+    };
+    visitFB(fb.name);
     return result;
   }
 

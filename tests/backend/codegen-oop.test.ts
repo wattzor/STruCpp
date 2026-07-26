@@ -104,8 +104,9 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
         PROGRAM Main END_PROGRAM
       `);
 
-      // Header: abstract class
-      expect(result.headerCode).toContain("class IMOVABLE {");
+      // Header: abstract class with type-tag support
+      expect(result.headerCode).toContain("class IMOVABLE : virtual public strucpp::__IInterface {");
+      expect(result.headerCode).toContain("static const char* __strucpp_interface_name() { return \"IMOVABLE\"; }");
       expect(result.headerCode).toContain("virtual ~IMOVABLE() = default;");
       expect(result.headerCode).toContain(
         "virtual void MOVE(IEC_REAL DISTANCE) = 0;",
@@ -122,7 +123,8 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
         PROGRAM Main END_PROGRAM
       `);
 
-      expect(result.headerCode).toContain("class IREADABLE {");
+      expect(result.headerCode).toContain("class IREADABLE : virtual public strucpp::__IInterface {");
+      expect(result.headerCode).toContain("static const char* __strucpp_interface_name() { return \"IREADABLE\"; }");
       expect(result.headerCode).toContain("virtual IEC_INT READ() = 0;");
     });
 
@@ -856,7 +858,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
         PROGRAM Main END_PROGRAM
       `);
 
-      expect(result.headerCode).toContain("class IDERIVED : virtual public IBASE {");
+      expect(result.headerCode).toContain("class IDERIVED : virtual public strucpp::__IInterface, virtual public IBASE {");
     });
 
     it("should generate correct pure virtual methods for derived interface", () => {
@@ -978,7 +980,8 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       `);
 
       // Interface
-      expect(result.headerCode).toContain("class ICONTROLLABLE {");
+      expect(result.headerCode).toContain("class ICONTROLLABLE : virtual public strucpp::__IInterface {");
+      expect(result.headerCode).toContain("static const char* __strucpp_interface_name() { return \"ICONTROLLABLE\"; }");
       expect(result.headerCode).toContain("virtual void START() = 0;");
       expect(result.headerCode).toContain("virtual void STOP() = 0;");
 

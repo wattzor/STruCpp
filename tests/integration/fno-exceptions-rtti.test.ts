@@ -150,4 +150,59 @@ describe.skipIf(!hasGpp)("Generated code under -fno-exceptions and -fno-rtti", (
 
     expect(stdout).toBe("");
   });
+
+  it("E3: __QUERYINTERFACE works under -fno-exceptions -fno-rtti", () => {
+    const result = compile(`
+      INTERFACE IValue
+        METHOD GetValue : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Counter IMPLEMENTS IValue
+        VAR count : INT; END_VAR
+        METHOD PUBLIC GetValue : INT
+          GetValue := count;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        c : Counter;
+        iv : IValue;
+        ok : BOOL;
+        v : INT;
+      END_VAR
+        ok := __QUERYINTERFACE(c, iv);
+        v := iv.GetValue();
+      END_PROGRAM
+    `);
+
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "fno_query_interface",
+      mainCode: `
+#include <iostream>
+#include <cstdlib>
+namespace strucpp {
+[[noreturn]] void iec_runtime_fault(IecFault, const char*) noexcept {
+    std::exit(1);
+}
+}
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << (prog.OK.get() ? "ok" : "no") << ":" << prog.V.get() << std::endl;
+    return 0;
+}
+`,
+      extraFlags: fnoFlags,
+    });
+
+    expect(stdout).toBe("ok:0");
+  });
 });
