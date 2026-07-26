@@ -169,10 +169,10 @@ export const VAR_INFO_TYPE: StructType = {
   name: "VAR_INFO",
   fields: new Map<string, IECType>([
     ["BYTEADDRESS", elementaryType("DWORD")],
-    ["BYTEOFFSET", elementaryType("DWORD")],
-    ["AREA", elementaryType("DINT")],
+    ["BYTEOFFSET", elementaryType("DINT")],
+    ["AREA", elementaryType("INT")],
     ["BITNR", elementaryType("INT")],
-    ["BITSIZE", elementaryType("INT")],
+    ["BITSIZE", elementaryType("UDINT")],
     ["BITADDRESS", elementaryType("UDINT")],
     ["TYPECLASS", systemEnumType("TYPE_CLASS")],
     ["TYPENAME", elementaryType("STRING")],

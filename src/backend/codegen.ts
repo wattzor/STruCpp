@@ -9,7 +9,6 @@
 
 import type {
   CompilationUnit,
-  VarBlock,
   VarDeclaration,
   Statement,
   Expression,
@@ -61,6 +60,12 @@ import {
   parseTodLiteralToNs,
 } from "../project-model.js";
 import { isElementaryType, TypeRegistry } from "../semantic/type-registry.js";
+import {
+  resolveTypeClass,
+  TYPE_CLASS,
+  TYPE_CLASS_NAME,
+  getSystemType,
+} from "../semantic/system-types.js";
 import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
 import { formatArrayType, iecBaseToCppLiteral } from "./codegen-utils.js";
 import {
@@ -74,12 +79,6 @@ import {
   type EnumMemberEntry,
   ELEMENTARY_TYPES,
 } from "../semantic/type-utils.js";
-import {
-  resolveTypeClass,
-  TYPE_CLASS,
-  TYPE_CLASS_NAME,
-  getSystemType,
-} from "../semantic/system-types.js";
 
 // =============================================================================
 // Located Variable Support
@@ -3968,8 +3967,20 @@ export class CodeGenerator {
       : TYPE_CLASS.TYPE_NONE;
     const typeClassName = TYPE_CLASS_NAME.get(typeClass) ?? "TYPE_NONE";
     const bitSize = targetType ? this.getTypeBitsForIECType(targetType) : 0;
-    const elemBitSize = bitSize;
-    const numElements = 0;
+
+    let elemBitSize = 0;
+    let numElements = 0;
+    let baseTypeClassName = "TYPE_BOOL";
+    if (targetType?.typeKind === "array") {
+      const arr = targetType as ArrayType;
+      elemBitSize = this.getTypeBitsForIECType(arr.elementType);
+      numElements = 1;
+      for (const dim of arr.dimensions) {
+        numElements *= Math.max(1, dim.end - dim.start + 1);
+      }
+      const baseTypeClass = resolveTypeClass(arr.elementType);
+      baseTypeClassName = TYPE_CLASS_NAME.get(baseTypeClass) ?? "TYPE_NONE";
+    }
 
     const symbolName = this.generateVarInfoSymbol(arg);
     const declaration = this.findVarDeclaration(arg.name);
@@ -3981,15 +3992,15 @@ export class CodeGenerator {
 
     const fields = [
       `/*BYTEADDRESS=*/ IEC_DWORD(${this.formatHex(byteAddress)}u)`,
-      `/*BYTEOFFSET=*/ IEC_DWORD(0u)`,
-      `/*AREA=*/ IEC_DINT(0)`,
+      `/*BYTEOFFSET=*/ IEC_DINT(0)`,
+      `/*AREA=*/ IEC_INT(-1)`,
       `/*BITNR=*/ IEC_INT(-1)`,
-      `/*BITSIZE=*/ IEC_INT(${bitSize})`,
+      `/*BITSIZE=*/ IEC_UDINT(${bitSize}u)`,
       `/*BITADDRESS=*/ IEC_UDINT(0u)`,
       `/*TYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${typeClassName})`,
       `/*TYPENAME=*/ strucpp::IECString<79>("${this.escapeCString(typeClassName)}")`,
       `/*NUMELEMENTS=*/ IEC_UDINT(${numElements}u)`,
-      `/*BASETYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${typeClassName})`,
+      `/*BASETYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${baseTypeClassName})`,
       `/*ELEMBITSIZE=*/ IEC_UDINT(${elemBitSize}u)`,
       `/*MEMORYAREA=*/ IEC_MEMORY_AREA(strucpp::__SYSTEM::MEMORY_AREA::MEM_LOCAL)`,
       `/*SYMBOL=*/ strucpp::IECString<39>("${this.escapeCString(symbolName)}")`,
