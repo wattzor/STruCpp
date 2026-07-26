@@ -564,6 +564,7 @@ export class CodeGenerator {
       referenceKind?: string;
       arrayDimensions?: Array<{ start: number; end: number }>;
       elementTypeName?: string;
+      elementReferenceKind?: string;
     },
   >(
     typeRef: T,
@@ -573,6 +574,7 @@ export class CodeGenerator {
     referenceKind?: string;
     arrayDimensions?: Array<{ start: number; end: number }>;
     elementTypeName?: string;
+    elementReferenceKind?: string;
   } {
     const upper = typeRef.name.toUpperCase();
     const isString = upper === "STRING" || upper === "WSTRING";
@@ -586,6 +588,9 @@ export class CodeGenerator {
         : {}),
       ...(typeRef.elementTypeName !== undefined
         ? { elementTypeName: typeRef.elementTypeName }
+        : {}),
+      ...(typeRef.elementReferenceKind !== undefined
+        ? { elementReferenceKind: typeRef.elementReferenceKind }
         : {}),
       ...(typeRef.referenceKind !== undefined
         ? { referenceKind: typeRef.referenceKind }
@@ -606,6 +611,7 @@ export class CodeGenerator {
     maxLength?: number | string;
     arrayDimensions?: Array<{ start: number; end: number }>;
     elementTypeName?: string;
+    elementReferenceKind?: string;
     referenceKind?: string;
   }): {
     name: string;
@@ -613,6 +619,7 @@ export class CodeGenerator {
     referenceKind?: string;
     arrayDimensions?: Array<{ start: number; end: number }>;
     elementTypeName?: string;
+    elementReferenceKind?: string;
   } {
     return {
       name: spec.typeName,
@@ -622,6 +629,9 @@ export class CodeGenerator {
         : {}),
       ...(spec.elementTypeName !== undefined
         ? { elementTypeName: spec.elementTypeName }
+        : {}),
+      ...(spec.elementReferenceKind !== undefined
+        ? { elementReferenceKind: spec.elementReferenceKind }
         : {}),
       ...(spec.referenceKind !== undefined
         ? { referenceKind: spec.referenceKind }
@@ -635,6 +645,7 @@ export class CodeGenerator {
     referenceKind?: string;
     arrayDimensions?: Array<{ start: number; end: number }>;
     elementTypeName?: string;
+    elementReferenceKind?: string;
   }): string {
     let baseType: string;
 
@@ -642,7 +653,15 @@ export class CodeGenerator {
     // Array1D stores T directly — use IECVar-wrapped types for elementary elements
     // and bare names for composites (whose fields already contain IECVar leaves)
     if (typeRef.arrayDimensions && typeRef.elementTypeName) {
-      const elemCpp = this.mapVarTypeToCpp(typeRef.elementTypeName);
+      let elemCpp = this.mapVarTypeToCpp(typeRef.elementTypeName);
+      // Wrap the element type if the array is OF POINTER/REF_TO/REFERENCE TO T
+      if (typeRef.elementReferenceKind === "pointer_to") {
+        elemCpp = `IEC_Ptr<${elemCpp}>`;
+      } else if (typeRef.elementReferenceKind === "ref_to") {
+        elemCpp = `IEC_REF_TO<${elemCpp}>`;
+      } else if (typeRef.elementReferenceKind === "reference_to") {
+        elemCpp = `IEC_REFERENCE_TO<${elemCpp}>`;
+      }
       baseType = formatArrayType(elemCpp, typeRef.arrayDimensions);
     } else {
       baseType = this.mapVarTypeToCpp(
@@ -2549,6 +2568,9 @@ export class CodeGenerator {
           ...(decl.elementTypeName !== undefined
             ? { elementTypeName: decl.elementTypeName }
             : {}),
+          ...(decl.elementReferenceKind !== undefined
+            ? { elementReferenceKind: decl.elementReferenceKind }
+            : {}),
           ...(decl.referenceKind !== undefined
             ? { referenceKind: decl.referenceKind }
             : {}),
@@ -2878,6 +2900,9 @@ export class CodeGenerator {
             : {}),
           ...(gvar.elementTypeName !== undefined
             ? { elementTypeName: gvar.elementTypeName }
+            : {}),
+          ...(gvar.elementReferenceKind !== undefined
+            ? { elementReferenceKind: gvar.elementReferenceKind }
             : {}),
           ...(gvar.referenceKind !== undefined
             ? { referenceKind: gvar.referenceKind }
@@ -3875,7 +3900,15 @@ export class CodeGenerator {
       if (typeName && this.knownInterfaceTypes.has(typeName.toUpperCase())) {
         return this.generateExpression(expr);
       }
-      if (nameUpper === "THIS" && ve.isDereference) {
+      if (
+        nameUpper === "THIS" &&
+        ve.fieldAccess.length === 0 &&
+        ve.subscripts.length === 0 &&
+        (ve.isDereference ||
+          !ve.accessChain ||
+          (ve.accessChain.length === 1 &&
+            ve.accessChain[0]!.kind === "dereference"))
+      ) {
         return "this";
       }
       if (
@@ -4390,6 +4423,15 @@ export class CodeGenerator {
             result += `.at(${args.join(", ")})`;
           } else if (step.indices.length === 1) {
             result += `.at(${this.generateExpression(step.indices[0]!)})`;
+          }
+          // After indexing an array, subsequent field/method accesses apply to
+          // the element type, so update currentType for correct mangling and
+          // property/method resolution.
+          if (this.ast && currentType) {
+            const elemType = resolveArrayElementType(currentType, this.ast);
+            if (elemType) {
+              currentType = elemType;
+            }
           }
           break;
         }

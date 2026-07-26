@@ -1051,13 +1051,13 @@ export class STParser extends CstParser {
       return false;
     }
     let i = 2;
-    while (i <= 20) {
+    while (i <= 60) {
       const t = this.LA(i)?.tokenType;
       if (t === undefined) return false;
       if (t === tokens.LBracket) {
         let depth = 1;
         i++;
-        while (i <= 40 && depth > 0) {
+        while (i <= 80 && depth > 0) {
           const inner = this.LA(i)?.tokenType;
           if (inner === undefined) return false;
           if (inner === tokens.LBracket) depth++;
@@ -1080,6 +1080,12 @@ export class STParser extends CstParser {
         ) {
           return true;
         }
+        if (next !== undefined && this.isIdentifierOrKeywordToken(next)) {
+          // This dot is a field access (e.g. a.b.Method or a.b.c.Method).
+          // Skip the field name and continue scanning.
+          i += 2;
+          continue;
+        }
         return false;
       }
       return false;
@@ -1091,9 +1097,7 @@ export class STParser extends CstParser {
    * instance.method(args); statement
    */
   public methodCallStatement = this.RULE("methodCallStatement", () => {
-    this.SUBRULE(this.methodCallPrefix); // instance / access-chain prefix
-    this.CONSUME(tokens.Dot);
-    this.SUBRULE2(this.identifierOrKeyword); // method name
+    this.SUBRULE(this.variable); // object prefix; last field access is the method name
     this.CONSUME(tokens.LParen);
     this.OPTION(() => {
       this.SUBRULE(this.argumentList);
@@ -1556,9 +1560,7 @@ export class STParser extends CstParser {
    * instance.method(args) expression
    */
   public methodCall = this.RULE("methodCall", () => {
-    this.SUBRULE(this.methodCallPrefix); // instance / access-chain prefix
-    this.CONSUME(tokens.Dot);
-    this.SUBRULE2(this.identifierOrKeyword); // method name
+    this.SUBRULE(this.variable); // object prefix; last field access is the method name
     this.CONSUME(tokens.LParen);
     this.OPTION(() => {
       this.SUBRULE(this.argumentList);

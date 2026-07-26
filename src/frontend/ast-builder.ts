@@ -1029,11 +1029,19 @@ export class ASTBuilder {
     // Get element type from nested dataType
     const elementTypeNode = getFirstNode(arrayChildren.dataType);
     let elementTypeName = "INT";
+    let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
       const elemNameToken = getFirstToken(elemChildren.Identifier);
       if (elemNameToken) {
         elementTypeName = elemNameToken.image;
+      }
+      if (getAllTokens(elemChildren.POINTER).length > 0) {
+        elementReferenceKind = "pointer_to";
+      } else if (getAllTokens(elemChildren.REF_TO).length > 0) {
+        elementReferenceKind = "ref_to";
+      } else if (getAllTokens(elemChildren.REFERENCE_TO).length > 0) {
+        elementReferenceKind = "reference_to";
       }
     }
 
@@ -1062,6 +1070,7 @@ export class ASTBuilder {
     if (arrayDimensions.length > 0) {
       result.arrayDimensions = arrayDimensions;
       result.elementTypeName = elementTypeName;
+      result.elementReferenceKind = elementReferenceKind;
     }
     return result;
   }
@@ -1497,11 +1506,19 @@ export class ASTBuilder {
     // Get element type from nested dataType
     const elementTypeNode = getFirstNode(arrayChildren.dataType);
     let elementTypeName = "INT";
+    let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
       const elemNameToken = getFirstToken(elemChildren.Identifier);
       if (elemNameToken) {
         elementTypeName = elemNameToken.image;
+      }
+      if (getAllTokens(elemChildren.POINTER).length > 0) {
+        elementReferenceKind = "pointer_to";
+      } else if (getAllTokens(elemChildren.REF_TO).length > 0) {
+        elementReferenceKind = "ref_to";
+      } else if (getAllTokens(elemChildren.REFERENCE_TO).length > 0) {
+        elementReferenceKind = "reference_to";
       }
     }
 
@@ -1541,6 +1558,7 @@ export class ASTBuilder {
     if (arrayDimensions) {
       result.arrayDimensions = arrayDimensions;
       result.elementTypeName = elementTypeName;
+      result.elementReferenceKind = elementReferenceKind;
     }
     return result;
   }
@@ -3060,10 +3078,6 @@ export class ASTBuilder {
     const prefixNode =
       getFirstNode(children.methodCallPrefix) ??
       getFirstNode(children.variable);
-    const methodIdOrKw = getAllNodes(children.identifierOrKeyword)[0];
-    const methodName = methodIdOrKw
-      ? getIdentifierOrKeywordImage(methodIdOrKw)
-      : "";
 
     const args: Argument[] = [];
     const argListNode = getFirstNode(children.argumentList);
@@ -3074,37 +3088,47 @@ export class ASTBuilder {
       }
     }
 
+    // The variable prefix includes the method name as its last field access.
+    // Pop it off so the object expression is everything before the method name.
+    let objectExpr: VariableExpression;
+    let methodName = "";
+    if (prefixNode) {
+      const fullExpr = this.buildVariableExpression(prefixNode);
+      if (fullExpr.fieldAccess.length > 0) {
+        methodName = fullExpr.fieldAccess.pop()!;
+        if (fullExpr.accessChain && fullExpr.accessChain.length > 0) {
+          const last = fullExpr.accessChain[fullExpr.accessChain.length - 1]!;
+          if (last.kind === "field") {
+            fullExpr.accessChain.pop();
+          }
+        }
+      }
+      objectExpr = fullExpr;
+    } else {
+      objectExpr = this.createDummyVariable(node);
+    }
+
     // A plain `instance.method()` keeps the original FunctionCallExpression
     // shape for backward compatibility; complex prefixes (array element,
-    // pointer dereference) become MethodCallExpressions.
+    // pointer dereference, field access) become MethodCallExpressions.
     let result: FunctionCallExpression | MethodCallExpression;
-    if (prefixNode) {
-      const objectExpr = this.buildVariableExpression(prefixNode);
-      const hasAccessChain =
-        (objectExpr.accessChain && objectExpr.accessChain.length > 0) ||
-        objectExpr.subscripts.length > 0 ||
-        objectExpr.isDereference;
-      if (!hasAccessChain) {
-        result = {
-          kind: "FunctionCallExpression",
-          sourceSpan: nodeToSourceSpan(node),
-          functionName: `${objectExpr.name}.${methodName}`,
-          arguments: args,
-        };
-      } else {
-        result = {
-          kind: "MethodCallExpression",
-          sourceSpan: nodeToSourceSpan(node),
-          object: objectExpr,
-          methodName,
-          arguments: args,
-        };
-      }
+    const hasAccessChain =
+      (objectExpr.accessChain && objectExpr.accessChain.length > 0) ||
+      objectExpr.subscripts.length > 0 ||
+      objectExpr.isDereference ||
+      objectExpr.fieldAccess.length > 0;
+    if (!hasAccessChain) {
+      result = {
+        kind: "FunctionCallExpression",
+        sourceSpan: nodeToSourceSpan(node),
+        functionName: `${objectExpr.name}.${methodName}`,
+        arguments: args,
+      };
     } else {
       result = {
         kind: "MethodCallExpression",
         sourceSpan: nodeToSourceSpan(node),
-        object: this.createDummyVariable(node),
+        object: objectExpr,
         methodName,
         arguments: args,
       };
