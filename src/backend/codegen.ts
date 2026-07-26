@@ -653,9 +653,7 @@ export class CodeGenerator {
     // Array1D stores T directly — use IECVar-wrapped types for elementary elements
     // and bare names for composites (whose fields already contain IECVar leaves)
     if (typeRef.arrayDimensions && typeRef.elementTypeName) {
-      let elemCpp = this.isUserDefinedType(typeRef.elementTypeName)
-        ? typeRef.elementTypeName
-        : this.mapVarTypeToCpp(typeRef.elementTypeName);
+      let elemCpp = this.mapVarTypeToCpp(typeRef.elementTypeName);
       // Wrap the element type if the array is OF POINTER/REF_TO/REFERENCE TO T
       if (typeRef.elementReferenceKind === "pointer_to") {
         elemCpp = `IEC_Ptr<${elemCpp}>`;
@@ -4035,17 +4033,8 @@ export class CodeGenerator {
   private generateQueryInterfaceExpression(
     expr: QueryInterfaceExpression,
   ): string {
-    if (expr.target.kind !== "VariableExpression") {
-      // Target must be a variable; fall back to generated expression on error
-      return `strucpp::query_interface<void>(${this.generateExpression(
-        expr.source,
-      )}, ${this.generateExpression(expr.target)})`;
-    }
-
-    const targetVar = expr.target;
-    const targetNameUpper = targetVar.name.toUpperCase();
-    const targetTypeName = this.currentScopeVarTypes.get(targetNameUpper);
-    const targetCppType = targetTypeName ?? targetVar.name;
+    const targetType = this.inferExprType(expr.target);
+    const targetCppType = targetType ?? "void";
 
     const sourcePtr = this.generatePointerExpression(expr.source);
     const targetExpr = this.generateExpression(expr.target);
