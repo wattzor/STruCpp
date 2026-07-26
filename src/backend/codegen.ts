@@ -351,6 +351,12 @@ export class CodeGenerator {
   /** Counter for generating unique __VARINFO descriptor identifiers */
   private varInfoCounter = 0;
 
+  /** Stable symbol-to-id map for deterministic synthetic byte addresses */
+  private varInfoSymbolIds = new Map<string, number>();
+
+  /** Cache descriptor names by symbol so two __VARINFO(x) calls share one descriptor */
+  private varInfoDescriptorCache = new Map<string, string>();
+
   /**
    * Stack of loop exit labels for EXIT codegen. C++ `break` only escapes the
    * innermost switch/loop, so `EXIT` inside a `CASE` nested in a loop must
@@ -1003,7 +1009,13 @@ export class CodeGenerator {
     this.locatedVars = [];
     this.codegenWarnings = [];
     this.tempVarCounter = 0;
+    this.varInfoCounter = 0;
+    this.varInfoSymbolIds = new Map();
+    this.varInfoDescriptorCache = new Map();
     this.ast = ast; // Store AST for looking up program bodies
+
+    // Assign stable synthetic byte-address IDs from sorted __VARINFO symbols.
+    this.buildVarInfoSymbolIds(ast);
 
     // Build set of known FB types from AST (library FB types already registered
     // via registerLibraryFBTypes() before generate() is called)
@@ -3954,6 +3966,14 @@ export class CodeGenerator {
    */
   private generateVarInfoExpression(expr: VarInfoExpression): string {
     const arg = expr.argument;
+    const symbolName = this.generateVarInfoSymbol(arg);
+
+    const cached = this.varInfoDescriptorCache.get(symbolName);
+    if (cached) return cached;
+
+    const varInfo = this.findVarInfo(arg.name);
+    const declaration = varInfo?.decl;
+    const block = varInfo?.block;
 
     // Resolve the argument's type from the type-checker annotation if available.
     let targetType: IECType | undefined = arg.resolvedType;
@@ -3962,17 +3982,18 @@ export class CodeGenerator {
       targetType = this.resolveTypeByName(arg.name);
     }
 
-    const typeClass = targetType
-      ? resolveTypeClass(targetType)
-      : TYPE_CLASS.TYPE_NONE;
-    const typeClassName = TYPE_CLASS_NAME.get(typeClass) ?? "TYPE_NONE";
-    const bitSize = targetType ? this.getTypeBitsForIECType(targetType) : 0;
-
+    let typeClassName = "TYPE_NONE";
+    let typeName = "TYPE_NONE";
+    let bitSize = 0;
     let elemBitSize = 0;
     let numElements = 0;
     let baseTypeClassName = "TYPE_BOOL";
+
     if (targetType?.typeKind === "array") {
       const arr = targetType as ArrayType;
+      typeClassName = "TYPE_ARRAY";
+      typeName = "ARRAY";
+      bitSize = this.getTypeBitsForIECType(arr);
       elemBitSize = this.getTypeBitsForIECType(arr.elementType);
       numElements = 1;
       for (const dim of arr.dimensions) {
@@ -3980,64 +4001,196 @@ export class CodeGenerator {
       }
       const baseTypeClass = resolveTypeClass(arr.elementType);
       baseTypeClassName = TYPE_CLASS_NAME.get(baseTypeClass) ?? "TYPE_NONE";
+    } else if (
+      declaration?.type.arrayDimensions &&
+      declaration.type.arrayDimensions.length > 0 &&
+      declaration.type.elementTypeName
+    ) {
+      // Inline ARRAY [...] OF T uses a synthetic __INLINE_ARRAY_<T> elementary
+      // type in the type-checker; recover the real shape from the declaration.
+      const elementType = this.resolveTypeByName(
+        declaration.type.elementTypeName,
+      );
+      elemBitSize = elementType ? this.getTypeBitsForIECType(elementType) : 0;
+      numElements = 1;
+      for (const dim of declaration.type.arrayDimensions) {
+        numElements *= Math.max(1, dim.end - dim.start + 1);
+      }
+      bitSize = numElements * elemBitSize;
+      typeClassName = "TYPE_ARRAY";
+      typeName = "ARRAY";
+      const baseTypeClass = elementType
+        ? resolveTypeClass(elementType)
+        : TYPE_CLASS.TYPE_NONE;
+      baseTypeClassName = TYPE_CLASS_NAME.get(baseTypeClass) ?? "TYPE_NONE";
+    } else if (targetType) {
+      const typeClass = resolveTypeClass(targetType);
+      typeClassName = TYPE_CLASS_NAME.get(typeClass) ?? "TYPE_NONE";
+      typeName = typeNameUtil(targetType);
+      bitSize = this.getTypeBitsForIECType(targetType);
     }
 
-    const symbolName = this.generateVarInfoSymbol(arg);
-    const declaration = this.findVarDeclaration(arg.name);
     const comment = declaration?.comment ?? "";
-    const byteAddress = this.generateVarInfoByteAddress();
 
-    const id = ++this.varInfoCounter;
+    const { area, memoryAreaName, bitNr, bitAddress, byteAddress, byteOffset } =
+      this.inferVarInfoAddressFields(declaration, block, symbolName);
+
+    const id = this.varInfoSymbolIds.get(symbolName) ?? ++this.varInfoCounter;
     const descriptorName = `__strucpp_varinfo_${id}`;
 
     const fields = [
       `/*BYTEADDRESS=*/ IEC_DWORD(${this.formatHex(byteAddress)}u)`,
-      `/*BYTEOFFSET=*/ IEC_DINT(0)`,
-      `/*AREA=*/ IEC_INT(-1)`,
-      `/*BITNR=*/ IEC_INT(-1)`,
+      `/*BYTEOFFSET=*/ IEC_DINT(${byteOffset})`,
+      `/*AREA=*/ IEC_INT(${area})`,
+      `/*BITNR=*/ IEC_INT(${bitNr})`,
       `/*BITSIZE=*/ IEC_UDINT(${bitSize}u)`,
-      `/*BITADDRESS=*/ IEC_UDINT(0u)`,
+      `/*BITADDRESS=*/ IEC_UDINT(${bitAddress}u)`,
       `/*TYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${typeClassName})`,
-      `/*TYPENAME=*/ strucpp::IECString<79>("${this.escapeCString(typeClassName)}")`,
+      `/*TYPENAME=*/ strucpp::IECString<79>("${this.escapeCString(typeName)}")`,
       `/*NUMELEMENTS=*/ IEC_UDINT(${numElements}u)`,
       `/*BASETYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${baseTypeClassName})`,
       `/*ELEMBITSIZE=*/ IEC_UDINT(${elemBitSize}u)`,
-      `/*MEMORYAREA=*/ IEC_MEMORY_AREA(strucpp::__SYSTEM::MEMORY_AREA::MEM_LOCAL)`,
+      `/*MEMORYAREA=*/ IEC_MEMORY_AREA(strucpp::__SYSTEM::MEMORY_AREA::${memoryAreaName})`,
       `/*SYMBOL=*/ strucpp::IECString<39>("${this.escapeCString(symbolName)}")`,
       `/*COMMENT=*/ strucpp::IECString<79>("${this.escapeCString(comment)}")`,
     ];
 
-    return `([&]() -> strucpp::VAR_INFO { static const strucpp::VAR_INFO ${descriptorName} = { ${fields.join(", ")} }; return ${descriptorName}; })()`;
+    const result = `([&]() -> strucpp::VAR_INFO { static const strucpp::VAR_INFO ${descriptorName} = { ${fields.join(", ")} }; return ${descriptorName}; })()`;
+    this.varInfoDescriptorCache.set(symbolName, result);
+    return result;
   }
 
   /**
-   * Find the VarDeclaration for a variable referenced by a __VARINFO expression.
-   * Searches all POU and global var blocks in the AST.
+   * Find the VarDeclaration and owning VarBlock for a variable referenced by a
+   * __VARINFO expression. Searches all POU, global and configuration var blocks
+   * in the AST. VAR_EXTERNAL declarations resolve to the matching global if one
+   * exists; otherwise they are treated as global references.
    */
-  private findVarDeclaration(name: string): VarDeclaration | undefined {
+  private findVarInfo(
+    name: string,
+  ): { decl: VarDeclaration; block: VarBlock } | undefined {
     if (!this.ast) return undefined;
     const nameUpper = name.toUpperCase();
-    const blocks: VarBlock[] = [];
 
-    for (const prog of this.ast.programs) blocks.push(...prog.varBlocks);
-    for (const func of this.ast.functions) blocks.push(...func.varBlocks);
+    const pouBlocks: VarBlock[] = [];
+    for (const prog of this.ast.programs) pouBlocks.push(...prog.varBlocks);
+    for (const func of this.ast.functions) pouBlocks.push(...func.varBlocks);
     for (const fb of this.ast.functionBlocks) {
-      blocks.push(...fb.varBlocks);
-      for (const method of fb.methods) blocks.push(...method.varBlocks);
+      pouBlocks.push(...fb.varBlocks);
+      for (const method of fb.methods) pouBlocks.push(...method.varBlocks);
     }
     for (const iface of this.ast.interfaces) {
-      for (const method of iface.methods) blocks.push(...method.varBlocks);
+      for (const method of iface.methods) pouBlocks.push(...method.varBlocks);
     }
-    blocks.push(...this.ast.globalVarBlocks);
 
-    for (const block of blocks) {
+    let externalMatch: { decl: VarDeclaration; block: VarBlock } | undefined;
+    for (const block of pouBlocks) {
       for (const decl of block.declarations) {
         if (decl.names.some((n) => n.toUpperCase() === nameUpper)) {
-          return decl;
+          if (block.blockType === "VAR_EXTERNAL") {
+            externalMatch = { decl, block };
+          } else {
+            return { decl, block };
+          }
         }
       }
     }
-    return undefined;
+
+    const globalBlocks: VarBlock[] = [...this.ast.globalVarBlocks];
+    for (const config of this.ast.configurations) {
+      globalBlocks.push(...config.varBlocks);
+    }
+
+    for (const block of globalBlocks) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === nameUpper)) {
+          return { decl, block };
+        }
+      }
+    }
+
+    return externalMatch;
+  }
+
+  /**
+   * Infer the address and memory-area fields for a __VARINFO descriptor.
+   * Located variables (AT %I/%Q/%M) get real byte/bit addresses; all other
+   * variables use synthetic stable IDs derived from their qualified symbol.
+   */
+  private inferVarInfoAddressFields(
+    declaration: VarDeclaration | undefined,
+    block: VarBlock | undefined,
+    symbolName: string,
+  ): {
+    area: number;
+    memoryAreaName: string;
+    bitNr: number;
+    bitAddress: number;
+    byteAddress: number;
+    byteOffset: number;
+  } {
+    const byteAddress = this.generateVarInfoByteAddress(symbolName);
+
+    if (declaration?.address) {
+      const parsed = parseLocatedAddress(declaration.address);
+      if (parsed) {
+        const realByteAddress = parsed.byteIndex;
+        const realByteOffset = parsed.byteIndex;
+        const realBitAddress = parsed.byteIndex * 8 + parsed.bitIndex;
+        const realBitNr = parsed.size === "Bit" ? parsed.bitIndex : -1;
+        switch (parsed.area) {
+          case "Input":
+            return {
+              area: 2,
+              memoryAreaName: "MEM_INPUT",
+              bitNr: realBitNr,
+              bitAddress: realBitAddress,
+              byteAddress: realByteAddress,
+              byteOffset: realByteOffset,
+            };
+          case "Output":
+            return {
+              area: 3,
+              memoryAreaName: "MEM_OUTPUT",
+              bitNr: realBitNr,
+              bitAddress: realBitAddress,
+              byteAddress: realByteAddress,
+              byteOffset: realByteOffset,
+            };
+          case "Memory":
+          default:
+            return {
+              area: 1,
+              memoryAreaName: "MEM_MEMORY",
+              bitNr: realBitNr,
+              bitAddress: realBitAddress,
+              byteAddress: realByteAddress,
+              byteOffset: realByteOffset,
+            };
+        }
+      }
+    }
+
+    let memoryAreaName = "MEM_LOCAL";
+    let area = -1;
+    if (block) {
+      if (block.blockType === "VAR_GLOBAL") {
+        memoryAreaName = block.isRetain ? "MEM_RETAIN" : "MEM_GLOBAL";
+        area = 0;
+      } else if (block.blockType === "VAR_EXTERNAL") {
+        memoryAreaName = "MEM_GLOBAL";
+        area = 0;
+      }
+    }
+
+    return {
+      area,
+      memoryAreaName,
+      bitNr: -1,
+      bitAddress: 0,
+      byteAddress,
+      byteOffset: 0,
+    };
   }
 
   /**
@@ -4128,9 +4281,56 @@ export class CodeGenerator {
 
   /**
    * Allocate a synthetic byte-address handle for a __VARINFO descriptor.
+   * The ID is assigned from a sorted list of all __VARINFO symbols so the
+   * output is byte-identical regardless of source order.
    */
-  private generateVarInfoByteAddress(): number {
-    return 0xca000000 + this.varInfoCounter + 1;
+  private generateVarInfoByteAddress(symbolName: string): number {
+    const id = this.varInfoSymbolIds.get(symbolName) ?? 0;
+    return 0xca000000 + id;
+  }
+
+  /**
+   * Pre-scan the AST for all __VARINFO calls, collect their qualified symbols,
+   * and assign stable IDs from a sorted ordering.
+   */
+  private buildVarInfoSymbolIds(ast: CompilationUnit): void {
+    const expressions = this.collectVarInfoExpressions(ast);
+    const symbolSet = new Set<string>();
+    for (const expr of expressions) {
+      symbolSet.add(this.generateVarInfoSymbol(expr.argument));
+    }
+    const sorted = [...symbolSet].sort((a, b) => a.localeCompare(b));
+    for (let i = 0; i < sorted.length; i++) {
+      this.varInfoSymbolIds.set(sorted[i]!, i + 1);
+    }
+  }
+
+  /**
+   * Recursively collect every VarInfoExpression in the AST.
+   */
+  private collectVarInfoExpressions(
+    node: unknown,
+    result: VarInfoExpression[] = [],
+    visited = new Set<unknown>(),
+  ): VarInfoExpression[] {
+    if (node === null || typeof node !== "object") return result;
+    if (visited.has(node)) return result;
+    visited.add(node);
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectVarInfoExpressions(item, result, visited);
+      }
+    } else {
+      const obj = node as Record<string, unknown>;
+      if (obj.kind === "VarInfoExpression") {
+        result.push(obj as unknown as VarInfoExpression);
+      }
+      for (const key of Object.keys(obj)) {
+        if (key === "sourceSpan") continue;
+        this.collectVarInfoExpressions(obj[key], result, visited);
+      }
+    }
+    return result;
   }
 
   /** Format a number as a C++ hex literal. */
