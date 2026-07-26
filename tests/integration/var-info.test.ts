@@ -16,6 +16,14 @@ function compileVarInfoSource(sourceST: string) {
   return result.cppCode;
 }
 
+function compileExpectFailure(sourceST: string): string[] {
+  const result = compile(sourceST, { isTestBuild: true });
+  if (result.success) {
+    throw new Error("Expected compile to fail but it succeeded");
+  }
+  return result.errors.map((e) => e.message);
+}
+
 describe("__VARINFO codegen metadata", () => {
   it("emits the actual type name, not the TYPE_CLASS enum name", () => {
     const cpp = compileVarInfoSource(`
@@ -29,6 +37,27 @@ END_PROGRAM
 `);
     expect(cpp).toContain('TYPENAME=*/ strucpp::IECString<79>("INT")');
     expect(cpp).not.toContain('TYPENAME=*/ strucpp::IECString<79>("TYPE_INT")');
+  });
+
+  it("rejects bare TYPE_CLASS and TYPE_BOOL as unqualified", () => {
+    const typeErrors = compileExpectFailure(`
+PROGRAM RejectBareTypeClass
+  VAR
+    x : TYPE_CLASS;
+  END_VAR
+END_PROGRAM
+`);
+    expect(typeErrors.some((m) => m.includes("Undefined type"))).toBe(true);
+
+    const valueErrors = compileExpectFailure(`
+PROGRAM RejectBareTypeBool
+  VAR
+    x : INT;
+  END_VAR
+  x := TYPE_BOOL;
+END_PROGRAM
+`);
+    expect(valueErrors.some((m) => m.includes("Undeclared variable"))).toBe(true);
   });
 
   it("emits the correct memory area for local and global variables", () => {

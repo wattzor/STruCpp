@@ -4306,7 +4306,7 @@ export class CodeGenerator {
     for (const expr of expressions) {
       symbolSet.add(this.generateVarInfoSymbol(expr.argument));
     }
-    const sorted = [...symbolSet].sort((a, b) => a.localeCompare(b));
+    const sorted = [...symbolSet].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     for (let i = 0; i < sorted.length; i++) {
       this.varInfoSymbolIds.set(sorted[i]!, i + 1);
     }
