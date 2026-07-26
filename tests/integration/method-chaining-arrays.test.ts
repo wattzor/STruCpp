@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025 Autonomy / OpenPLC Project
 /**
- * E2E for method calls on non-trivial object expressions:
- * - array element:  arr[1].Method()
- * - pointer deref: p^.Method()
+ * E2E for method chaining and method calls on array elements and nested fields.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -13,108 +11,70 @@ import * as path from "path";
 import { compile } from "../../src/index.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
-describe.skipIf(!hasGpp)("method calls on array elements and pointer derefs", () => {
+describe.skipIf(!hasGpp)("method chaining on arrays and nested fields", () => {
   let tempDir: string;
   let pchPath: string;
+
   beforeAll(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-method-expr-"));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-chain-arrays-"));
     pchPath = createPCH(tempDir);
   });
+
   afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
-  it("calls a method on an array element", () => {
-    const result = compile(`
-      FUNCTION_BLOCK Observer
-      VAR
-        val : INT := 0;
-      END_VAR
-      METHOD Update
-      VAR_INPUT
-        v : INT;
-      END_VAR
-      val := v;
-      END_METHOD
-      END_FUNCTION_BLOCK
-
-      PROGRAM Main
-      VAR
-        observers : ARRAY[1..2] OF Observer;
-        result : INT;
-      END_VAR
-      observers[1].Update(42);
-      result := observers[1].val;
-      END_PROGRAM
-    `);
-    expect(result.success).toBe(true);
-
-    const stdout = compileAndRunStandalone({
-      tempDir,
-      pchPath,
-      headerCode: result.headerCode!,
-      cppCode: result.cppCode!,
-      testName: "array_element_method",
-      mainCode: `
-#include <iostream>
-int main() {
-    strucpp::Program_MAIN prog;
-    prog.run();
-    std::cout << static_cast<int>(prog.RESULT) << std::endl;
-    return 0;
-}
-`,
-    });
-    expect(stdout).toBe("42");
-  });
-
-  it("calls a method through a pointer dereference", () => {
-    const result = compile(`
-      FUNCTION_BLOCK Motor
-      VAR
-        running : BOOL;
-      END_VAR
-      METHOD Start
-      running := TRUE;
-      END_METHOD
-      END_FUNCTION_BLOCK
-
-      PROGRAM Main
-      VAR
-        p : POINTER TO Motor;
-        out : BOOL;
-      END_VAR
-      p := __NEW(Motor);
-      p^.Start();
-      out := p^.running;
-      __DELETE(p);
-      END_PROGRAM
-    `);
-    expect(result.success).toBe(true);
-
-    const stdout = compileAndRunStandalone({
-      tempDir,
-      pchPath,
-      headerCode: result.headerCode!,
-      cppCode: result.cppCode!,
-      testName: "pointer_deref_method",
-      mainCode: `
-#include <iostream>
-int main() {
-    strucpp::Program_MAIN prog;
-    prog.run();
-    std::cout << (prog.OUT ? "TRUE" : "FALSE") << std::endl;
-    return 0;
-}
-`,
-    });
-    expect(stdout).toBe("TRUE");
-  });
-
-  it("calls a method through a pointer stored in an array element", () => {
+  it("chains methods returned from an array element", () => {
     const result = compile(`
       FUNCTION_BLOCK Counter
       VAR
         count : INT := 0;
       END_VAR
+        METHOD PUBLIC GetSelf : REFERENCE TO Counter
+          GetSelf ref= THIS^;
+        END_METHOD
+        METHOD PUBLIC Inc : INT
+          count := count + 1;
+          Inc := count;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        arr : ARRAY[1..2] OF Counter;
+        result : INT;
+      END_VAR
+        result := arr[1].GetSelf().Inc();
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "chain_array_element",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.RESULT) << "," << static_cast<int>(prog.ARR.at(1).COUNT) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("1,1");
+  });
+
+  it("chains methods returned from a pointer stored in an array element", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Counter
+      VAR
+        count : INT := 0;
+      END_VAR
+        METHOD PUBLIC GetSelf : REFERENCE TO Counter
+          GetSelf ref= THIS^;
+        END_METHOD
         METHOD PUBLIC Inc : INT
           count := count + 1;
           Inc := count;
@@ -130,7 +90,7 @@ int main() {
       END_VAR
         p := ADR(c);
         arr[1] := p;
-        result := arr[1]^.Inc();
+        result := arr[1]^.GetSelf().Inc();
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
@@ -140,7 +100,62 @@ int main() {
       pchPath,
       headerCode: result.headerCode!,
       cppCode: result.cppCode!,
-      testName: "array_pointer_deref_method",
+      testName: "chain_array_pointer_element",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.RESULT) << "," << static_cast<int>(prog.C.COUNT) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("1,1");
+  });
+
+  it("chains methods through nested field references", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Inner
+        METHOD PUBLIC GetValue : INT
+          GetValue := 42;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Outer
+      VAR
+        inner : Inner;
+      END_VAR
+        METHOD PUBLIC GetInner : REFERENCE TO Inner
+          GetInner ref= THIS^.inner;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Outer2
+      VAR
+        outer : Outer;
+      END_VAR
+        METHOD PUBLIC GetOuter : REFERENCE TO Outer
+          GetOuter ref= THIS^.outer;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        o2 : Outer2;
+        result : INT;
+      END_VAR
+        result := o2.GetOuter().GetInner().GetValue();
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "chain_nested_fields",
       mainCode: `
 #include <iostream>
 int main() {
@@ -151,10 +166,10 @@ int main() {
 }
 `,
     });
-    expect(stdout).toBe("1");
+    expect(stdout).toBe("42");
   });
 
-  it("calls a method on a nested field access", () => {
+  it("calls a method on a nested field of an array element", () => {
     const result = compile(`
       FUNCTION_BLOCK Inner
         METHOD PUBLIC GetValue : INT
@@ -168,18 +183,12 @@ int main() {
       END_VAR
       END_FUNCTION_BLOCK
 
-      FUNCTION_BLOCK Outer2
-      VAR
-        outer : Outer;
-      END_VAR
-      END_FUNCTION_BLOCK
-
       PROGRAM Main
       VAR
-        o2 : Outer2;
+        arr : ARRAY[1..2] OF Outer;
         result : INT;
       END_VAR
-        result := o2.outer.inner.GetValue();
+        result := arr[1].inner.GetValue();
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
@@ -189,7 +198,7 @@ int main() {
       pchPath,
       headerCode: result.headerCode!,
       cppCode: result.cppCode!,
-      testName: "nested_field_method",
+      testName: "method_on_nested_field_of_array",
       mainCode: `
 #include <iostream>
 int main() {
