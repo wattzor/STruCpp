@@ -99,14 +99,14 @@ behaviour is vendor-specific and must not be treated as CODESYS canon.
 |---|---|---|
 | B1 | `TRUNC`/`ROUND` registered as `ANY_REAL → ANY_REAL` | `grep -n '"TRUNC"' src/semantic/std-function-registry.ts` → line 232 |
 | B2 | `AND_THEN` / `OR_ELSE` do not exist | `grep -rn "AND_THEN\|OR_ELSE" src/` → empty |
-| B3 | Comments lexed but never reach the AST | `grep -i comment src/frontend/ast.ts` → empty |
+| B3 | Declaration comments are bound to `VarDeclaration.comment` | `src/frontend/ast-builder.ts` (`findComment`) |
 | B4 | Identifiers accept a leading underscore | `src/frontend/lexer.ts:615` |
 | B5 | `qualifiedIdentifier` accepts arbitrary depth | `src/frontend/parser.ts:2038` |
-| B6 | `ByteAddress` is a bare counter, not keyed by variable | `src/backend/codegen.ts:3653, 3655, 3797` |
-| B7 | `BitSize` declared `IEC_INT` (ABI says `UDINT`) | `src/runtime/include/iec_varinfo.hpp:32` |
-| B8 | Ten `TYPE_CLASS` values above 38 with no citation | `src/semantic/system-types.ts`, `src/runtime/include/iec_system.hpp:62-71` |
-| B9 | `__XWORD` carries `typeClass: 40` — a live unsourced value | `src/semantic/iec-types-data.ts:178` |
-| B10 | PR#6/#7 exclude `aff7bda`, `e79eee4`, `937a797` | `git merge-base --is-ancestor aff7bda pr/6` → false |
+| B6 | `ByteAddress` is assigned from a sorted symbol-to-id map and reused per variable | `src/backend/codegen.ts` (stable IDs in `generateVarInfoByteAddress` / `buildVarInfoSymbolIds`) |
+| B7 | `BitSize` is `UDINT`, `ByteOffset` is `DINT`, `Area` is `INT` per A1 | `src/runtime/include/iec_varinfo.hpp`, `src/semantic/system-types.ts`, `src/backend/codegen.ts` |
+| B8 | `TYPE_CLASS` ends at `TYPE_BITCONST := 38`; undocumented types fall back to `TYPE_USERDEF` | `src/semantic/system-types.ts`, `src/runtime/include/iec_system.hpp`, `src/semantic/iec-types-data.ts` |
+| B9 | `__XWORD` falls back to `TYPE_USERDEF` because its `TYPE_CLASS` is undocumented | `src/semantic/iec-types-data.ts` |
+| B10 | PR#6/#7 are rebased onto PR#3 (`devin/query-interface`) | `git merge-base devin/query-interface devin/p4-var-info` → `aff7bda` |
 | B11 | Vitest emits `numPendingTests`/`numTodoTests`, never `numSkippedTests` | run any suite with `--reporter=json` |
 | B12 | Current promotion behaviour: F1=144, F2=22, F3=24564, F4=64, F5=4464, F8=2/3/−2 | `tests/integration/__snapshots__/codesys-semantics-assumed.test.ts.snap` |
 
@@ -148,7 +148,7 @@ CODESYS source**. Every one needs either a documentation link or an oracle run.
 | # | Claim | Status |
 |---|---|---|
 | C16 | `__VARINFO` on a `VAR_IN_OUT` describes the parameter, not the caller's argument | A Forge thread implies it; not authoritative. |
-| C17 | `NumElements` for a non-array | No source. Currently hardcoded to 0 for everything. |
+| C17 | `NumElements` for a non-array | **Resolved.** A1 documents `NumElements` as `0` for non-arrays and as the product of dimensions for arrays; `src/backend/codegen.ts` now computes it. `@oracle: codesys-doc` (A1). |
 | C18 | `TYPE_CLASS` values 39–48 (`TYPE_UXINT` … `TYPE_LTIMEOFDAY`) | **No source found.** I searched and fetched the enum page; it ends at 38. Review blocker B1. |
 | C19 | `AnyType` memory layout — padding and alignment | Declaration order is documented (A4). Actual in-memory layout is not. |
 | C20 | `VAR_INFO` members accessible case-insensitively (`vi.ByteAddress`) | ST is case-insensitive in general, but untested here. |
