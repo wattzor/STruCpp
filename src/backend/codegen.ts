@@ -388,6 +388,14 @@ export class CodeGenerator {
    *  These are emitted as C++ pointers and must be dereferenced when used as objects. */
   private currentScopeInoutFBPointers: Set<string> = new Set();
 
+  /** Set of VAR_IN_OUT array member names (upper case) in the current scope.
+   *  These are emitted as pointers to Array1D and must be dereferenced before indexing. */
+  private currentScopeInoutArrayPointers: Set<string> = new Set();
+
+  /** Set of local/member array variable names (upper case) in the current scope.
+   *  Used by generatePointerExpression to emit the address of the whole array. */
+  private currentScopeVarIsArray: Set<string> = new Set();
+
   /** Parent class name of current FB (for SUPER resolution) */
   private currentFBExtends: string | undefined;
 
@@ -449,6 +457,9 @@ export class CodeGenerator {
 
   /** Map of UPPER(fbTypeName).UPPER(paramName) → declared type name for VAR_IN_OUT parameters. */
   protected fbInoutParamTypes: Map<string, string> = new Map();
+
+  /** Map of UPPER(fbTypeName).UPPER(paramName) → true if the VAR_IN_OUT parameter is an array. */
+  protected fbInoutParamIsArray: Map<string, boolean> = new Map();
 
   // IEC_TYPE_BITS and IEC_TYPE_CAT removed — use getTypeBits()/getTypeCategory() from type-utils.ts
 
@@ -960,6 +971,10 @@ export class CodeGenerator {
               this.fbInoutParamTypes.set(
                 `${fb.name.toUpperCase()}.${name.toUpperCase()}`,
                 decl.type.name,
+              );
+              this.fbInoutParamIsArray.set(
+                `${fb.name.toUpperCase()}.${name.toUpperCase()}`,
+                !!(decl.type.arrayDimensions || decl.type.elementTypeName),
               );
             }
           }
@@ -1563,16 +1578,20 @@ export class CodeGenerator {
       this.emitHeader(`    ${comment}`);
       for (const decl of block.declarations) {
         let cppType = this.mapTypeRefToCpp(decl.type);
-        const isInoutFBPointer =
+        const isInoutArray =
           block.blockType === "VAR_IN_OUT" &&
-          !decl.type.arrayDimensions &&
-          !decl.type.elementTypeName &&
+          (decl.type.arrayDimensions !== undefined ||
+            decl.type.elementTypeName !== undefined);
+        const isInoutFBScalar =
+          block.blockType === "VAR_IN_OUT" &&
+          decl.type.arrayDimensions === undefined &&
+          decl.type.elementTypeName === undefined &&
           this.isFBType(decl.type.name);
-        if (isInoutFBPointer) {
+        if (isInoutArray || isInoutFBScalar) {
           cppType += "*";
         }
-        // Note: interface-typed VAR_IN_OUT already emits as IInterface* via
-        // mapTypeRefToCpp, so no extra * is added here.
+        // Note: interface-typed VAR_IN_OUT scalar already emits as IInterface* via
+        // mapTypeRefToCpp, so only array inouts need an extra * here.
         const tag = this.elaboratedTagIfShadowed(decl.type.name, fbMemberNames);
         for (const name of decl.names) {
           const memberName = this.mangleMemberIfNeeded(
@@ -2234,9 +2253,9 @@ export class CodeGenerator {
       for (const decl of block.declarations) {
         const isPointerInout =
           block.blockType === "VAR_IN_OUT" &&
-          !decl.type.arrayDimensions &&
-          !decl.type.elementTypeName &&
-          this.isPointerInoutType(decl.type.name);
+          (decl.type.arrayDimensions !== undefined ||
+            decl.type.elementTypeName !== undefined ||
+            this.isPointerInoutType(decl.type.name));
         if (decl.initialValue) {
           const initExpr = this.generateInitializer(
             decl.type,
@@ -3773,6 +3792,14 @@ export class CodeGenerator {
         // VAR_IN_OUT FB instances are stored as pointers already.
         return this.getVariableBase(ve);
       }
+      if (this.currentScopeInoutArrayPointers.has(nameUpper)) {
+        // VAR_IN_OUT arrays are stored as pointers to Array1D already.
+        return this.getVariableBase(ve);
+      }
+      if (this.currentScopeVarIsArray.has(nameUpper)) {
+        // Local/member array passed by reference: emit address of the Array1D object.
+        return `&${this.generateExpression(expr)}`;
+      }
       const typeName =
         nameUpper === "THIS"
           ? this.currentFBName
@@ -4125,7 +4152,10 @@ export class CodeGenerator {
     let result = this.getVariableBase(expr);
     // VAR_IN_OUT FB instances are stored as pointers; dereference when the
     // variable is used as an object/value.
-    if (this.currentScopeInoutFBPointers.has(nameUpper)) {
+    if (
+      this.currentScopeInoutFBPointers.has(nameUpper) ||
+      this.currentScopeInoutArrayPointers.has(nameUpper)
+    ) {
       result = `(*${result})`;
     }
 
@@ -5420,25 +5450,30 @@ export class CodeGenerator {
   }
 
   /**
-   * Populate the set of VAR_IN_OUT FB-instance pointers for the current FB scope.
+   * Populate the sets of VAR_IN_OUT pointer members for the current FB scope.
    * Call after enterScope() so all FB member types are known.
    */
   private setFBInoutFBPointers(
     varBlocks: CompilationUnit["programs"][0]["varBlocks"],
   ): void {
     this.currentScopeInoutFBPointers.clear();
+    this.currentScopeInoutArrayPointers.clear();
     for (const block of varBlocks) {
       if (block.blockType !== "VAR_IN_OUT") continue;
       for (const decl of block.declarations) {
         if (
-          decl.type.arrayDimensions ||
-          decl.type.elementTypeName ||
-          !this.isFBType(decl.type.name)
+          decl.type.arrayDimensions !== undefined ||
+          decl.type.elementTypeName !== undefined
         ) {
+          for (const name of decl.names) {
+            this.currentScopeInoutArrayPointers.add(name.toUpperCase());
+          }
           continue;
         }
-        for (const name of decl.names) {
-          this.currentScopeInoutFBPointers.add(name.toUpperCase());
+        if (this.isFBType(decl.type.name)) {
+          for (const name of decl.names) {
+            this.currentScopeInoutFBPointers.add(name.toUpperCase());
+          }
         }
       }
     }
@@ -5454,6 +5489,8 @@ export class CodeGenerator {
     this.currentScopeVarTypes.clear();
     this.currentScopeVarRefKinds.clear();
     this.currentScopeInoutFBPointers.clear();
+    this.currentScopeInoutArrayPointers.clear();
+    this.currentScopeVarIsArray.clear();
     this.memberMangledNames.clear();
     for (const block of varBlocks) {
       for (const decl of block.declarations) {
@@ -5462,6 +5499,12 @@ export class CodeGenerator {
           : `IEC_${decl.type.name}`;
         for (const name of decl.names) {
           this.currentScopeVarTypes.set(name.toUpperCase(), decl.type.name);
+          if (
+            decl.type.arrayDimensions !== undefined ||
+            decl.type.elementTypeName !== undefined
+          ) {
+            this.currentScopeVarIsArray.add(name.toUpperCase());
+          }
           if (
             decl.type.referenceKind !== undefined &&
             decl.type.referenceKind !== "none"
@@ -5492,6 +5535,7 @@ export class CodeGenerator {
    */
   private exitScope(): void {
     this.currentScopeVarTypes.clear();
+    this.currentScopeVarIsArray.clear();
   }
 
   /**
@@ -5722,12 +5766,15 @@ export class CodeGenerator {
       const isInout =
         argName && inoutParams && inoutParams.has(argName.toUpperCase());
       if (isInout) {
-        const inoutTypeName = this.fbInoutParamTypes.get(
-          `${fbTypeName!.toUpperCase()}.${argName.toUpperCase()}`,
-        );
-        // FB/interface-typed VAR_IN_OUT is passed by pointer; everything else
-        // keeps the existing copy-in/copy-out lowering.
-        if (inoutTypeName && this.isPointerInoutType(inoutTypeName)) {
+        const inoutKey = `${fbTypeName!.toUpperCase()}.${argName.toUpperCase()}`;
+        const inoutTypeName = this.fbInoutParamTypes.get(inoutKey);
+        const isInoutArray = this.fbInoutParamIsArray.get(inoutKey);
+        // FB/interface/array-typed VAR_IN_OUT is passed by pointer; primitive
+        // scalars keep the existing copy-in/copy-out lowering.
+        if (
+          (inoutTypeName && this.isPointerInoutType(inoutTypeName)) ||
+          isInoutArray
+        ) {
           this.emit(
             `${indent}${instanceName}.${argName} = ${this.generatePointerExpression(arg.value)};`,
           );
@@ -5778,10 +5825,15 @@ export class CodeGenerator {
       for (const arg of filteredArgs) {
         if (arg.isOutput) continue;
         if (arg.name && inoutParams.has(arg.name.toUpperCase())) {
-          const inoutTypeName = this.fbInoutParamTypes.get(
-            `${fbTypeName!.toUpperCase()}.${arg.name.toUpperCase()}`,
-          );
-          if (inoutTypeName && this.isPointerInoutType(inoutTypeName)) continue;
+          const inoutKey = `${fbTypeName!.toUpperCase()}.${arg.name.toUpperCase()}`;
+          const inoutTypeName = this.fbInoutParamTypes.get(inoutKey);
+          const isInoutArray = this.fbInoutParamIsArray.get(inoutKey);
+          if (
+            (inoutTypeName && this.isPointerInoutType(inoutTypeName)) ||
+            isInoutArray
+          ) {
+            continue;
+          }
           this.emitCaptureToLvalue(
             arg.value,
             `${instanceName}.${arg.name}`,

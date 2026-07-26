@@ -90,6 +90,10 @@ export class TestCodeGenerator extends CodeGenerator {
                 `${fb.name.toUpperCase()}.${name.toUpperCase()}`,
                 decl.type.name,
               );
+              this.fbInoutParamIsArray.set(
+                `${fb.name.toUpperCase()}.${name.toUpperCase()}`,
+                !!(decl.type.arrayDimensions || decl.type.elementTypeName),
+              );
             }
           }
         }
