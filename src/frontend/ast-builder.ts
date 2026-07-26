@@ -44,6 +44,7 @@ import type {
   RefExpression,
   DrefExpression,
   NewExpression,
+  QueryInterfaceExpression,
   DeleteStatement,
   ArrayLiteralExpression,
   FunctionCallExpression,
@@ -237,6 +238,7 @@ function getIdentifierOrKeywordImage(node: CstNode): string {
     "OVERRIDE",
     "ABSTRACT",
     "FINAL",
+    "THIS",
     "AND",
     "OR",
     "XOR",
@@ -258,6 +260,29 @@ function getAllIdentifierOrKeywordImages(
   if (!items) return [];
   const nodes = items.filter((item): item is CstNode => "children" in item);
   return nodes.map(getIdentifierOrKeywordImage);
+}
+
+/**
+ * Parse a CODESYS bit/byte/word/dword access token (%X0, %B1, %W0, %D0).
+ * Returns the access kind and the numeric index as a string.
+ */
+function parseBitAccessToken(raw: string): {
+  kind: "bit" | "byte" | "word" | "dword";
+  prefix: string;
+  index: string;
+} {
+  const upper = raw.toUpperCase();
+  const match = upper.match(/^%([XBWDL])(\d+)$/);
+  const prefix = match?.[1] ?? "X";
+  const index = match?.[2] ?? "0";
+  const kindMap: Record<string, "bit" | "byte" | "word" | "dword"> = {
+    X: "bit",
+    B: "byte",
+    W: "word",
+    D: "dword",
+    L: "dword",
+  };
+  return { kind: kindMap[prefix] ?? "bit", prefix, index };
 }
 
 /**
@@ -1004,11 +1029,19 @@ export class ASTBuilder {
     // Get element type from nested dataType
     const elementTypeNode = getFirstNode(arrayChildren.dataType);
     let elementTypeName = "INT";
+    let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
       const elemNameToken = getFirstToken(elemChildren.Identifier);
       if (elemNameToken) {
         elementTypeName = elemNameToken.image;
+      }
+      if (getAllTokens(elemChildren.POINTER).length > 0) {
+        elementReferenceKind = "pointer_to";
+      } else if (getAllTokens(elemChildren.REF_TO).length > 0) {
+        elementReferenceKind = "ref_to";
+      } else if (getAllTokens(elemChildren.REFERENCE_TO).length > 0) {
+        elementReferenceKind = "reference_to";
       }
     }
 
@@ -1037,6 +1070,7 @@ export class ASTBuilder {
     if (arrayDimensions.length > 0) {
       result.arrayDimensions = arrayDimensions;
       result.elementTypeName = elementTypeName;
+      result.elementReferenceKind = elementReferenceKind;
     }
     return result;
   }
@@ -1472,11 +1506,19 @@ export class ASTBuilder {
     // Get element type from nested dataType
     const elementTypeNode = getFirstNode(arrayChildren.dataType);
     let elementTypeName = "INT";
+    let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
       const elemNameToken = getFirstToken(elemChildren.Identifier);
       if (elemNameToken) {
         elementTypeName = elemNameToken.image;
+      }
+      if (getAllTokens(elemChildren.POINTER).length > 0) {
+        elementReferenceKind = "pointer_to";
+      } else if (getAllTokens(elemChildren.REF_TO).length > 0) {
+        elementReferenceKind = "ref_to";
+      } else if (getAllTokens(elemChildren.REFERENCE_TO).length > 0) {
+        elementReferenceKind = "reference_to";
       }
     }
 
@@ -1516,6 +1558,7 @@ export class ASTBuilder {
     if (arrayDimensions) {
       result.arrayDimensions = arrayDimensions;
       result.elementTypeName = elementTypeName;
+      result.elementReferenceKind = elementReferenceKind;
     }
     return result;
   }
@@ -2320,6 +2363,13 @@ export class ASTBuilder {
       return this.buildNewExpression(getFirstNode(children.newExpression)!);
     }
 
+    // Check for __QUERYINTERFACE(source, target) expression
+    if (children.queryInterfaceExpression) {
+      return this.buildQueryInterfaceExpression(
+        getFirstNode(children.queryInterfaceExpression)!,
+      );
+    }
+
     // Check for THIS access expression
     if (children.thisAccess) {
       return this.buildThisAccessExpression(getFirstNode(children.thisAccess)!);
@@ -2442,6 +2492,26 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       allocationType,
       ...(arraySize !== undefined ? { arraySize } : {}),
+    };
+  }
+
+  /**
+   * Build a QueryInterfaceExpression from a CST node.
+   * Handles: __QUERYINTERFACE(source, target)
+   */
+  buildQueryInterfaceExpression(node: CstNode): QueryInterfaceExpression {
+    const children = node.children as CstChildren;
+
+    const sourceNode = getFirstNode(children.expression);
+    const targetNode = getAllNodes(children.expression)[1];
+    const source = sourceNode ? this.buildExpression(sourceNode) : undefined;
+    const target = targetNode ? this.buildExpression(targetNode) : undefined;
+
+    return {
+      kind: "QueryInterfaceExpression",
+      sourceSpan: nodeToSourceSpan(node),
+      source: source!,
+      target: target!,
     };
   }
 
@@ -2719,7 +2789,9 @@ export class ASTBuilder {
 
     // Get additional field access from identifierOrKeyword nodes (index 1+)
     // Also include IntegerLiteral tokens for bit access (var.0, var.31)
+    // and CODESYS-style BitAccess tokens (var.%X0, var.%B1)
     const allIntLiterals = getAllTokens(children.IntegerLiteral);
+    const bitAccessTokens = getAllTokens(children.BitAccess);
     const fieldAccess: string[] = [];
     for (let i = 1; i < idOrKwNodes.length; i++) {
       const node = idOrKwNodes[i];
@@ -2728,6 +2800,16 @@ export class ASTBuilder {
     // Bit access indices appear as IntegerLiteral tokens after Dot
     for (const intToken of allIntLiterals) {
       fieldAccess.push(intToken.image);
+    }
+    // CODESYS bit/byte/word/dword access suffixes: %Xn, %Bn, %Wn, %Dn
+    for (const bitToken of bitAccessTokens) {
+      const parsed = parseBitAccessToken(bitToken.image);
+      if (parsed.kind === "bit") {
+        fieldAccess.push(parsed.index);
+      } else {
+        // byte/word/dword access — keep the original prefix+index as a field name
+        fieldAccess.push(`${parsed.prefix}${parsed.index}`);
+      }
     }
 
     // Extract subscript expressions from array access: arr[i], arr[i,j], etc.
@@ -2768,12 +2850,13 @@ export class ASTBuilder {
 
     const markers: Marker[] = [];
 
-    // Collect field access markers (Dot tokens followed by identifierOrKeyword or IntegerLiteral)
+    // Collect field access markers (Dot tokens followed by identifierOrKeyword, IntegerLiteral, or BitAccess)
     const dotTokens = getAllTokens(children.Dot);
     const idOrKwNodes = getAllNodes(children.identifierOrKeyword);
     const intLiteralTokens = getAllTokens(children.IntegerLiteral);
+    const bitAccessTokens = getAllTokens(children.BitAccess);
 
-    // Build a list of field targets sorted by offset: identifier and integer literal tokens after dots
+    // Build a list of field targets sorted by offset: identifier, integer literal, and bit-access tokens after dots
     const fieldTargets: Array<{ offset: number; name: string }> = [];
     for (let i = 1; i < idOrKwNodes.length; i++) {
       const n = idOrKwNodes[i]!;
@@ -2784,6 +2867,16 @@ export class ASTBuilder {
     }
     for (const t of intLiteralTokens) {
       fieldTargets.push({ offset: t.startOffset, name: t.image });
+    }
+    for (const t of bitAccessTokens) {
+      const parsed = parseBitAccessToken(t.image);
+      fieldTargets.push({
+        offset: t.startOffset,
+        name:
+          parsed.kind === "bit"
+            ? parsed.index
+            : `${parsed.prefix}${parsed.index}`,
+      });
     }
     fieldTargets.sort((a, b) => a.offset - b.offset);
 
@@ -2985,10 +3078,6 @@ export class ASTBuilder {
     const prefixNode =
       getFirstNode(children.methodCallPrefix) ??
       getFirstNode(children.variable);
-    const methodIdOrKw = getAllNodes(children.identifierOrKeyword)[0];
-    const methodName = methodIdOrKw
-      ? getIdentifierOrKeywordImage(methodIdOrKw)
-      : "";
 
     const args: Argument[] = [];
     const argListNode = getFirstNode(children.argumentList);
@@ -2999,37 +3088,47 @@ export class ASTBuilder {
       }
     }
 
+    // The variable prefix includes the method name as its last field access.
+    // Pop it off so the object expression is everything before the method name.
+    let objectExpr: VariableExpression;
+    let methodName = "";
+    if (prefixNode) {
+      const fullExpr = this.buildVariableExpression(prefixNode);
+      if (fullExpr.fieldAccess.length > 0) {
+        methodName = fullExpr.fieldAccess.pop()!;
+        if (fullExpr.accessChain && fullExpr.accessChain.length > 0) {
+          const last = fullExpr.accessChain[fullExpr.accessChain.length - 1]!;
+          if (last.kind === "field") {
+            fullExpr.accessChain.pop();
+          }
+        }
+      }
+      objectExpr = fullExpr;
+    } else {
+      objectExpr = this.createDummyVariable(node);
+    }
+
     // A plain `instance.method()` keeps the original FunctionCallExpression
     // shape for backward compatibility; complex prefixes (array element,
-    // pointer dereference) become MethodCallExpressions.
+    // pointer dereference, field access) become MethodCallExpressions.
     let result: FunctionCallExpression | MethodCallExpression;
-    if (prefixNode) {
-      const objectExpr = this.buildVariableExpression(prefixNode);
-      const hasAccessChain =
-        (objectExpr.accessChain && objectExpr.accessChain.length > 0) ||
-        objectExpr.subscripts.length > 0 ||
-        objectExpr.isDereference;
-      if (!hasAccessChain) {
-        result = {
-          kind: "FunctionCallExpression",
-          sourceSpan: nodeToSourceSpan(node),
-          functionName: `${objectExpr.name}.${methodName}`,
-          arguments: args,
-        };
-      } else {
-        result = {
-          kind: "MethodCallExpression",
-          sourceSpan: nodeToSourceSpan(node),
-          object: objectExpr,
-          methodName,
-          arguments: args,
-        };
-      }
+    const hasAccessChain =
+      (objectExpr.accessChain && objectExpr.accessChain.length > 0) ||
+      objectExpr.subscripts.length > 0 ||
+      objectExpr.isDereference ||
+      objectExpr.fieldAccess.length > 0;
+    if (!hasAccessChain) {
+      result = {
+        kind: "FunctionCallExpression",
+        sourceSpan: nodeToSourceSpan(node),
+        functionName: `${objectExpr.name}.${methodName}`,
+        arguments: args,
+      };
     } else {
       result = {
         kind: "MethodCallExpression",
         sourceSpan: nodeToSourceSpan(node),
-        object: this.createDummyVariable(node),
+        object: objectExpr,
         methodName,
         arguments: args,
       };

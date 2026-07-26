@@ -912,6 +912,19 @@ export class StdFunctionRegistry {
       category: "system",
     });
 
+    // __ISVALIDREF(ref) -> BOOL (CODESYS reference validity check)
+    this.register({
+      name: "__ISVALIDREF",
+      cppName: "__ISVALIDREF",
+      returnConstraint: "specific",
+      returnMatchesFirstParam: false,
+      specificReturnType: "BOOL",
+      params: [{ name: "IN", constraint: "ANY", isByRef: false }],
+      isVariadic: false,
+      isConversion: false,
+      category: "system",
+    });
+
     // MEMCPY(dest, src, n) -> ULINT (CODESYS memcpy)
     this.register({
       name: "MEMCPY",

@@ -79,6 +79,8 @@ export interface ProjectVarDeclaration {
   arrayDimensions?: Array<{ start: number; end: number }>;
   /** Element type for inline arrays (e.g. "DINT"). */
   elementTypeName?: string;
+  /** Element reference kind for inline arrays OF POINTER/REF_TO/REFERENCE TO T. */
+  elementReferenceKind?: string;
   /** Pointer/reference qualifier carried through from the AST TypeReference. */
   referenceKind?: string;
 }
@@ -98,6 +100,7 @@ export interface VarExternalDeclaration {
   maxLength?: number | string;
   arrayDimensions?: Array<{ start: number; end: number }>;
   elementTypeName?: string;
+  elementReferenceKind?: string;
   referenceKind?: string;
   /** Location of the declaration, so a "no matching VAR_GLOBAL" diagnostic can
    *  point at the offending line instead of being emitted file-less. */
@@ -804,6 +807,10 @@ export class ProjectModelBuilder {
       ...(decl.type.elementTypeName !== undefined
         ? { elementTypeName: decl.type.elementTypeName }
         : {}),
+      ...(decl.type.elementReferenceKind !== undefined &&
+      decl.type.elementReferenceKind !== "none"
+        ? { elementReferenceKind: decl.type.elementReferenceKind }
+        : {}),
       ...(decl.type.referenceKind !== undefined &&
       decl.type.referenceKind !== "none"
         ? { referenceKind: decl.type.referenceKind }
@@ -843,6 +850,10 @@ export class ProjectModelBuilder {
         : {}),
       ...(decl.type.elementTypeName !== undefined
         ? { elementTypeName: decl.type.elementTypeName }
+        : {}),
+      ...(decl.type.elementReferenceKind !== undefined &&
+      decl.type.elementReferenceKind !== "none"
+        ? { elementReferenceKind: decl.type.elementReferenceKind }
         : {}),
       ...(decl.type.referenceKind !== undefined &&
       decl.type.referenceKind !== "none"

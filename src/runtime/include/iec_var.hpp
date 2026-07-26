@@ -43,6 +43,7 @@
 #pragma once
 
 #include "iec_types.hpp"
+#include "iec_arith.hpp"
 #include <type_traits>
 #include <utility>
 
@@ -288,33 +289,33 @@ public:
     // =========================================================================
 
     IECVar& operator+=(T v) noexcept {
-        set(get() + v);
+        set(iec_add(get(), v));
         return *this;
     }
 
     IECVar& operator-=(T v) noexcept {
-        set(get() - v);
+        set(iec_sub(get(), v));
         return *this;
     }
 
     IECVar& operator*=(T v) noexcept {
-        set(get() * v);
+        set(iec_mul(get(), v));
         return *this;
     }
 
-    IECVar& operator/=(T v) noexcept {
-        set(get() / v);
+    IECVar& operator/=(T v) {
+        set(iec_div(get(), v));
         return *this;
     }
 
-    IECVar& operator%=(T v) noexcept {
-        set(get() % v);
+    IECVar& operator%=(T v) {
+        set(iec_mod(get(), v));
         return *this;
     }
 
     // Prefix increment
     IECVar& operator++() noexcept {
-        set(get() + 1);
+        set(iec_add(get(), T(1)));
         return *this;
     }
 
@@ -327,7 +328,7 @@ public:
 
     // Prefix decrement
     IECVar& operator--() noexcept {
-        set(get() - 1);
+        set(iec_sub(get(), T(1)));
         return *this;
     }
 
@@ -367,42 +368,207 @@ private:
 // Binary Operators
 // =============================================================================
 
-template<typename T>
-inline IECVar<T> operator+(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return IECVar<T>(a.get() + b.get());
-}
+// -----------------------------------------------------------------------------
+// IEC arithmetic result type.
+//
+// C++ `std::common_type` performs the usual arithmetic conversions, which
+// promote every integer narrower than `int` to `int`.  That breaks CODESYS
+// semantics where BYTE + WORD must wrap at 16 bits and INT + UINT must wrap
+// at 16 bits.  Instead, pick the IEC result by bit-width and signedness:
+//   * width = max(width(T), width(U))
+//   * signedness = signedness of the wider operand; when widths are equal,
+//     unsigned if either operand is unsigned (C usual-arithmetic rule).
+// For non-IEC raw types, fall back to `std::common_type`.
+// -----------------------------------------------------------------------------
+namespace detail {
 
 template<typename T>
-inline IECVar<T> operator-(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return IECVar<T>(a.get() - b.get());
+struct iec_arith_info {
+    static constexpr bool is_iec = false;
+    static constexpr unsigned width = 0;
+    static constexpr bool is_signed = false;
+    static constexpr bool is_real = false;
+};
+
+template<> struct iec_arith_info<int8_t>   { static constexpr bool is_iec = true; static constexpr unsigned width = 8;  static constexpr bool is_signed = true;  static constexpr bool is_real = false; };
+template<> struct iec_arith_info<uint8_t>  { static constexpr bool is_iec = true; static constexpr unsigned width = 8;  static constexpr bool is_signed = false; static constexpr bool is_real = false; };
+template<> struct iec_arith_info<int16_t>  { static constexpr bool is_iec = true; static constexpr unsigned width = 16; static constexpr bool is_signed = true;  static constexpr bool is_real = false; };
+template<> struct iec_arith_info<uint16_t> { static constexpr bool is_iec = true; static constexpr unsigned width = 16; static constexpr bool is_signed = false; static constexpr bool is_real = false; };
+template<> struct iec_arith_info<int32_t>  { static constexpr bool is_iec = true; static constexpr unsigned width = 32; static constexpr bool is_signed = true;  static constexpr bool is_real = false; };
+template<> struct iec_arith_info<uint32_t> { static constexpr bool is_iec = true; static constexpr unsigned width = 32; static constexpr bool is_signed = false; static constexpr bool is_real = false; };
+template<> struct iec_arith_info<int64_t>  { static constexpr bool is_iec = true; static constexpr unsigned width = 64; static constexpr bool is_signed = true;  static constexpr bool is_real = false; };
+template<> struct iec_arith_info<uint64_t> { static constexpr bool is_iec = true; static constexpr unsigned width = 64; static constexpr bool is_signed = false; static constexpr bool is_real = false; };
+template<> struct iec_arith_info<float>    { static constexpr bool is_iec = true; static constexpr unsigned width = 32; static constexpr bool is_signed = true;  static constexpr bool is_real = true; };
+template<> struct iec_arith_info<double>   { static constexpr bool is_iec = true; static constexpr unsigned width = 64; static constexpr bool is_signed = true;  static constexpr bool is_real = true; };
+
+template<unsigned Width, bool IsSigned, bool IsReal>
+struct iec_arith_select;
+
+template<> struct iec_arith_select<8,  true, false> { using type = int8_t; };
+template<> struct iec_arith_select<8,  false, false> { using type = uint8_t; };
+template<> struct iec_arith_select<16, true,  false> { using type = int16_t; };
+template<> struct iec_arith_select<16, false, false> { using type = uint16_t; };
+template<> struct iec_arith_select<32, true,  false> { using type = int32_t; };
+template<> struct iec_arith_select<32, false, false> { using type = uint32_t; };
+template<> struct iec_arith_select<32, true,  true>  { using type = float; };
+template<> struct iec_arith_select<64, true,  false> { using type = int64_t; };
+template<> struct iec_arith_select<64, false, false> { using type = uint64_t; };
+template<> struct iec_arith_select<64, true,  true>  { using type = double; };
+
+// SFINAE-friendly detection of `std::common_type<T, U>::type`.
+// If no common type exists (e.g. T is an IEC type and U is an unrelated class
+// like IECVar), we fall back to T so the operator signatures remain valid
+// while their `enable_if` guards reject the overload.
+template<typename...>
+struct iec_voider { using type = void; };
+template<typename... Ts>
+using iec_void_t = typename iec_voider<Ts...>::type;
+
+template<typename T, typename U, typename = void>
+struct iec_common_type_fallback { static constexpr bool has = false; using type = T; };
+
+template<typename T, typename U>
+struct iec_common_type_fallback<T, U, iec_void_t<typename std::common_type<T, U>::type>> {
+    static constexpr bool has = true;
+    using type = typename std::common_type<T, U>::type;
+};
+
+template<typename T, typename U, bool BothIEC = iec_arith_info<T>::is_iec && iec_arith_info<U>::is_iec>
+struct iec_arith_result_impl;
+
+template<typename T, typename U>
+struct iec_arith_result_impl<T, U, false> {
+    using type = typename iec_common_type_fallback<T, U>::type;
+};
+
+template<typename T, typename U>
+struct iec_arith_result_impl<T, U, true> {
+    static constexpr unsigned width =
+        (iec_arith_info<T>::width > iec_arith_info<U>::width)
+            ? iec_arith_info<T>::width
+            : iec_arith_info<U>::width;
+    static constexpr bool same_width = iec_arith_info<T>::width == iec_arith_info<U>::width;
+    static constexpr bool is_real = iec_arith_info<T>::is_real || iec_arith_info<U>::is_real;
+    static constexpr bool is_signed = is_real ? true :
+        (same_width
+            ? (iec_arith_info<T>::is_signed && iec_arith_info<U>::is_signed)
+            : (iec_arith_info<T>::width > iec_arith_info<U>::width
+                ? iec_arith_info<T>::is_signed
+                : iec_arith_info<U>::is_signed));
+    using type = typename iec_arith_select<width, is_signed, is_real>::type;
+};
+
+} // namespace detail
+
+template<typename T, typename U>
+using iec_arith_result_t = typename detail::iec_arith_result_impl<T, U>::type;
+
+template<typename T, typename U>
+inline IECVar<iec_arith_result_t<T, U>> operator+(const IECVar<T>& a, const IECVar<U>& b) noexcept {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_add(static_cast<R>(a.get()), static_cast<R>(b.get())));
 }
 
-template<typename T>
-inline IECVar<T> operator*(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return IECVar<T>(a.get() * b.get());
+template<typename T, typename U>
+inline IECVar<iec_arith_result_t<T, U>> operator-(const IECVar<T>& a, const IECVar<U>& b) noexcept {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_sub(static_cast<R>(a.get()), static_cast<R>(b.get())));
 }
 
-template<typename T>
-inline IECVar<T> operator/(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return IECVar<T>(a.get() / b.get());
+template<typename T, typename U>
+inline IECVar<iec_arith_result_t<T, U>> operator*(const IECVar<T>& a, const IECVar<U>& b) noexcept {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_mul(static_cast<R>(a.get()), static_cast<R>(b.get())));
 }
 
-template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
-inline IECVar<T> operator%(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return IECVar<T>(a.get() % b.get());
+template<typename T, typename U>
+inline IECVar<iec_arith_result_t<T, U>> operator/(const IECVar<T>& a, const IECVar<U>& b) {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_div(static_cast<R>(a.get()), static_cast<R>(b.get())));
 }
 
-// Mixed-type arithmetic operators (IECVar<T> op T) and (T op IECVar<T>)
-template<typename T> inline IECVar<T> operator+(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() + b); }
-template<typename T> inline IECVar<T> operator+(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a + b.get()); }
-template<typename T> inline IECVar<T> operator-(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() - b); }
-template<typename T> inline IECVar<T> operator-(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a - b.get()); }
-template<typename T> inline IECVar<T> operator*(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() * b); }
-template<typename T> inline IECVar<T> operator*(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a * b.get()); }
-template<typename T> inline IECVar<T> operator/(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() / b); }
-template<typename T> inline IECVar<T> operator/(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a / b.get()); }
-template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>> inline IECVar<T> operator%(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() % b); }
-template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>> inline IECVar<T> operator%(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a % b.get()); }
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_integral<iec_arith_result_t<T, U>>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator%(const IECVar<T>& a, const IECVar<U>& b) {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_mod(static_cast<R>(a.get()), static_cast<R>(b.get())));
+}
+
+// Mixed IECVar / raw arithmetic. This catches IEC literals like `10` (C++ int)
+// and raw intermediates (e.g. `IEC_DINT * IEC_INT` evaluating in the common
+// underlying type) so they go through the IEC faulting helpers instead of the
+// builtin C++ operators.
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator+(const IECVar<T>& a, U b) noexcept {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_add(static_cast<R>(a.get()), static_cast<R>(b)));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator+(U a, const IECVar<T>& b) noexcept {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_add(static_cast<R>(a), static_cast<R>(b.get())));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator-(const IECVar<T>& a, U b) noexcept {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_sub(static_cast<R>(a.get()), static_cast<R>(b)));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator-(U a, const IECVar<T>& b) noexcept {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_sub(static_cast<R>(a), static_cast<R>(b.get())));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator*(const IECVar<T>& a, U b) noexcept {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_mul(static_cast<R>(a.get()), static_cast<R>(b)));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator*(U a, const IECVar<T>& b) noexcept {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_mul(static_cast<R>(a), static_cast<R>(b.get())));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator/(const IECVar<T>& a, U b) {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_div(static_cast<R>(a.get()), static_cast<R>(b)));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator/(U a, const IECVar<T>& b) {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_div(static_cast<R>(a), static_cast<R>(b.get())));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_integral<iec_arith_result_t<T, U>>::value &&
+                                     std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator%(const IECVar<T>& a, U b) {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_mod(static_cast<R>(a.get()), static_cast<R>(b)));
+}
+
+template<typename T, typename U,
+         typename = std::enable_if_t<std::is_integral<iec_arith_result_t<T, U>>::value &&
+                                     std::is_arithmetic<typename std::remove_reference<U>::type>::value>>
+inline IECVar<iec_arith_result_t<T, U>> operator%(U a, const IECVar<T>& b) {
+    using R = iec_arith_result_t<T, U>;
+    return IECVar<R>(iec_mod(static_cast<R>(a), static_cast<R>(b.get())));
+}
 
 // =============================================================================
 // Comparison Operators

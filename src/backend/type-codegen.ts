@@ -281,12 +281,14 @@ export class TypeCodeGenerator {
   private generateStructType(name: string, def: StructDefinition): void {
     this.emit(`struct ${name} {`);
 
+    const sizeMembers: string[] = [];
     for (const field of def.fields) {
       let cppType: string;
       if (field.type.arrayDimensions && field.type.elementTypeName) {
         // Inline array type: emit Array1D/2D/3D<WrappedElementType, bounds...>
-        const elemCpp = this.mapStructFieldTypeToCpp(
-          field.type.elementTypeName,
+        const elemCpp = this.wrapReferenceKind(
+          this.mapStructFieldTypeToCpp(field.type.elementTypeName),
+          field.type.elementReferenceKind,
         );
         cppType = formatArrayType(elemCpp, field.type.arrayDimensions);
       } else {
@@ -307,6 +309,7 @@ export class TypeCodeGenerator {
           fieldName.toUpperCase() === field.type.name.toUpperCase()
             ? `${fieldName}_`
             : fieldName;
+        sizeMembers.push(`iec_sizeof<${cppType}>::value`);
         if (field.initialValue) {
           const initVal = this.expressionToCpp(field.initialValue);
           // Array types can't be initialized with = 0; use {} instead
@@ -330,6 +333,11 @@ export class TypeCodeGenerator {
       }
     }
 
+    if (sizeMembers.length > 0) {
+      this.emit(
+        `${this.options.indent}static constexpr std::size_t iec_byte_size = ${sizeMembers.join(" + ")};`,
+      );
+    }
     this.emit("};");
     this.emit("");
   }
@@ -381,7 +389,13 @@ export class TypeCodeGenerator {
    * IEC 61131-3 array semantics (arrays can have arbitrary start indices).
    */
   private generateArrayType(name: string, def: ArrayDefinition): void {
-    const elementType = this.mapStructFieldTypeToCpp(def.elementType.name);
+    const elementType = this.wrapReferenceKind(
+      this.mapStructFieldTypeToCpp(
+        def.elementType.name,
+        def.elementType.maxLength,
+      ),
+      def.elementType.referenceKind,
+    );
     const numDims = def.dimensions.length;
 
     // Collect bounds for all dimensions (skip variable-length dimensions)
@@ -512,6 +526,22 @@ export class TypeCodeGenerator {
 
     // Composite types (struct, array, FB) → bare name
     return typeName;
+  }
+
+  /**
+   * Wrap a C++ type with IEC pointer/reference wrappers for the given reference kind.
+   */
+  private wrapReferenceKind(cppType: string, referenceKind?: string): string {
+    switch (referenceKind) {
+      case "pointer_to":
+        return `IEC_Ptr<${cppType}>`;
+      case "ref_to":
+        return `IEC_REF_TO<${cppType}>`;
+      case "reference_to":
+        return `IEC_REFERENCE_TO<${cppType}>`;
+      default:
+        return cppType;
+    }
   }
 
   /**

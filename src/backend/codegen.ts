@@ -32,7 +32,10 @@ import type {
   MethodDeclaration,
   InterfaceDeclaration,
   PropertyDeclaration,
+  QueryInterfaceExpression,
   Visibility,
+  ReferenceKind,
+  IECType,
 } from "../frontend/ast.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry } from "../types.js";
@@ -317,6 +320,10 @@ export class CodeGenerator {
   /** Current function name (for redirecting function name := to result variable) */
   private currentFunctionName: string | undefined;
 
+  /** True when the current method returns REFERENCE TO a user-defined type,
+   *  so REF= on the method name lowers to a pointer assignment. */
+  private currentFunctionReturnsReferenceToUserDefined: boolean = false;
+
   /** Standard function registry for name mapping and conversion resolution */
   private stdRegistry: StdFunctionRegistry;
 
@@ -383,6 +390,18 @@ export class CodeGenerator {
    *  used e.g. to pick the correct lowering for a REF= rebind. */
   protected currentScopeVarRefKinds: Map<string, string> = new Map();
 
+  /** Set of VAR_IN_OUT FB-instance member names (upper case) in the current scope.
+   *  These are emitted as C++ pointers and must be dereferenced when used as objects. */
+  private currentScopeInoutFBPointers: Set<string> = new Set();
+
+  /** Set of VAR_IN_OUT array member names (upper case) in the current scope.
+   *  These are emitted as pointers to Array1D and must be dereferenced before indexing. */
+  private currentScopeInoutArrayPointers: Set<string> = new Set();
+
+  /** Set of local/member array variable names (upper case) in the current scope.
+   *  Used by generatePointerExpression to emit the address of the whole array. */
+  private currentScopeVarIsArray: Set<string> = new Set();
+
   /** Parent class name of current FB (for SUPER resolution) */
   private currentFBExtends: string | undefined;
 
@@ -437,13 +456,16 @@ export class CodeGenerator {
 
   /** Map of UPPER(fbTypeName) → ordered VAR_INPUT parameter names (UPPER case).
    *  Used to resolve positional arguments in FB invocations. */
-  private fbInputParams: Map<string, string[]> = new Map();
+  protected fbInputParams: Map<string, string[]> = new Map();
 
-  /** Map of UPPER(fbTypeName) → set of VAR_IN_OUT parameter names (UPPER case).
-   *  FB inout params are stored as by-value members with copy-in at the call
-   *  site; this set drives the matching copy-back after the call so a callee's
-   *  mutations propagate to the caller's variable (true inout semantics). */
-  private fbInoutParams: Map<string, Set<string>> = new Map();
+  /** Map of UPPER(fbTypeName) → set of VAR_IN_OUT parameter names (UPPER case). */
+  protected fbInoutParams: Map<string, Set<string>> = new Map();
+
+  /** Map of UPPER(fbTypeName).UPPER(paramName) → declared type name for VAR_IN_OUT parameters. */
+  protected fbInoutParamTypes: Map<string, string> = new Map();
+
+  /** Map of UPPER(fbTypeName).UPPER(paramName) → true if the VAR_IN_OUT parameter is an array. */
+  protected fbInoutParamIsArray: Map<string, boolean> = new Map();
 
   // IEC_TYPE_BITS and IEC_TYPE_CAT removed — use getTypeBits()/getTypeCategory() from type-utils.ts
 
@@ -510,6 +532,10 @@ export class CodeGenerator {
       if (this.enumTypeMembers.has(typeName.toUpperCase())) {
         return `IEC_${typeName}`;
       }
+      // Interface-typed variables are reference/pointer types in CODESYS.
+      if (this.knownInterfaceTypes.has(typeName.toUpperCase())) {
+        return `${typeName}*`;
+      }
       return typeName;
     }
     // Elementary types: use the canonical IECVar alias map so names whose
@@ -538,6 +564,7 @@ export class CodeGenerator {
       referenceKind?: string;
       arrayDimensions?: Array<{ start: number; end: number }>;
       elementTypeName?: string;
+      elementReferenceKind?: string;
     },
   >(
     typeRef: T,
@@ -547,6 +574,7 @@ export class CodeGenerator {
     referenceKind?: string;
     arrayDimensions?: Array<{ start: number; end: number }>;
     elementTypeName?: string;
+    elementReferenceKind?: string;
   } {
     const upper = typeRef.name.toUpperCase();
     const isString = upper === "STRING" || upper === "WSTRING";
@@ -560,6 +588,9 @@ export class CodeGenerator {
         : {}),
       ...(typeRef.elementTypeName !== undefined
         ? { elementTypeName: typeRef.elementTypeName }
+        : {}),
+      ...(typeRef.elementReferenceKind !== undefined
+        ? { elementReferenceKind: typeRef.elementReferenceKind }
         : {}),
       ...(typeRef.referenceKind !== undefined
         ? { referenceKind: typeRef.referenceKind }
@@ -580,6 +611,7 @@ export class CodeGenerator {
     maxLength?: number | string;
     arrayDimensions?: Array<{ start: number; end: number }>;
     elementTypeName?: string;
+    elementReferenceKind?: string;
     referenceKind?: string;
   }): {
     name: string;
@@ -587,6 +619,7 @@ export class CodeGenerator {
     referenceKind?: string;
     arrayDimensions?: Array<{ start: number; end: number }>;
     elementTypeName?: string;
+    elementReferenceKind?: string;
   } {
     return {
       name: spec.typeName,
@@ -596,6 +629,9 @@ export class CodeGenerator {
         : {}),
       ...(spec.elementTypeName !== undefined
         ? { elementTypeName: spec.elementTypeName }
+        : {}),
+      ...(spec.elementReferenceKind !== undefined
+        ? { elementReferenceKind: spec.elementReferenceKind }
         : {}),
       ...(spec.referenceKind !== undefined
         ? { referenceKind: spec.referenceKind }
@@ -609,6 +645,7 @@ export class CodeGenerator {
     referenceKind?: string;
     arrayDimensions?: Array<{ start: number; end: number }>;
     elementTypeName?: string;
+    elementReferenceKind?: string;
   }): string {
     let baseType: string;
 
@@ -616,9 +653,15 @@ export class CodeGenerator {
     // Array1D stores T directly — use IECVar-wrapped types for elementary elements
     // and bare names for composites (whose fields already contain IECVar leaves)
     if (typeRef.arrayDimensions && typeRef.elementTypeName) {
-      const elemCpp = this.isUserDefinedType(typeRef.elementTypeName)
-        ? typeRef.elementTypeName
-        : this.mapVarTypeToCpp(typeRef.elementTypeName);
+      let elemCpp = this.mapVarTypeToCpp(typeRef.elementTypeName);
+      // Wrap the element type if the array is OF POINTER/REF_TO/REFERENCE TO T
+      if (typeRef.elementReferenceKind === "pointer_to") {
+        elemCpp = `IEC_Ptr<${elemCpp}>`;
+      } else if (typeRef.elementReferenceKind === "ref_to") {
+        elemCpp = `IEC_REF_TO<${elemCpp}>`;
+      } else if (typeRef.elementReferenceKind === "reference_to") {
+        elemCpp = `IEC_REFERENCE_TO<${elemCpp}>`;
+      }
       baseType = formatArrayType(elemCpp, typeRef.arrayDimensions);
     } else {
       baseType = this.mapVarTypeToCpp(
@@ -948,6 +991,14 @@ export class CodeGenerator {
           for (const decl of block.declarations) {
             for (const name of decl.names) {
               inoutNames.push(name.toUpperCase());
+              this.fbInoutParamTypes.set(
+                `${fb.name.toUpperCase()}.${name.toUpperCase()}`,
+                decl.type.name,
+              );
+              this.fbInoutParamIsArray.set(
+                `${fb.name.toUpperCase()}.${name.toUpperCase()}`,
+                !!(decl.type.arrayDimensions || decl.type.elementTypeName),
+              );
             }
           }
         }
@@ -995,6 +1046,43 @@ export class CodeGenerator {
       const ifaceMethods = this.getInterfaceMethodNames(fb);
       if (ifaceMethods.size > 0) {
         this.fbInterfaceMethodNames.set(fb.name.toUpperCase(), ifaceMethods);
+      }
+    }
+
+    // Propagate methods and properties down the FB inheritance chain so
+    // `Child.BaseProp` and `Child.InheritedMethod()` resolve to the parent names.
+    const fbMap = new Map(
+      ast.functionBlocks.map((fb) => [fb.name.toUpperCase(), fb] as const),
+    );
+    const propagate = (
+      derived: (typeof ast.functionBlocks)[0],
+      ancestorName: string,
+      visited: Set<string>,
+    ) => {
+      if (visited.has(ancestorName.toUpperCase())) return;
+      visited.add(ancestorName.toUpperCase());
+      const ancestor = fbMap.get(ancestorName.toUpperCase());
+      if (!ancestor) return;
+      const derivedKey = derived.name.toUpperCase();
+      for (const method of ancestor.methods) {
+        const key = `${derivedKey}.${method.name.toUpperCase()}`;
+        if (!this.methodNameMap.has(key)) {
+          this.methodNameMap.set(key, method.name);
+        }
+      }
+      for (const prop of ancestor.properties) {
+        const key = `${derivedKey}.${prop.name.toUpperCase()}`;
+        if (!this.propertyNameMap.has(key)) {
+          this.propertyNameMap.set(key, prop.name);
+        }
+      }
+      if (ancestor.extends) {
+        propagate(derived, ancestor.extends, visited);
+      }
+    };
+    for (const fb of ast.functionBlocks) {
+      if (fb.extends) {
+        propagate(fb, fb.extends, new Set<string>());
       }
     }
 
@@ -1171,7 +1259,10 @@ export class CodeGenerator {
           for (const name of decl.names) {
             this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
             if (decl.initialValue) {
-              const initExpr = this.generateExpression(decl.initialValue);
+              const initExpr = this.generateInitializer(
+                decl.type,
+                decl.initialValue,
+              );
               this.emitHeader(
                 `${constQualifier}inline ${cppType} ${name} = ${initExpr};`,
               );
@@ -1463,11 +1554,19 @@ export class CodeGenerator {
     }
     if (fb.implements) {
       for (const iface of fb.implements) {
-        bases.push(`public ${iface}`);
+        // Virtual inheritance prevents diamond ambiguity when an FB both
+        // inherits another FB that already implements an interface and also
+        // implements a derived interface of the same base.
+        bases.push(`virtual public ${iface}`);
       }
     }
     const inheritance = bases.length > 0 ? ` : ${bases.join(", ")}` : "";
     const finalSpec = fb.isFinal ? " final" : "";
+
+    const iecSizeMembers: string[] = [];
+    if (fb.extends) {
+      iecSizeMembers.push(`iec_sizeof<${fb.extends}>::value`);
+    }
 
     this.emitHeaderLineDirective(fb.sourceSpan.startLine);
     const classLine = this.currentHeaderLine;
@@ -1506,7 +1605,21 @@ export class CodeGenerator {
 
       this.emitHeader(`    ${comment}`);
       for (const decl of block.declarations) {
-        const cppType = this.mapTypeRefToCpp(decl.type);
+        let cppType = this.mapTypeRefToCpp(decl.type);
+        const isInoutArray =
+          block.blockType === "VAR_IN_OUT" &&
+          (decl.type.arrayDimensions !== undefined ||
+            decl.type.elementTypeName !== undefined);
+        const isInoutFBScalar =
+          block.blockType === "VAR_IN_OUT" &&
+          decl.type.arrayDimensions === undefined &&
+          decl.type.elementTypeName === undefined &&
+          this.isFBType(decl.type.name);
+        if (isInoutArray || isInoutFBScalar) {
+          cppType += "*";
+        }
+        // Note: interface-typed VAR_IN_OUT scalar already emits as IInterface* via
+        // mapTypeRefToCpp, so only array inouts need an extra * here.
         const tag = this.elaboratedTagIfShadowed(decl.type.name, fbMemberNames);
         for (const name of decl.names) {
           const memberName = this.mangleMemberIfNeeded(
@@ -1518,6 +1631,7 @@ export class CodeGenerator {
           const memberLine = this.currentHeaderLine;
           this.emitHeader(`    ${tag}${cppType} ${memberName};`);
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
+          iecSizeMembers.push(`iec_sizeof<${tag}${cppType}>::value`);
         }
       }
     }
@@ -1531,6 +1645,7 @@ export class CodeGenerator {
         this.emitHeader(
           `    GlobalVar<${ext.cppType}>* ${ext.name} = nullptr;`,
         );
+        iecSizeMembers.push(`iec_sizeof<GlobalVar<${ext.cppType}>*>::value`);
       }
     }
 
@@ -1541,6 +1656,7 @@ export class CodeGenerator {
       this.emitHeader("    // Method instance variables (VAR_INST)");
       for (const m of varInstMembers) {
         this.emitHeader(`    ${m.cppType} ${m.mangledName};`);
+        iecSizeMembers.push(`iec_sizeof<${m.cppType}>::value`);
       }
     }
 
@@ -1575,10 +1691,40 @@ export class CodeGenerator {
       this.generatePropertyDeclarations(fb.properties);
     }
 
-    // Virtual destructor (needed for classes with virtual methods)
-    if (fb.methods.length > 0 || fb.properties.length > 0 || !fb.isFinal) {
+    // Virtual destructor (needed for classes with virtual methods, or for
+    // calling FB_Exit lifecycle cleanup).
+    const hasFBExit = fb.methods.some(
+      (m) => m.name.toUpperCase() === "FB_EXIT",
+    );
+    if (
+      hasFBExit ||
+      fb.methods.length > 0 ||
+      fb.properties.length > 0 ||
+      !fb.isFinal
+    ) {
       this.emitHeader("");
-      this.emitHeader(`    virtual ~${fb.name}() = default;`);
+      if (hasFBExit) {
+        this.emitHeader(`    virtual ~${fb.name}();`);
+      } else {
+        this.emitHeader(`    virtual ~${fb.name}() = default;`);
+      }
+    }
+
+    if (fb.implements && fb.implements.length > 0) {
+      this.emitHeader("");
+      this.emitHeader("    // Interface query support");
+      this.emitHeader(
+        `    bool __strucpp_query_interface(const char* id, void*& out) const override;`,
+      );
+    }
+
+    // Logical IEC byte size (sum of member logical sizes, for SIZEOF)
+    if (iecSizeMembers.length > 0) {
+      this.emitHeader("");
+      this.emitHeader("    // Logical IEC byte size (for SIZEOF)");
+      this.emitHeader(
+        `    static constexpr std::size_t iec_byte_size = ${iecSizeMembers.join(" + ")};`,
+      );
     }
 
     // Test build: add mock infrastructure
@@ -1606,6 +1752,7 @@ export class CodeGenerator {
     this.recordHeaderLineMapping(prog.sourceSpan.startLine, classLine);
 
     // Generate member variables and collect located variables
+    const iecSizeMembers: string[] = [];
     for (const block of prog.varBlocks) {
       for (const decl of block.declarations) {
         const cppType = this.mapTypeRefToCpp(decl.type);
@@ -1628,6 +1775,7 @@ export class CodeGenerator {
             this.emitHeader(`    ${cppType} ${memberName};`);
           }
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
+          iecSizeMembers.push(`iec_sizeof<${cppType}>::value`);
         }
       }
     }
@@ -1646,6 +1794,15 @@ export class CodeGenerator {
     this.emitHeader("");
     this.emitHeader("    // Run program");
     this.emitHeader("    void run() override;");
+
+    if (iecSizeMembers.length > 0) {
+      this.emitHeader("");
+      this.emitHeader("    // Logical IEC byte size (for SIZEOF)");
+      this.emitHeader(
+        `    static constexpr std::size_t iec_byte_size = ${iecSizeMembers.join(" + ")};`,
+      );
+    }
+
     this.emitHeader("};");
     this.emitHeader("");
   }
@@ -1724,23 +1881,25 @@ export class CodeGenerator {
   private generateInterfaceHeaderDeclaration(
     iface: InterfaceDeclaration,
   ): void {
-    const extendsClause =
-      iface.extends && iface.extends.length > 0
-        ? ` : ${iface.extends.map((e) => `public ${e}`).join(", ")}`
-        : "";
+    const bases: string[] = ["virtual public strucpp::__IInterface"];
+    if (iface.extends && iface.extends.length > 0) {
+      for (const e of iface.extends) bases.push(`virtual public ${e}`);
+    }
+    const extendsClause = bases.length > 0 ? ` : ${bases.join(", ")}` : "";
 
     this.emitHeaderLineDirective(iface.sourceSpan.startLine);
     const classLine = this.currentHeaderLine;
     this.emitHeader(`class ${iface.name}${extendsClause} {`);
     this.emitHeader("public:");
     this.emitHeader(`    virtual ~${iface.name}() = default;`);
+    this.emitHeader(
+      `    static const char* __strucpp_interface_name() { return "${iface.name.toUpperCase()}"; }`,
+    );
     this.recordHeaderLineMapping(iface.sourceSpan.startLine, classLine);
 
     for (const method of iface.methods) {
-      const isIfaceReturn =
-        method.returnType && this.isInterfaceType(method.returnType.name);
       const returnType = method.returnType
-        ? `${this.mapTypeRefToCpp(method.returnType)}${isIfaceReturn ? "&" : ""}`
+        ? this.mapMethodReturnTypeToCpp(method.returnType)
         : "void";
       const params = this.generateMethodParamList(method);
       if (method.sourceSpan) {
@@ -1816,10 +1975,8 @@ export class CodeGenerator {
       }
 
       for (const method of visMethods) {
-        const isIfaceReturn =
-          method.returnType && this.isInterfaceType(method.returnType.name);
         const returnType = method.returnType
-          ? `${this.mapTypeRefToCpp(method.returnType)}${isIfaceReturn ? "&" : ""}`
+          ? this.mapMethodReturnTypeToCpp(method.returnType)
           : "void";
         const params = this.generateMethodParamList(method);
 
@@ -1925,8 +2082,10 @@ export class CodeGenerator {
   ): void {
     const isIfaceReturn =
       method.returnType && this.isInterfaceType(method.returnType.name);
+    const isRefToUserDefined =
+      method.returnType && this.isReferenceToUserDefined(method.returnType);
     const returnType = method.returnType
-      ? `${this.mapTypeRefToCpp(method.returnType)}${isIfaceReturn ? "&" : ""}`
+      ? this.mapMethodReturnTypeToCpp(method.returnType)
       : "void";
     const params = this.generateMethodParamList(method);
 
@@ -1941,10 +2100,13 @@ export class CodeGenerator {
         this.interfaceReturnMethod = true;
       } else {
         this.emit(
-          `    ${this.mapTypeRefToCpp(method.returnType)} ${method.name}_result;`,
+          `    ${this.mapMethodResultVarType(method.returnType)} ${method.name}_result${
+            isRefToUserDefined ? " = nullptr" : ""
+          };`,
         );
       }
       this.currentFunctionName = method.name;
+      this.currentFunctionReturnsReferenceToUserDefined = !!isRefToUserDefined;
     }
 
     // Set up VAR_INST name mangling
@@ -1964,6 +2126,7 @@ export class CodeGenerator {
 
     // Merge FB scope + method scope so FB member types are visible (same pattern as properties)
     this.enterScope([...this.currentFBVarBlocks, ...method.varBlocks]);
+    this.setFBInoutFBPointers(this.currentFBVarBlocks);
 
     // Declare local variables (VAR, VAR_TEMP)
     for (const block of method.varBlocks) {
@@ -1971,7 +2134,7 @@ export class CodeGenerator {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
             const initValue = decl.initialValue
-              ? ` = ${this.generateExpression(decl.initialValue)}`
+              ? ` = ${this.generateInitializer(decl.type, decl.initialValue)}`
               : "";
             this.emit(
               `    ${this.mapTypeRefToCpp(decl.type)} ${name}${initValue};`,
@@ -1989,9 +2152,23 @@ export class CodeGenerator {
     // Return if method has return type
     if (method.returnType) {
       if (!isIfaceReturn) {
-        this.emit(`    return ${method.name}_result;`);
+        if (isRefToUserDefined) {
+          // Guard against a missing REF= bind: a REFERENCE TO return must be
+          // bound before the method exits. CODESYS requires the method to set
+          // its return name with `<Method> ref= ...`; if it was not, fail
+          // cleanly rather than dereferencing a null pointer.
+          this.emit(`    if (${method.name}_result == nullptr) {`);
+          this.emit(
+            `        strucpp::iec_null_reference_fault("Unbound REFERENCE TO return value in method '${method.name}'");`,
+          );
+          this.emit("    }");
+          this.emit(`    return *${method.name}_result;`);
+        } else {
+          this.emit(`    return ${method.name}_result;`);
+        }
       }
       this.currentFunctionName = undefined;
+      this.currentFunctionReturnsReferenceToUserDefined = false;
       this.interfaceReturnMethod = false;
     }
 
@@ -2042,6 +2219,7 @@ export class CodeGenerator {
         ...this.currentFBVarBlocks,
         ...(prop.getterVarBlocks ?? []),
       ]);
+      this.setFBInoutFBPointers(this.currentFBVarBlocks);
       emitLocalVars(prop.getterVarBlocks);
       this.emit(`    ${type} ${prop.name}_result;`);
       this.currentFunctionName = prop.name;
@@ -2063,6 +2241,7 @@ export class CodeGenerator {
         ...this.currentFBVarBlocks,
         ...(prop.setterVarBlocks ?? []),
       ]);
+      this.setFBInoutFBPointers(this.currentFBVarBlocks);
       emitLocalVars(prop.setterVarBlocks);
       // In setter, prop.name refers to the input parameter (no redirection)
       this.generateStatements(prop.setter);
@@ -2085,7 +2264,10 @@ export class CodeGenerator {
     for (const block of prog.varBlocks) {
       for (const decl of block.declarations) {
         if (decl.initialValue !== undefined) {
-          const initExpr = this.generateExpression(decl.initialValue);
+          const initExpr = this.generateInitializer(
+            decl.type,
+            decl.initialValue,
+          );
           for (const name of decl.names) {
             this.emit(`    ${name} = ${initExpr};`);
           }
@@ -2164,8 +2346,16 @@ export class CodeGenerator {
     for (const block of fb.varBlocks) {
       if (block.blockType === "VAR_EXTERNAL") continue;
       for (const decl of block.declarations) {
+        const isPointerInout =
+          block.blockType === "VAR_IN_OUT" &&
+          (decl.type.arrayDimensions !== undefined ||
+            decl.type.elementTypeName !== undefined ||
+            this.isPointerInoutType(decl.type.name));
         if (decl.initialValue) {
-          const initExpr = this.generateExpression(decl.initialValue);
+          const initExpr = this.generateInitializer(
+            decl.type,
+            decl.initialValue,
+          );
           for (const name of decl.names) {
             const cppType = this.mapTypeRefToCpp(decl.type);
             const memberName = this.mangleMemberIfNeeded(
@@ -2175,9 +2365,24 @@ export class CodeGenerator {
             );
             fbInits.push(`${memberName}(${initExpr})`);
           }
+        } else if (isPointerInout) {
+          for (const name of decl.names) {
+            const memberName = this.mangleMemberIfNeeded(
+              name,
+              decl.type.name,
+              decl.type.name,
+            );
+            fbInits.push(`${memberName}(nullptr)`);
+          }
         }
       }
     }
+    const hasFBInit = fb.methods.some(
+      (m) => m.name.toUpperCase() === "FB_INIT",
+    );
+    const hasFBExit = fb.methods.some(
+      (m) => m.name.toUpperCase() === "FB_EXIT",
+    );
     if (fbInits.length > 0) {
       this.emit(`${fb.name}::${fb.name}()`);
       this.emit(`    : ${fbInits.join(", ")}`);
@@ -2186,6 +2391,10 @@ export class CodeGenerator {
       this.emit(`${fb.name}::${fb.name}() {`);
     }
     this.emit("    // Initialize variables");
+    if (hasFBInit) {
+      // First-download invocation: retain variables are initialized, not in copy code.
+      this.emit("    this->FB_INIT(true, false);");
+    }
     this.emit("}");
     this.emit("");
 
@@ -2197,6 +2406,7 @@ export class CodeGenerator {
       this.emit("    if (__mocked_) { __mock_state_.call_count++; return; }");
     }
     this.enterScope(fb.varBlocks);
+    this.setFBInoutFBPointers(fb.varBlocks);
     if (fb.body.length > 0) {
       this.generateStatements(fb.body);
     } else if (this.options.sourceComments) {
@@ -2215,11 +2425,38 @@ export class CodeGenerator {
       }
     }
 
+    // Destructor with FB_Exit lifecycle call
+    if (hasFBExit) {
+      this.emit(`${fb.name}::~${fb.name}() {`);
+      // Normal instance destruction (not an online change copy operation).
+      this.emit("    this->FB_EXIT(false);");
+      this.emit("}");
+      this.emit("");
+    }
+
     // Property implementations (enter FB scope so FB member types are visible)
     for (const prop of fb.properties) {
       this.enterScope(fb.varBlocks);
       this.generatePropertyImplementation(prop, fb.name);
       this.exitScope();
+    }
+
+    // Interface query implementation
+    if (fb.implements && fb.implements.length > 0) {
+      this.emit(
+        `bool ${fb.name}::__strucpp_query_interface(const char* id, void*& out) const {`,
+      );
+      for (const { upper, original } of this.getImplementedInterfaceNames(fb)) {
+        this.emit(`    if (std::strcmp(id, "${upper}") == 0) {`);
+        this.emit(
+          `        out = static_cast<${original}*>(const_cast<${fb.name}*>(this));`,
+        );
+        this.emit(`        return true;`);
+        this.emit(`    }`);
+      }
+      this.emit(`    return false;`);
+      this.emit("}");
+      this.emit("");
     }
 
     this.currentFBName = undefined;
@@ -2251,7 +2488,7 @@ export class CodeGenerator {
           for (const decl of block.declarations) {
             for (const name of decl.names) {
               const initValue = decl.initialValue
-                ? ` = ${this.generateExpression(decl.initialValue)}`
+                ? ` = ${this.generateInitializer(decl.type, decl.initialValue)}`
                 : "";
               this.emit(
                 `    ${this.mapTypeRefToCpp(decl.type)} ${name}${initValue};`,
@@ -2335,6 +2572,7 @@ export class CodeGenerator {
    */
   private generateProgramHeaderFromModel(prog: ProgramDecl): void {
     const className = `Program_${prog.name}`;
+    const iecSizeMembers: string[] = [];
 
     // Look up AST program for source spans
     const astProg = this.ast?.programs.find(
@@ -2389,6 +2627,9 @@ export class CodeGenerator {
           ...(decl.elementTypeName !== undefined
             ? { elementTypeName: decl.elementTypeName }
             : {}),
+          ...(decl.elementReferenceKind !== undefined
+            ? { elementReferenceKind: decl.elementReferenceKind }
+            : {}),
           ...(decl.referenceKind !== undefined
             ? { referenceKind: decl.referenceKind }
             : {}),
@@ -2417,6 +2658,8 @@ export class CodeGenerator {
         if (stLine !== undefined) {
           this.recordHeaderLineMapping(stLine, memberLine);
         }
+
+        iecSizeMembers.push(`iec_sizeof<${constQualifier}${cppType}>::value`);
 
         // Collect retain variables (cppType — same metadata-aware lookup
         // as the member emission above, so inline arrays don't end up as
@@ -2458,6 +2701,7 @@ export class CodeGenerator {
         this.emitHeader(
           `    GlobalVar<${extTypes[i]!}>* ${ext.name} = nullptr;`,
         );
+        iecSizeMembers.push(`iec_sizeof<GlobalVar<${extTypes[i]!}>*>::value`);
       }
     }
 
@@ -2521,6 +2765,14 @@ export class CodeGenerator {
 
       // Store retain vars for implementation file generation
       this.programRetainVars.set(prog.name, retainVars);
+    }
+
+    if (iecSizeMembers.length > 0) {
+      this.emitHeader("");
+      this.emitHeader("    // Logical IEC byte size (for SIZEOF)");
+      this.emitHeader(
+        `    static constexpr std::size_t iec_byte_size = ${iecSizeMembers.join(" + ")};`,
+      );
     }
 
     this.emitHeader("};");
@@ -2718,6 +2970,9 @@ export class CodeGenerator {
             : {}),
           ...(gvar.elementTypeName !== undefined
             ? { elementTypeName: gvar.elementTypeName }
+            : {}),
+          ...(gvar.elementReferenceKind !== undefined
+            ? { elementReferenceKind: gvar.elementReferenceKind }
             : {}),
           ...(gvar.referenceKind !== undefined
             ? { referenceKind: gvar.referenceKind }
@@ -3199,7 +3454,16 @@ export class CodeGenerator {
     }
 
     const target = this.generateExpression(stmt.target);
-    const value = this.generateExpression(stmt.value);
+    const isInterfaceTarget =
+      stmt.target.kind === "VariableExpression" &&
+      this.isInterfaceTypeRef({
+        name:
+          this.currentScopeVarTypes.get(stmt.target.name.toUpperCase()) ??
+          stmt.target.name,
+      });
+    const value = isInterfaceTarget
+      ? this.generatePointerExpression(stmt.value)
+      : this.generateExpression(stmt.value);
 
     // For interface-returning methods, convert assignment to result var into return statement
     if (
@@ -3207,7 +3471,8 @@ export class CodeGenerator {
       this.currentFunctionName &&
       target === `${this.currentFunctionName}_result`
     ) {
-      this.emit(`${indent}return ${value};`);
+      const pointerValue = this.generatePointerExpression(stmt.value);
+      this.emit(`${indent}return ${pointerValue};`);
       return;
     }
 
@@ -3279,6 +3544,19 @@ export class CodeGenerator {
     indent: string,
   ): void {
     const target = this.generateExpression(stmt.target);
+    // REF= to the current method's result variable for a REFERENCE TO
+    // user-defined return type is a pointer assignment, not a bind() call.
+    const isMethodResultRef =
+      stmt.target.kind === "VariableExpression" &&
+      this.currentFunctionName !== undefined &&
+      stmt.target.name.toUpperCase() ===
+        this.currentFunctionName.toUpperCase() &&
+      this.currentFunctionReturnsReferenceToUserDefined;
+    if (isMethodResultRef) {
+      const sourcePtr = this.generatePointerExpression(stmt.source);
+      this.emit(`${indent}${target} = ${sourcePtr};`);
+      return;
+    }
     const source = this.generateExpression(stmt.source);
     const targetKind =
       stmt.target.kind === "VariableExpression"
@@ -3528,12 +3806,23 @@ export class CodeGenerator {
    */
   private generateReturnStatement(indent: string): void {
     if (this.interfaceReturnMethod) {
-      // Interface-returning methods: the assignment-based return path (methodName := expr)
-      // directly emits `return expr;`. A bare `RETURN;` has no value to return, so we
-      // default to `return *this;` which is correct for the common pattern where the
-      // method returns its own FB as the interface implementor. Edge case: if the method
-      // should return a different object, the user must use the assignment form instead.
-      this.emit(`${indent}return *this;`);
+      // Interface-returning methods return an interface pointer. A bare `RETURN;`
+      // returns a pointer to the current instance.
+      this.emit(`${indent}return this;`);
+    } else if (
+      this.currentFunctionName &&
+      this.currentFunctionReturnsReferenceToUserDefined
+    ) {
+      // A REFERENCE TO return must be bound before the method exits. If the
+      // method body hits a `RETURN;` before the REF= assignment, fail cleanly
+      // instead of dereferencing a null pointer.
+      const resultVar = `${this.currentFunctionName}_result`;
+      this.emit(`${indent}if (${resultVar} == nullptr) {`);
+      this.emit(
+        `        strucpp::iec_null_reference_fault("Unbound REFERENCE TO return value in method '${this.currentFunctionName}'");`,
+      );
+      this.emit(`${indent}}`);
+      this.emit(`${indent}return *${resultVar};`);
     } else if (this.currentFunctionName) {
       this.emit(`${indent}return ${this.currentFunctionName}_result;`);
     } else {
@@ -3613,7 +3902,144 @@ export class CodeGenerator {
         const elements = expr.elements.map((e) => this.generateExpression(e));
         return `{${elements.join(", ")}}`;
       }
+      case "QueryInterfaceExpression": {
+        return this.generateQueryInterfaceExpression(expr);
+      }
     }
+  }
+
+  /**
+   * Generate an interface pointer expression.
+   * For interface variables this is the variable itself; for FB instances or
+   * THIS^ it is the address of the object; for null literals it is nullptr.
+   */
+  protected isInterfaceTypeRef(typeRef: {
+    name: string;
+    elementTypeName?: string;
+  }): boolean {
+    if (this.knownInterfaceTypes.has(typeRef.name.toUpperCase())) return true;
+    if (
+      typeRef.elementTypeName &&
+      this.knownInterfaceTypes.has(typeRef.elementTypeName.toUpperCase())
+    )
+      return true;
+    return false;
+  }
+
+  protected generateInitializer(
+    typeRef: {
+      name: string;
+      elementTypeName?: string;
+    },
+    expr: Expression,
+  ): string {
+    if (this.isInterfaceTypeRef(typeRef)) {
+      return this.generatePointerExpression(expr);
+    }
+    return this.generateExpression(expr);
+  }
+
+  protected generatePointerExpression(expr: Expression): string {
+    if (expr.kind === "LiteralExpression") {
+      const lit = expr;
+      if (
+        lit.value === 0 ||
+        lit.value === "0" ||
+        lit.rawValue?.toUpperCase() === "NULL"
+      ) {
+        return "nullptr";
+      }
+      // Other literals are not valid interface pointer sources
+      return this.generateExpression(expr);
+    }
+
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.generatePointerExpression(expr.expression);
+    }
+
+    if (expr.kind === "NewExpression") {
+      // __NEW returns T* which is already a pointer
+      return this.generateExpression(expr);
+    }
+
+    if (expr.kind === "VariableExpression") {
+      const ve = expr;
+      const nameUpper = ve.name.toUpperCase();
+      if (this.currentScopeInoutFBPointers.has(nameUpper)) {
+        // VAR_IN_OUT FB instances are stored as pointers already.
+        return this.getVariableBase(ve);
+      }
+      if (this.currentScopeInoutArrayPointers.has(nameUpper)) {
+        // VAR_IN_OUT arrays are stored as pointers to Array1D already.
+        return this.getVariableBase(ve);
+      }
+      if (this.currentScopeVarIsArray.has(nameUpper)) {
+        // Local/member array passed by reference: emit address of the Array1D object.
+        return `&${this.generateExpression(expr)}`;
+      }
+      const typeName =
+        nameUpper === "THIS"
+          ? this.currentFBName
+          : this.currentScopeVarTypes.get(nameUpper);
+      if (typeName && this.knownInterfaceTypes.has(typeName.toUpperCase())) {
+        return this.generateExpression(expr);
+      }
+      if (
+        nameUpper === "THIS" &&
+        ve.fieldAccess.length === 0 &&
+        ve.subscripts.length === 0 &&
+        (ve.isDereference ||
+          !ve.accessChain ||
+          (ve.accessChain.length === 1 &&
+            ve.accessChain[0]!.kind === "dereference"))
+      ) {
+        return "this";
+      }
+      if (
+        typeName &&
+        (this.knownFBTypes.has(typeName.toUpperCase()) ||
+          this.knownProgramTypes.has(typeName.toUpperCase()))
+      ) {
+        return `&${this.generateExpression(expr)}`;
+      }
+      if (ve.isDereference && typeName) {
+        // POINTER TO / REF_TO dereference: p^ yields an object, take its address
+        return `&(${this.generateExpression(expr)})`;
+      }
+    }
+
+    const inferred = this.inferExprType(expr);
+    if (inferred) {
+      const inferredUpper = inferred.toUpperCase();
+      if (this.knownInterfaceTypes.has(inferredUpper)) {
+        return this.generateExpression(expr);
+      }
+      if (
+        this.knownFBTypes.has(inferredUpper) ||
+        this.knownProgramTypes.has(inferredUpper)
+      ) {
+        return `&(${this.generateExpression(expr)})`;
+      }
+    }
+
+    // Fallback: address of whatever expression was generated
+    return `&(${this.generateExpression(expr)})`;
+  }
+
+  /**
+   * Generate C++ for a __QUERYINTERFACE(source, target) expression.
+   * Calls strucpp::query_interface<TargetInterface>(sourcePtr, targetVar).
+   */
+  private generateQueryInterfaceExpression(
+    expr: QueryInterfaceExpression,
+  ): string {
+    const targetType = this.inferExprType(expr.target);
+    const targetCppType = targetType ?? "void";
+
+    const sourcePtr = this.generatePointerExpression(expr.source);
+    const targetExpr = this.generateExpression(expr.target);
+
+    return `strucpp::query_interface<${targetCppType}>(${sourcePtr}, ${targetExpr})`;
   }
 
   /**
@@ -3764,6 +4190,26 @@ export class CodeGenerator {
   }
 
   /**
+   * Resolve the unwrapped C++ base name for a variable expression, ignoring
+   * any VAR_IN_OUT FB-pointer dereference. Used by both value and pointer
+   * generation so the wrapping decision is made in one place.
+   */
+  private getVariableBase(expr: VariableExpression): string {
+    const nameUpper = expr.name.toUpperCase();
+    if (
+      this.currentFunctionName &&
+      nameUpper === this.currentFunctionName.toUpperCase()
+    ) {
+      return `${this.currentFunctionName}_result`;
+    }
+    const mangledName = this.varInstMangledNames.get(nameUpper);
+    if (mangledName) return mangledName;
+    const memberMangled = this.memberMangledNames.get(nameUpper);
+    if (memberMangled) return memberMangled;
+    return this.resolveVariableBaseName(expr.name);
+  }
+
+  /**
    * Generate C++ for a variable expression.
    */
   private generateVariableExpression(expr: VariableExpression): string {
@@ -3879,26 +4325,14 @@ export class CodeGenerator {
     }
 
     // In function/method bodies, references to the function/method name redirect to the result variable
-    let result: string;
+    let result = this.getVariableBase(expr);
+    // VAR_IN_OUT FB instances are stored as pointers; dereference when the
+    // variable is used as an object/value.
     if (
-      this.currentFunctionName &&
-      nameUpper === this.currentFunctionName.toUpperCase()
+      this.currentScopeInoutFBPointers.has(nameUpper) ||
+      this.currentScopeInoutArrayPointers.has(nameUpper)
     ) {
-      result = `${this.currentFunctionName}_result`;
-    } else {
-      // Check for VAR_INST name mangling
-      const mangledName = this.varInstMangledNames.get(nameUpper);
-      if (mangledName) {
-        result = mangledName;
-      } else {
-        // Check for member name collision mangling (SENSOR SENSOR → SENSOR SENSOR_)
-        const memberMangled = this.memberMangledNames.get(nameUpper);
-        if (memberMangled) {
-          result = memberMangled;
-        } else {
-          result = this.resolveVariableBaseName(expr.name);
-        }
-      }
+      result = `(*${result})`;
     }
 
     // Bare enum member: Stopped → Irrigation_State::Stopped
@@ -4074,6 +4508,15 @@ export class CodeGenerator {
           } else if (step.indices.length === 1) {
             result += `.at(${this.generateExpression(step.indices[0]!)})`;
           }
+          // After indexing an array, subsequent field/method accesses apply to
+          // the element type, so update currentType for correct mangling and
+          // property/method resolution.
+          if (this.ast && currentType) {
+            const elemType = resolveArrayElementType(currentType, this.ast);
+            if (elemType) {
+              currentType = elemType;
+            }
+          }
           break;
         }
         case "dereference": {
@@ -4170,10 +4613,17 @@ export class CodeGenerator {
       .map((a) => this.generateExpression(a.value))
       .join(", ");
     // Try type-specific resolution first (avoids collisions when two FBs share a method name)
+    // Try type-specific resolution first (avoids collisions when two FBs share a method name)
     const objType = this.inferExprType(expr.object);
     const resolvedName = objType
       ? this.resolveMethodName(objType, expr.methodName)
       : this.resolveMethodNameGlobal(expr.methodName);
+    if (objType && this.knownInterfaceTypes.has(objType.toUpperCase())) {
+      // Interface pointer: guard against null before dispatch so a failed
+      // __QUERYINTERFACE (or an uninitialised interface variable) cannot be
+      // dereferenced. The lambda evaluates the object expression exactly once.
+      return `([&](auto* __itf){ if (!__itf) strucpp::iec_null_reference_fault("Null interface pointer in call to '${resolvedName}'"); return __itf->${resolvedName}(${args}); }(${obj}))`;
+    }
     return `${obj}.${resolvedName}(${args})`;
   }
 
@@ -4195,9 +4645,20 @@ export class CodeGenerator {
    * variable type map. Returns the IEC type name (upper case) or undefined.
    */
   private inferExprType(expr: Expression): string | undefined {
-    // Use pre-computed type from semantic analysis when available
+    // Use pre-computed type from semantic analysis when available.
+    // Unwrap POINTER TO / REF_TO / REFERENCE TO so callers see the FB,
+    // interface, or elementary type being pointed to.
     if (expr.resolvedType) {
-      const name = typeNameUtil(expr.resolvedType);
+      const baseTypeName = (type: IECType): string | undefined => {
+        if (type.typeKind === "reference") {
+          const refType = type as import("../frontend/ast.js").ReferenceType;
+          if (refType.referencedType) {
+            return baseTypeName(refType.referencedType);
+          }
+        }
+        return typeNameUtil(type);
+      };
+      const name = baseTypeName(expr.resolvedType);
       if (name) return name.toUpperCase();
     }
     // Fallback to ad-hoc inference for standalone codegen (tests without semantic analysis)
@@ -4206,11 +4667,13 @@ export class CodeGenerator {
         // Walk the full access chain (subscripts, ^, fields) so that
         // `observers[1].Update()` resolves to the element FB type and
         // `p^.Start()` resolves to the pointed FB type.
+        // `this.ast` is only required for array element resolution; field
+        // resolution can fall back to the library FB metadata cache.
         const ast = this.ast;
         let currentType = this.currentScopeVarTypes.get(
           expr.name.toUpperCase(),
         );
-        if (!currentType || !ast) return undefined;
+        if (!currentType) return undefined;
 
         const applyStep = (
           type: string,
@@ -4220,6 +4683,7 @@ export class CodeGenerator {
             case "field":
               return this.resolveMemberType(type, step.name);
             case "subscript":
+              if (!ast) return undefined;
               return resolveArrayElementType(type, ast);
             case "dereference":
               // The stored base type already represents the pointed/referred value.
@@ -4235,6 +4699,7 @@ export class CodeGenerator {
           }
         } else {
           for (let i = 0; i < expr.subscripts.length; i++) {
+            if (!ast) return undefined;
             const elem = resolveArrayElementType(currentType, ast);
             if (!elem) return undefined;
             currentType = elem;
@@ -4244,9 +4709,8 @@ export class CodeGenerator {
             if (!next) return undefined;
             currentType = next;
           }
-          if (expr.isDereference) {
-            // The stored base type already represents the pointed/referred value.
-          }
+          // `isDereference` does not change the type: the stored base type already
+          // represents the pointed/referred value.
         }
         return currentType.toUpperCase();
       }
@@ -4282,6 +4746,26 @@ export class CodeGenerator {
       }
       case "FunctionCallExpression": {
         const fnUpper = expr.functionName.toUpperCase();
+        // Dotted method call: Prefix.Method() — resolve method return type
+        const dotIdx = fnUpper.indexOf(".");
+        if (dotIdx > 0 && this.ast) {
+          const prefix = fnUpper.substring(0, dotIdx);
+          const methodName = fnUpper.substring(dotIdx + 1);
+          const prefixType = this.currentScopeVarTypes.get(prefix);
+          if (prefixType) {
+            const fb = this.ast.functionBlocks.find(
+              (f) => f.name.toUpperCase() === prefixType.toUpperCase(),
+            );
+            if (fb) {
+              const method = fb.methods.find(
+                (m) => m.name.toUpperCase() === methodName,
+              );
+              if (method?.returnType) {
+                return method.returnType.name.toUpperCase();
+              }
+            }
+          }
+        }
         // Check user-defined functions
         if (this.ast) {
           const funcDecl = this.ast.functions.find(
@@ -4603,8 +5087,24 @@ export class CodeGenerator {
       } else if (prefix.toUpperCase() === "SUPER" && this.currentFBExtends) {
         return `${this.currentFBExtends}::${resolvedMethod}(${args.join(", ")})`;
       } else {
-        // instance.method() call
-        return `${prefix}.${resolvedMethod}(${args.join(", ")})`;
+        // instance.method() call; interface pointers use ->
+        const prefixUpper = prefix.toUpperCase();
+        const prefixType = this.currentScopeVarTypes.get(prefixUpper);
+        const isInterfacePointer =
+          prefixType && this.knownInterfaceTypes.has(prefixType.toUpperCase());
+        // VAR_IN_OUT FB-instance members are stored as C++ pointers and must be
+        // dereferenced when used as the object of a method call.
+        const mangledPrefix =
+          this.varInstMangledNames.get(prefixUpper) ??
+          this.memberMangledNames.get(prefixUpper) ??
+          this.resolveVariableBaseName(prefix);
+        const prefixExpr = this.currentScopeInoutFBPointers.has(prefixUpper)
+          ? `(*${mangledPrefix})`
+          : mangledPrefix;
+        if (isInterfacePointer) {
+          return `([&](auto* __itf){ if (!__itf) strucpp::iec_null_reference_fault("Null interface pointer in call to '${resolvedMethod}'"); return __itf->${resolvedMethod}(${args.join(", ")}); }(${prefixExpr}))`;
+        }
+        return `${prefixExpr}.${resolvedMethod}(${args.join(", ")})`;
       }
     }
 
@@ -4673,7 +5173,41 @@ export class CodeGenerator {
       return `${conversion.cppName}(${args.join(", ")})`;
     }
 
-    // 2. Check for standard function (may have different cppName)
+    // 2. SIZEOF(typeName) - CODESYS allows SIZEOF(INT), SIZEOF(MyStruct), etc.
+    // When the argument is a bare identifier that is not a variable in scope,
+    // treat it as a type and emit a compile-time iec_sizeof constant.
+    const firstArg =
+      expr.arguments.length === 1 ? expr.arguments[0]?.value : undefined;
+    if (
+      nameUpper === "SIZEOF" &&
+      firstArg &&
+      firstArg.kind === "VariableExpression"
+    ) {
+      const arg = firstArg;
+      if (
+        arg.fieldAccess.length === 0 &&
+        (!arg.accessChain || arg.accessChain.length === 0)
+      ) {
+        const argNameUpper = arg.name.toUpperCase();
+        if (
+          !this.currentScopeVarTypes.has(argNameUpper) &&
+          !this.currentScopeVarRefKinds.has(argNameUpper)
+        ) {
+          const isType =
+            isElementaryType(argNameUpper) ||
+            this.isUserDefinedType(arg.name) ||
+            this.enumTypeMembers.has(argNameUpper) ||
+            argNameUpper === "STRING" ||
+            argNameUpper === "WSTRING";
+          if (isType) {
+            const cppType = this.mapVarTypeToCpp(arg.name);
+            return `IEC_UDINT(iec_sizeof<${cppType}>::value)`;
+          }
+        }
+      }
+    }
+
+    // 3. Check for standard function (may have different cppName)
     const stdFunc = this.stdRegistry.lookup(nameUpper);
     if (stdFunc) {
       const args = expr.arguments.map((arg, idx) => {
@@ -4812,7 +5346,10 @@ export class CodeGenerator {
               blockType: block.blockType,
             };
             if (decl.initialValue) {
-              entry.defaultExpr = this.generateExpression(decl.initialValue);
+              entry.defaultExpr = this.generateInitializer(
+                decl.type,
+                decl.initialValue,
+              );
             }
             params.push(entry);
           }
@@ -4956,6 +5493,75 @@ export class CodeGenerator {
   }
 
   /**
+   * VAR_IN_OUT parameters that are FB or interface types are stored as C++
+   * pointers and passed by pointer; primitive/structured inouts keep copy-in/copy-out.
+   */
+  private isPointerInoutType(typeName: string): boolean {
+    const upper = typeName.toUpperCase();
+    return this.isFBType(typeName) || this.knownInterfaceTypes.has(upper);
+  }
+
+  /**
+   * Returns true when a TypeReference is a REFERENCE TO a user-defined
+   * (FB / struct / program) type. CODESYS method chaining relies on these
+   * returning a reference to the object rather than an IEC_REFERENCE_TO wrapper.
+   */
+  private isReferenceToUserDefined(typeRef: {
+    name: string;
+    referenceKind: ReferenceKind;
+  }): boolean {
+    if (typeRef.referenceKind !== "reference_to") return false;
+    const upper = typeRef.name.toUpperCase();
+    return (
+      this.knownFBTypes.has(upper) ||
+      this.knownStructTypes.has(upper) ||
+      this.knownProgramTypes.has(upper)
+    );
+  }
+
+  /**
+   * Map a method return type to C++. For REFERENCE TO a user-defined type this
+   * is a C++ reference (e.g. StringBuilder&); otherwise the normal wrapper.
+   */
+  private mapMethodReturnTypeToCpp(typeRef: {
+    name: string;
+    referenceKind: ReferenceKind;
+  }): string {
+    if (this.isReferenceToUserDefined(typeRef)) {
+      const upper = typeRef.name.toUpperCase();
+      const baseType = this.knownProgramTypes.has(upper)
+        ? `Program_${typeRef.name}`
+        : typeRef.name;
+      return `${baseType}&`;
+    }
+    return this.mapTypeRefToCpp({
+      name: typeRef.name,
+      referenceKind: typeRef.referenceKind,
+    });
+  }
+
+  /**
+   * Map the hidden result variable type for a method. For REFERENCE TO a
+   * user-defined type the variable is a pointer that is dereferenced on return.
+   */
+  private mapMethodResultVarType(typeRef: {
+    name: string;
+    referenceKind: ReferenceKind;
+  }): string {
+    if (this.isReferenceToUserDefined(typeRef)) {
+      const upper = typeRef.name.toUpperCase();
+      const baseType = this.knownProgramTypes.has(upper)
+        ? `Program_${typeRef.name}`
+        : typeRef.name;
+      return `${baseType}*`;
+    }
+    return this.mapTypeRefToCpp({
+      name: typeRef.name,
+      referenceKind: typeRef.referenceKind,
+    });
+  }
+
+  /**
    * When `typeName` (a member's declared type) is also the name of a sibling
    * member in the same scope, return the C++ elaborated-type-specifier keyword
    * (`class `/`struct `) needed so the bare type name isn't resolved to the data
@@ -4979,7 +5585,7 @@ export class CodeGenerator {
   /**
    * Check if a type name refers to a known interface type.
    */
-  private isInterfaceType(typeName: string): boolean {
+  public isInterfaceType(typeName: string): boolean {
     return this.knownInterfaceTypes.has(typeName.toUpperCase());
   }
 
@@ -5141,6 +5747,36 @@ export class CodeGenerator {
   }
 
   /**
+   * Populate the sets of VAR_IN_OUT pointer members for the current FB scope.
+   * Call after enterScope() so all FB member types are known.
+   */
+  private setFBInoutFBPointers(
+    varBlocks: CompilationUnit["programs"][0]["varBlocks"],
+  ): void {
+    this.currentScopeInoutFBPointers.clear();
+    this.currentScopeInoutArrayPointers.clear();
+    for (const block of varBlocks) {
+      if (block.blockType !== "VAR_IN_OUT") continue;
+      for (const decl of block.declarations) {
+        if (
+          decl.type.arrayDimensions !== undefined ||
+          decl.type.elementTypeName !== undefined
+        ) {
+          for (const name of decl.names) {
+            this.currentScopeInoutArrayPointers.add(name.toUpperCase());
+          }
+          continue;
+        }
+        if (this.isFBType(decl.type.name)) {
+          for (const name of decl.names) {
+            this.currentScopeInoutFBPointers.add(name.toUpperCase());
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Enter a new scope for code generation. Populates currentScopeVarTypes
    * from the variable blocks of a program or function block.
    */
@@ -5149,6 +5785,9 @@ export class CodeGenerator {
   ): void {
     this.currentScopeVarTypes.clear();
     this.currentScopeVarRefKinds.clear();
+    this.currentScopeInoutFBPointers.clear();
+    this.currentScopeInoutArrayPointers.clear();
+    this.currentScopeVarIsArray.clear();
     this.memberMangledNames.clear();
     for (const block of varBlocks) {
       for (const decl of block.declarations) {
@@ -5157,6 +5796,12 @@ export class CodeGenerator {
           : `IEC_${decl.type.name}`;
         for (const name of decl.names) {
           this.currentScopeVarTypes.set(name.toUpperCase(), decl.type.name);
+          if (
+            decl.type.arrayDimensions !== undefined ||
+            decl.type.elementTypeName !== undefined
+          ) {
+            this.currentScopeVarIsArray.add(name.toUpperCase());
+          }
           if (
             decl.type.referenceKind !== undefined &&
             decl.type.referenceKind !== "none"
@@ -5187,6 +5832,7 @@ export class CodeGenerator {
    */
   private exitScope(): void {
     this.currentScopeVarTypes.clear();
+    this.currentScopeVarIsArray.clear();
   }
 
   /**
@@ -5404,12 +6050,37 @@ export class CodeGenerator {
       ? this.fbInputParams.get(fbTypeName.toUpperCase())
       : undefined;
 
+    const inoutParams = fbTypeName
+      ? this.fbInoutParams.get(fbTypeName.toUpperCase())
+      : undefined;
+
     // Assign input parameters (named or positional)
     let positionalIndex = 0;
     for (const arg of filteredArgs) {
       if (arg.isOutput) continue;
 
-      if (arg.name) {
+      const argName = arg.name;
+      const isInout =
+        argName && inoutParams && inoutParams.has(argName.toUpperCase());
+      if (isInout) {
+        const inoutKey = `${fbTypeName!.toUpperCase()}.${argName.toUpperCase()}`;
+        const inoutTypeName = this.fbInoutParamTypes.get(inoutKey);
+        const isInoutArray = this.fbInoutParamIsArray.get(inoutKey);
+        // FB/interface/array-typed VAR_IN_OUT is passed by pointer; primitive
+        // scalars keep the existing copy-in/copy-out lowering.
+        if (
+          (inoutTypeName && this.isPointerInoutType(inoutTypeName)) ||
+          isInoutArray
+        ) {
+          this.emit(
+            `${indent}${instanceName}.${argName} = ${this.generatePointerExpression(arg.value)};`,
+          );
+        } else {
+          this.emit(
+            `${indent}${instanceName}.${argName} = ${this.generateExpression(arg.value)};`,
+          );
+        }
+      } else if (arg.name) {
         // Named argument: assign directly
         this.emit(
           `${indent}${instanceName}.${arg.name} = ${this.generateExpression(arg.value)};`,
@@ -5443,19 +6114,23 @@ export class CodeGenerator {
       `${instanceName}.ENO`,
     );
 
-    // Copy VAR_IN_OUT parameters back to the caller's variables. FB inout params
-    // are stored as by-value members and copied IN before the call; without this
-    // copy-OUT the callee's mutations would be discarded (true inout semantics
-    // require both directions). Mirrors the graphical-language convention of
-    // tying an inout pin on both sides. A follow-up strucpp branch replaces this
-    // copy-in/copy-out with by-reference (pointer) inout members.
-    const inoutParams = fbTypeName
-      ? this.fbInoutParams.get(fbTypeName.toUpperCase())
-      : undefined;
+    // Copy VAR_IN_OUT parameters back to the caller's variables. For FB/interface
+    // inouts the member is a pointer, so the caller's object is mutated in place
+    // and no copy-out is needed. Primitive/structured inouts keep the existing
+    // copy-in/copy-out lowering.
     if (inoutParams && inoutParams.size > 0) {
       for (const arg of filteredArgs) {
         if (arg.isOutput) continue;
         if (arg.name && inoutParams.has(arg.name.toUpperCase())) {
+          const inoutKey = `${fbTypeName!.toUpperCase()}.${arg.name.toUpperCase()}`;
+          const inoutTypeName = this.fbInoutParamTypes.get(inoutKey);
+          const isInoutArray = this.fbInoutParamIsArray.get(inoutKey);
+          if (
+            (inoutTypeName && this.isPointerInoutType(inoutTypeName)) ||
+            isInoutArray
+          ) {
+            continue;
+          }
           this.emitCaptureToLvalue(
             arg.value,
             `${instanceName}.${arg.name}`,
@@ -5541,6 +6216,45 @@ export class CodeGenerator {
   }
 
   /**
+   * Collect the (UPPER, original) names of every interface implemented by a FB,
+   * including interfaces inherited through interface EXTENDS and FB EXTENDS.
+   */
+  private getImplementedInterfaceNames(
+    fb: CompilationUnit["functionBlocks"][0],
+  ): Array<{ upper: string; original: string }> {
+    const result: Array<{ upper: string; original: string }> = [];
+    const seen = new Set<string>();
+    const ifaceMap = new Map(
+      this.ast!.interfaces.map((i) => [i.name.toUpperCase(), i] as const),
+    );
+    const fbMap = new Map(
+      this.ast!.functionBlocks.map((f) => [f.name.toUpperCase(), f] as const),
+    );
+    const visit = (name: string) => {
+      const upper = name.toUpperCase();
+      if (seen.has(upper)) return;
+      seen.add(upper);
+      const iface = ifaceMap.get(upper);
+      if (iface) {
+        result.push({ upper, original: iface.name });
+        if (iface.extends) {
+          for (const e of iface.extends) visit(e);
+        }
+      }
+    };
+    const visitFB = (fbName: string) => {
+      const f = fbMap.get(fbName.toUpperCase());
+      if (!f) return;
+      if (f.implements) {
+        for (const ifaceName of f.implements) visit(ifaceName);
+      }
+      if (f.extends) visitFB(f.extends);
+    };
+    visitFB(fb.name);
+    return result;
+  }
+
+  /**
    * If a member variable name collides with its C++ type name or an interface
    * method name (case-insensitive), append '_' to avoid C++ errors.
    * Populates memberMangledNames map and returns the (possibly mangled) name.
@@ -5620,6 +6334,15 @@ export class CodeGenerator {
    * Get the default value for a type.
    */
   private getDefaultValue(typeName: string, initialValue?: string): string {
+    const upperType = typeName.toUpperCase();
+    if (this.knownInterfaceTypes.has(upperType)) {
+      if (initialValue) {
+        const upperInit = initialValue.toUpperCase();
+        if (upperInit === "0" || upperInit === "NULL") return "nullptr";
+        return `&${initialValue}`;
+      }
+      return "nullptr";
+    }
     if (initialValue) {
       // Convert enum dot-notation (TRAFFICSTATE.RED) to C++ scoped access (TRAFFICSTATE::RED)
       const dotIdx = initialValue.indexOf(".");
@@ -5706,7 +6429,6 @@ export class CodeGenerator {
       return initialValue;
     }
 
-    const upperType = typeName.toUpperCase();
     if (upperType === "BOOL") return "false";
     if (upperType === "REAL" || upperType === "LREAL") return "0.0";
     if (upperType === "STRING") return '""';

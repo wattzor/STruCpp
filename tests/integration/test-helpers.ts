@@ -5,7 +5,7 @@
  * to avoid redundant header parsing across ~120 g++ invocations.
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -83,13 +83,14 @@ export const hasCc = (() => {
  * Create a precompiled header in the given temp directory.
  * Returns the path to the .hpp file (g++ finds the .gch automatically).
  */
-export function createPCH(tempDir: string): string {
+export function createPCH(tempDir: string, extraFlags: string[] = []): string {
   const pchHppPath = path.join(tempDir, 'strucpp_pch.hpp');
   const pchGchPath = pchHppPath + '.gch';
 
   fs.writeFileSync(pchHppPath, PCH_INCLUDES);
+  const flagsStr = extraFlags.join(' ');
   execSync(
-    `g++ -std=c++17 -x c++-header -I"${RUNTIME_INCLUDE_PATH}" "${pchHppPath}" -o "${pchGchPath}" 2>&1`,
+    `g++ -std=c++17 -x c++-header ${flagsStr} -I"${RUNTIME_INCLUDE_PATH}" "${pchHppPath}" -o "${pchGchPath}" 2>&1`,
     { encoding: 'utf-8', env: cxxEnv },
   );
 
@@ -195,6 +196,8 @@ export interface CompileAndRunOptions {
   extraIncludes?: string[];
   extraObjects?: string[];
   timeout?: number;
+  /** Expected process exit code. Defaults to 0. */
+  expectedExitCode?: number;
 }
 
 /**
@@ -209,10 +212,20 @@ export function compileAndRunStandalone(opts: CompileAndRunOptions): string {
     throw new Error(`g++ compilation failed: ${result.error}`);
   }
 
-  return execSync(`"${result.outputPath}"`, {
+  const run = spawnSync(`"${result.outputPath}"`, [], {
     encoding: 'utf-8',
     timeout: opts.timeout ?? 5000,
-  }).trim();
+    shell: true,
+  });
+
+  const expected = opts.expectedExitCode ?? 0;
+  if (run.status !== expected) {
+    throw new Error(
+      `Process exited with code ${run.status ?? run.signal ?? 'unknown'} (expected ${expected}).\nstdout: ${run.stdout ?? ''}\nstderr: ${run.stderr ?? ''}`,
+    );
+  }
+
+  return (run.stdout ?? '').trim();
 }
 
 /**
@@ -242,6 +255,8 @@ export interface RunE2ETestPipelineOptions {
   tempDirPrefix?: string;
   /** Additional compile options passed to compile() */
   compileOptions?: Record<string, unknown>;
+  /** Extra g++ flags, e.g. ['-fsanitize=address,undefined'] */
+  extraFlags?: string[];
 }
 
 /**
@@ -313,6 +328,7 @@ export function runE2ETestPipeline(
     const gppCommand = [
       'g++',
       '-std=c++17',
+      ...(opts.extraFlags ?? []),
       `-I${RUNTIME_INCLUDE_PATH}`,
       `-I${TEST_RUNTIME_PATH}`,
       `-I${tempDir}`,

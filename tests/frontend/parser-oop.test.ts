@@ -84,6 +84,26 @@ describe('OOP Parser', () => {
       expect(result.cst).toBeDefined();
     });
 
+    it('should parse a method returning REFERENCE TO the function block with THIS^', () => {
+      const source = `
+        FUNCTION_BLOCK StringBuilder
+          VAR
+            buffer : STRING(255);
+          END_VAR
+          METHOD PUBLIC Append : REFERENCE TO StringBuilder
+            VAR_INPUT
+              s : STRING(20);
+            END_VAR
+            buffer := CONCAT(buffer, s);
+            Append ref= THIS^;
+          END_METHOD
+        END_FUNCTION_BLOCK
+      `;
+      const result = parseSource(source);
+      expect(result.errors).toHaveLength(0);
+      expect(result.cst).toBeDefined();
+    });
+
     it('should parse a method with PUBLIC visibility', () => {
       const source = `
         FUNCTION_BLOCK MyFB
@@ -1281,6 +1301,33 @@ describe('OOP Parser', () => {
       const result = parseSource(source);
       // Parser allows the combination; these are independent optional modifiers
       expect(result.errors).toHaveLength(0);
+    });
+
+    it('should parse __QUERYINTERFACE(source, target)', () => {
+      const source = `
+        INTERFACE IBase
+          METHOD GetValue : INT
+          END_METHOD
+        END_INTERFACE
+
+        FUNCTION_BLOCK Comp IMPLEMENTS IBase
+          METHOD PUBLIC GetValue : INT
+            GetValue := 1;
+          END_METHOD
+        END_FUNCTION_BLOCK
+
+        PROGRAM Main
+          VAR
+            c : Comp;
+            itf : IBase;
+            ok : BOOL;
+          END_VAR
+          ok := __QUERYINTERFACE(c, itf);
+        END_PROGRAM
+      `;
+      const result = parseSource(source);
+      expect(result.errors).toHaveLength(0);
+      expect(result.cst).toBeDefined();
     });
   });
 });

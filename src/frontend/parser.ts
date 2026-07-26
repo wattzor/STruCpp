@@ -383,8 +383,9 @@ export class STParser extends CstParser {
 
   /**
    * Identifier or contextual keyword.
-   * Allows SET, GET, ON, OVERRIDE, ABSTRACT, FINAL to be used as
+   * Allows SET, GET, ON, OVERRIDE, ABSTRACT, FINAL, and THIS to be used as
    * variable/parameter/function names in contexts where they are unambiguous.
+   * THIS is included so `THIS^` can appear as the source of a REF= bind.
    */
   public identifierOrKeyword = this.RULE("identifierOrKeyword", () => {
     this.OR({
@@ -396,6 +397,7 @@ export class STParser extends CstParser {
         { ALT: () => this.CONSUME(tokens.OVERRIDE) },
         { ALT: () => this.CONSUME(tokens.ABSTRACT) },
         { ALT: () => this.CONSUME(tokens.FINAL) },
+        { ALT: () => this.CONSUME(tokens.THIS) },
         // IEC 61131-3 operator keywords that can also be called as functions
         // (e.g. AND(a, b, c), OR(x, y), NOT(z), MOD(a, b), XOR(a, b))
         { ALT: () => this.CONSUME(tokens.AND) },
@@ -849,7 +851,9 @@ export class STParser extends CstParser {
         },
         {
           ALT: () => this.SUBRULE(this.thisStatement),
-          GATE: () => this.LA(1).tokenType === tokens.THIS,
+          GATE: () =>
+            this.LA(1).tokenType === tokens.THIS &&
+            this.LA(2).tokenType === tokens.Dot,
         },
         {
           ALT: () => this.SUBRULE(this.superCallStatement),
@@ -1047,13 +1051,13 @@ export class STParser extends CstParser {
       return false;
     }
     let i = 2;
-    while (i <= 20) {
+    while (i <= 60) {
       const t = this.LA(i)?.tokenType;
       if (t === undefined) return false;
       if (t === tokens.LBracket) {
         let depth = 1;
         i++;
-        while (i <= 40 && depth > 0) {
+        while (i <= 80 && depth > 0) {
           const inner = this.LA(i)?.tokenType;
           if (inner === undefined) return false;
           if (inner === tokens.LBracket) depth++;
@@ -1076,6 +1080,12 @@ export class STParser extends CstParser {
         ) {
           return true;
         }
+        if (next !== undefined && this.isIdentifierOrKeywordToken(next)) {
+          // This dot is a field access (e.g. a.b.Method or a.b.c.Method).
+          // Skip the field name and continue scanning.
+          i += 2;
+          continue;
+        }
         return false;
       }
       return false;
@@ -1087,9 +1097,7 @@ export class STParser extends CstParser {
    * instance.method(args); statement
    */
   public methodCallStatement = this.RULE("methodCallStatement", () => {
-    this.SUBRULE(this.methodCallPrefix); // instance / access-chain prefix
-    this.CONSUME(tokens.Dot);
-    this.SUBRULE2(this.identifierOrKeyword); // method name
+    this.SUBRULE(this.variable); // object prefix; last field access is the method name
     this.CONSUME(tokens.LParen);
     this.OPTION(() => {
       this.SUBRULE(this.argumentList);
@@ -1510,6 +1518,10 @@ export class STParser extends CstParser {
           GATE: () => this.LA(1).tokenType === tokens.__NEW,
         },
         {
+          ALT: () => this.SUBRULE(this.queryInterfaceExpression),
+          GATE: () => this.LA(1).tokenType === tokens.__QUERYINTERFACE,
+        },
+        {
           ALT: () => this.SUBRULE(this.thisAccess),
           GATE: () => this.LA(1).tokenType === tokens.THIS,
         },
@@ -1548,9 +1560,7 @@ export class STParser extends CstParser {
    * instance.method(args) expression
    */
   public methodCall = this.RULE("methodCall", () => {
-    this.SUBRULE(this.methodCallPrefix); // instance / access-chain prefix
-    this.CONSUME(tokens.Dot);
-    this.SUBRULE2(this.identifierOrKeyword); // method name
+    this.SUBRULE(this.variable); // object prefix; last field access is the method name
     this.CONSUME(tokens.LParen);
     this.OPTION(() => {
       this.SUBRULE(this.argumentList);
@@ -1674,6 +1684,23 @@ export class STParser extends CstParser {
   });
 
   /**
+   * __QUERYINTERFACE(source, target) - runtime interface query.
+   * Both operands are expressions; the second must resolve to an
+   * interface-typed variable that the query assigns on success.
+   */
+  public queryInterfaceExpression = this.RULE(
+    "queryInterfaceExpression",
+    () => {
+      this.CONSUME(tokens.__QUERYINTERFACE);
+      this.CONSUME(tokens.LParen);
+      this.SUBRULE(this.expression);
+      this.CONSUME(tokens.Comma);
+      this.SUBRULE2(this.expression);
+      this.CONSUME(tokens.RParen);
+    },
+  );
+
+  /**
    * Variable reference (with optional array subscripts and field access)
    */
   public variable = this.RULE("variable", () => {
@@ -1698,6 +1725,8 @@ export class STParser extends CstParser {
                 { ALT: () => this.SUBRULE2(this.identifierOrKeyword) },
                 // Bit access: var.0, var.31
                 { ALT: () => this.CONSUME(tokens.IntegerLiteral) },
+                // CODESYS bit access: var.%X0, var.%B1, var.%W0, var.%D0
+                { ALT: () => this.CONSUME(tokens.BitAccess) },
               ],
               IGNORE_AMBIGUITIES: true,
             });

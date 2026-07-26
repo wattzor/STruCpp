@@ -1085,10 +1085,9 @@ describe('External Code Pragma Tests (Phase 2.8)', () => {
   });
 });
 
-describe('Future Integration Tests', () => {
-  // These tests are placeholders for Phase 3+ when the compiler is implemented
+describe('Basic Compile Integration Tests', () => {
 
-  it.skip('should compile a simple program', () => {
+  it('should compile a simple program', () => {
     const source = `
       PROGRAM Main
         VAR counter : INT; END_VAR
@@ -1097,10 +1096,10 @@ describe('Future Integration Tests', () => {
     `;
     const result = compile(source);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain('class Program_MAIN');
+    expect(result.headerCode).toContain('class Program_MAIN');
   });
 
-  it.skip('should compile a function', () => {
+  it('should compile a function', () => {
     const source = `
       FUNCTION Add : INT
         VAR_INPUT a, b : INT; END_VAR
@@ -1112,7 +1111,7 @@ describe('Future Integration Tests', () => {
     expect(result.cppCode).toContain('IEC_INT ADD(');
   });
 
-  it.skip('should compile a function block', () => {
+  it('should compile a function block', () => {
     const source = `
       FUNCTION_BLOCK Counter
         VAR_INPUT enable : BOOL; END_VAR
@@ -1126,10 +1125,10 @@ describe('Future Integration Tests', () => {
     `;
     const result = compile(source);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain('class COUNTER');
+    expect(result.headerCode).toContain('class COUNTER');
   });
 
-  it.skip('should generate line mapping', () => {
+  it('should generate line mapping', () => {
     const source = `
       PROGRAM Main
         VAR x : INT; END_VAR
@@ -1142,7 +1141,7 @@ describe('Future Integration Tests', () => {
     expect(result.lineMap.size).toBeGreaterThan(0);
   });
 
-  it.skip('should report syntax errors', () => {
+  it('should report syntax errors', () => {
     const source = `
       PROGRAM Main
         VAR x : ; END_VAR
@@ -1153,7 +1152,7 @@ describe('Future Integration Tests', () => {
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
-  it.skip('should report type errors', () => {
+  it('should report type errors', () => {
     const source = `
       PROGRAM Main
         VAR x : INT; y : STRING; END_VAR
@@ -1162,6 +1161,6 @@ describe('Future Integration Tests', () => {
     `;
     const result = compile(source);
     expect(result.success).toBe(false);
-    expect(result.errors.some((e) => e.message.includes('type'))).toBe(true);
+    expect(result.errors.some((e) => e.message.includes('assign'))).toBe(true);
   });
 });

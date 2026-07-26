@@ -24,6 +24,8 @@
 #include "iec_traits.hpp"
 #include "iec_retain.hpp"
 #include "iec_ptr.hpp"
+#include "iec_array.hpp"
+#include "iec_enum.hpp"
 #include "iec_string.hpp"
 #include "iec_wstring.hpp"
 // IEC 61131-3 temporal types — pulled in here so the standard
@@ -38,6 +40,7 @@
 #include "iec_date.hpp"
 #include "iec_dt.hpp"
 #include "iec_tod.hpp"
+#include "iec_fault.hpp"
 #include <cmath>
 #include <algorithm>
 #include <chrono>
@@ -45,6 +48,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
+#if STRUCPP_HAS_EXCEPTIONS
+#include <stdexcept>
+#endif
 
 // Undefine AVR `<time.h>` macros that collide with common IEC
 // identifiers.  `<chrono>` above pulls in `<ctime>` → `<time.h>`,
@@ -68,6 +74,22 @@
 #undef NTP_OFFSET
 
 namespace strucpp {
+
+/**
+ * Raise a null-reference fault using the appropriate mechanism for the target.
+ * On hosted/exception builds this throws std::runtime_error so the runtime can
+ * catch it per-task. On -fno-exceptions firmware targets it calls the platform
+ * iec_runtime_fault() hook.
+ */
+#if STRUCPP_HAS_EXCEPTIONS
+inline void iec_null_reference_fault(const char* context) {
+    throw std::runtime_error(context ? context : "Null reference");
+}
+#else
+[[noreturn]] inline void iec_null_reference_fault(const char* context) noexcept {
+    iec_runtime_fault(IecFault::NullReference, context);
+}
+#endif
 
 // =============================================================================
 // Base Classes for Runtime
@@ -612,8 +634,10 @@ inline IEC_BOOL NE(A a, B b, C c, Rest... rest) noexcept {
  */
 template<typename T, enable_if_any_bit<T> = 0>
 inline T SHL(T in, IEC_INT n) noexcept {
-    auto shift = iec_unwrap(n);
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
+    auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     return T(iec_unwrap(in) << shift);
 }
 
@@ -622,8 +646,10 @@ template<typename T, typename N,
     enable_if_any_bit<T> = 0,
     std::enable_if_t<!std::is_same_v<std::decay_t<N>, IEC_INT>, int> = 0>
 inline T SHL(T in, N n) noexcept {
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
     auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     return T(iec_unwrap(in) << shift);
 }
 
@@ -633,8 +659,10 @@ inline T SHL(T in, N n) noexcept {
  */
 template<typename T, enable_if_any_bit<T> = 0>
 inline T SHR(T in, IEC_INT n) noexcept {
-    auto shift = iec_unwrap(n);
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
+    auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     return T(iec_unwrap(in) >> shift);
 }
 
@@ -643,8 +671,10 @@ template<typename T, typename N,
     enable_if_any_bit<T> = 0,
     std::enable_if_t<!std::is_same_v<std::decay_t<N>, IEC_INT>, int> = 0>
 inline T SHR(T in, N n) noexcept {
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
     auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     return T(iec_unwrap(in) >> shift);
 }
 
@@ -653,8 +683,10 @@ inline T SHR(T in, N n) noexcept {
 template<typename T, typename N,
     std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
 inline T SHL(T in, N n) noexcept {
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
     auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     using UT = std::make_unsigned_t<iec_underlying_type_t<T>>;
     return T(static_cast<iec_underlying_type_t<T>>(
         static_cast<UT>(iec_unwrap(in)) << shift));
@@ -663,8 +695,10 @@ inline T SHL(T in, N n) noexcept {
 template<typename T, typename N,
     std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
 inline T SHR(T in, N n) noexcept {
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
     auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return in < T(0) ? T(-1) : T(0);
     return T(iec_unwrap(in) >> shift);
 }
 
@@ -1181,12 +1215,12 @@ inline T NEG(T value) noexcept {
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T ADD(T a, T b) noexcept {
-    return T(iec_unwrap(a) + iec_unwrap(b));
+    return T(iec_add(iec_unwrap(a), iec_unwrap(b)));
 }
 
 template<typename T, typename... Args, enable_if_any_num<T> = 0>
 inline T ADD(T first, T second, Args... rest) noexcept {
-    return ADD(T(iec_unwrap(first) + iec_unwrap(second)), rest...);
+    return ADD(T(iec_add(iec_unwrap(first), iec_unwrap(second))), rest...);
 }
 
 /**
@@ -1196,12 +1230,12 @@ inline T ADD(T first, T second, Args... rest) noexcept {
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T MUL(T a, T b) noexcept {
-    return T(iec_unwrap(a) * iec_unwrap(b));
+    return T(iec_mul(iec_unwrap(a), iec_unwrap(b)));
 }
 
 template<typename T, typename... Args, enable_if_any_num<T> = 0>
 inline T MUL(T first, T second, Args... rest) noexcept {
-    return MUL(T(iec_unwrap(first) * iec_unwrap(second)), rest...);
+    return MUL(T(iec_mul(iec_unwrap(first), iec_unwrap(second))), rest...);
 }
 
 /**
@@ -1211,7 +1245,7 @@ inline T MUL(T first, T second, Args... rest) noexcept {
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T SUB(T a, T b) noexcept {
-    return T(iec_unwrap(a) - iec_unwrap(b));
+    return T(iec_sub(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
@@ -1220,8 +1254,8 @@ inline T SUB(T a, T b) noexcept {
  * Divides first value by second
  */
 template<typename T, enable_if_any_num<T> = 0>
-inline T DIV(T a, T b) noexcept {
-    return T(iec_unwrap(a) / iec_unwrap(b));
+inline T DIV(T a, T b) {
+    return T(iec_div(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
@@ -1230,11 +1264,14 @@ inline T DIV(T a, T b) noexcept {
  * Returns remainder of division
  */
 template<typename T, enable_if_any_num<T> = 0>
-inline T MOD(T a, T b) noexcept {
+inline T MOD(T a, T b) {
     if constexpr (std::is_floating_point_v<iec_underlying_type_t<T>>) {
+        if (iec_unwrap(b) == 0) {
+            iec_arithmetic_fault("Modulo by zero");
+        }
         return T(std::fmod(static_cast<double>(iec_unwrap(a)), static_cast<double>(iec_unwrap(b))));
     } else {
-        return T(iec_unwrap(a) % iec_unwrap(b));
+        return T(iec_mod(iec_unwrap(a), iec_unwrap(b)));
     }
 }
 
@@ -1472,6 +1509,63 @@ inline IEC_ULINT ADR(T& var) {
     return static_cast<IEC_ULINT>(reinterpret_cast<std::uintptr_t>(&var));
 }
 
+// =============================================================================
+// IEC size trait - logical byte size as CODESYS SIZEOF reports
+// =============================================================================
+
+namespace detail {
+
+template<typename...> struct make_void { using type = void; };
+template<typename... Ts> using void_t = typename make_void<Ts...>::type;
+
+template<typename T, typename = void>
+struct iec_sizeof_impl { static constexpr std::size_t value = sizeof(T); };
+
+template<typename T>
+struct iec_sizeof_impl<T, void_t<decltype(T::iec_byte_size)>> {
+    static constexpr std::size_t value = T::iec_byte_size;
+};
+
+} // namespace detail
+
+template<typename T>
+struct iec_sizeof : detail::iec_sizeof_impl<T> {};
+
+template<typename T>
+struct iec_sizeof<IECVar<T>> { static constexpr std::size_t value = sizeof(T); };
+
+template<std::size_t N>
+struct iec_sizeof<IECString<N>> { static constexpr std::size_t value = N + 1; };
+
+template<std::size_t N>
+struct iec_sizeof<IECStringVar<N>> { static constexpr std::size_t value = N + 1; };
+
+template<std::size_t N>
+struct iec_sizeof<IECWString<N>> { static constexpr std::size_t value = 2 * (N + 1); };
+
+template<std::size_t N>
+struct iec_sizeof<IECWStringVar<N>> { static constexpr std::size_t value = 2 * (N + 1); };
+
+template<typename T, typename Bounds>
+struct iec_sizeof<IEC_ARRAY_1D<T, Bounds>> {
+    static constexpr std::size_t value = Bounds::size * iec_sizeof<T>::value;
+};
+
+template<typename T, typename Bounds1, typename Bounds2>
+struct iec_sizeof<IEC_ARRAY_2D<T, Bounds1, Bounds2>> {
+    static constexpr std::size_t value =
+        Bounds1::size * Bounds2::size * iec_sizeof<T>::value;
+};
+
+template<typename T, typename Bounds1, typename Bounds2, typename Bounds3>
+struct iec_sizeof<IEC_ARRAY_3D<T, Bounds1, Bounds2, Bounds3>> {
+    static constexpr std::size_t value =
+        Bounds1::size * Bounds2::size * Bounds3::size * iec_sizeof<T>::value;
+};
+
+template<typename EnumType>
+struct iec_sizeof<IEC_ENUM_Var<EnumType>> { static constexpr std::size_t value = sizeof(EnumType); };
+
 /**
  * IEC_SIZEOF(var) - Returns the logical IEC type size in bytes.
  * For IECVar<T> types, returns sizeof(T) (the underlying type),
@@ -1479,12 +1573,10 @@ inline IEC_ULINT ADR(T& var) {
  * Matches CODESYS SIZEOF behavior: SIZEOF(INT) = 2, SIZEOF(DINT) = 4, etc.
  */
 template<typename T>
-inline IEC_UDINT IEC_SIZEOF(const IECVar<T>&) noexcept {
-    return static_cast<IEC_UDINT>(sizeof(T));
-}
-template<typename T>
 inline IEC_UDINT IEC_SIZEOF(const T&) noexcept {
-    return static_cast<IEC_UDINT>(sizeof(T));
+    using NoRef = typename std::remove_reference<T>::type;
+    using NoCV = typename std::remove_cv<NoRef>::type;
+    return static_cast<IEC_UDINT>(iec_sizeof<NoCV>::value);
 }
 
 /**
@@ -1496,6 +1588,47 @@ inline IEC_ULINT MEMCPY(IEC_ULINT dest, IEC_ULINT src, std::size_t n) {
     std::memcpy(reinterpret_cast<void*>(static_cast<std::uintptr_t>(dest)),
                 reinterpret_cast<const void*>(static_cast<std::uintptr_t>(src)), n);
     return dest;
+}
+
+/**
+ * Type-tag based interface query support.
+ *
+ * Every generated interface class inherits `__IInterface` (usually as a
+ * virtual base).  A function block that implements one or more interfaces
+ * overrides `__strucpp_query_interface()` to return the correct subobject
+ * pointer for each implemented interface.  This replaces `dynamic_cast` and
+ * works under `-fno-rtti`.
+ */
+class __IInterface {
+public:
+    virtual ~__IInterface() = default;
+    virtual bool __strucpp_query_interface(const char* id, void*& out) const {
+        (void)id;
+        out = nullptr;
+        return false;
+    }
+};
+
+/**
+ * __QUERYINTERFACE(source, target) runtime support.
+ * Asks the source object/pointer whether it implements the target interface
+ * by type-tag. On success the target pointer is updated and the function
+ * returns true; otherwise it is set to null and the function returns false.
+ */
+template <typename To, typename From>
+inline bool query_interface(From* from, To*& to) {
+    if (from == nullptr) {
+        to = nullptr;
+        return false;
+    }
+    void* ptr = nullptr;
+    bool ok = from->__strucpp_query_interface(To::__strucpp_interface_name(), ptr);
+    if (ok) {
+        to = reinterpret_cast<To*>(ptr);
+        return true;
+    }
+    to = nullptr;
+    return false;
 }
 
 } // namespace strucpp
