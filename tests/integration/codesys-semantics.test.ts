@@ -4,7 +4,8 @@
  * E2E CODESYS numeric / bit / shift / division semantics.
  *
  * Covers the C1-C8 SIT items that protocol and crypto FBs depend on:
- *   C1/C2/C3: unsigned and signed integer wraparound
+ *   C1/C2/C3: unsigned and signed integer wraparound (truncation on assignment,
+ *              not in temporaries, per the CODESYS Operators reference)
  *   C4/C5:     SHL/SHR/ROL/ROR edge counts
  *   C6:        bitwise NOT/AND/OR/XOR on all widths
  *   C7:        signed DIV/MOD
@@ -27,7 +28,11 @@ describe.skipIf(!hasGpp)("CODESYS numeric and bit semantics", () => {
   });
   afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
-  it("C1/C2/C3: integer wraparound for unsigned and signed types", () => {
+  // C1/C2/C3: the temporaries are computed at the target native width, so the
+  // wraparound visible here happens when each wide result is assigned back to the
+  // typed variable (or passed to a typed parameter). This is *not* wraparound at
+  // the operand width.
+  it("C1/C2/C3: integer wraparound on assignment to typed variables", () => {
     const result = compile(`
       PROGRAM Main
       VAR
@@ -794,5 +799,218 @@ int main() {
 `,
     });
     expect(stdout).toBe("1,1");
+  });
+
+  // Tier C edge cases for native-width promotion.
+
+  it("assignment to a BYTE variable truncates a wide temporary (control case)", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        t : BYTE;
+      END_VAR
+        t := 200 * 2;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "byte_assign_truncate",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.T) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("144");
+  });
+
+  it("passing a wide expression to a typed BYTE parameter truncates on assignment", () => {
+    const result = compile(`
+      FUNCTION F : WORD
+        VAR_INPUT x : BYTE; END_VAR
+        F := x + 0;
+      END_FUNCTION
+
+      PROGRAM Main
+      VAR
+        r : WORD;
+      END_VAR
+        r := F(x := 200 * 2);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "byte_param_truncate",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.R) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("144");
+  });
+
+  it("byte-assembly idiom (hi * 256) + lo produces a wide WORD result", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        hi : BYTE := 1;
+        lo : BYTE := 2;
+        w  : WORD;
+      END_VAR
+        w := (hi * 256) + lo;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "byte_pack",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.W) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("258");
+  });
+
+  it("wide temporary comparison is not truncated to the operand type", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        b : BOOL;
+      END_VAR
+        b := (BYTE#200 + BYTE#100) = WORD#44;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "wide_compare",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.B) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("0");
+  });
+
+  it("(BYTE * BYTE) MOD 256 keeps the wide temporary until the MOD", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        r : BYTE;
+      END_VAR
+        r := (BYTE#200 * BYTE#2) MOD 256;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "byte_mul_mod",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.R) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("144");
+  });
+
+  // This test deliberately compares the default host width against a forced
+  // 32-bit target, so it cannot run when the whole suite is already pinned to
+  // 32-bit via STRUCPP_TARGET_WIDTH.
+  it.skipIf(process.env.STRUCPP_TARGET_WIDTH !== undefined)("DINT + DINT is target-dependent: wraps on 32-bit, does not wrap on 64-bit", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        r64 : LINT;
+      END_VAR
+        r64 := DINT#2147483647 + DINT#1;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const mainCode = `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<long long>(prog.R64) << std::endl;
+    return 0;
+}
+`;
+
+    // Default host width (64-bit on x86_64): temporary is 64-bit, result is 2147483648.
+    const stdout64 = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "dint_add_64",
+      mainCode,
+    });
+    expect(stdout64).toBe("2147483648");
+
+    // Build a separate PCH and compile with the 32-bit target width.
+    const target32Dir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-target32-"));
+    try {
+      const target32Pch = createPCH(target32Dir, ["-DSTRUCPP_TARGET_WIDTH=32"]);
+      const stdout32 = compileAndRunStandalone({
+        tempDir: target32Dir,
+        pchPath: target32Pch,
+        extraFlags: ["-DSTRUCPP_TARGET_WIDTH=32"],
+        headerCode: result.headerCode!,
+        cppCode: result.cppCode!,
+        testName: "dint_add_32",
+        mainCode,
+      });
+      expect(stdout32).toBe("-2147483648");
+    } finally {
+      fs.rmSync(target32Dir, { recursive: true, force: true });
+    }
   });
 });
