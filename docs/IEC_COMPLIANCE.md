@@ -42,6 +42,18 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 |------|-------|
 | UNION | CODESYS extension |
 
+### Generic Types
+
+| Type | Status | Notes |
+|------|--------|-------|
+| `ANY` | Partial | Allowed only in `VAR_INPUT` parameters; passed as `AnyType` descriptor |
+| `ANY_BIT` | Partial | Allowed only in `VAR_INPUT` parameters |
+| `ANY_DATE` | Partial | Allowed only in `VAR_INPUT` parameters |
+| `ANY_NUM` | Partial | Allowed only in `VAR_INPUT` parameters |
+| `ANY_REAL` | Partial | Allowed only in `VAR_INPUT` parameters |
+| `ANY_INT` | Partial | Allowed only in `VAR_INPUT` parameters |
+| `ANY_STRING` | Partial | Allowed only in `VAR_INPUT` parameters |
+
 ## Program Organization Units
 
 | POU | Status | Notes |
@@ -185,6 +197,7 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 |----|---------|-------------------|-------------------|
 | D1 | `__VARINFO` address fields | `ByteAddress`, `ByteOffset`, `Area`, `BitAddress`, and `MemoryArea` reflect the real PLC memory layout | Fields are populated at compile time with synthetic byte/bit addresses and a fixed `MEM_LOCAL` memory area; `ByteAddress` values start at a recognisable base (`0xCA000000`) and are allocated per descriptor to avoid accidental use as real pointers |
 | D2 | `__SYSTEM` enum emission | Enums defined per project or in the runtime as CODESYS sees fit | `__SYSTEM.TYPE_CLASS` and `__SYSTEM.MEMORY_AREA` are emitted as fixed `enum class` definitions in the runtime header (`iec_system.hpp`) and wrapped with `IEC_ENUM_Var<>` |
+| D3 | `ANY` / `ANY_*` generic parameters | CODESYS accepts `ANY`, `ANY_BIT`, `ANY_INT`, `ANY_REAL`, `ANY_NUM`, `ANY_DATE`, `ANY_STRING` only in `VAR_INPUT`; any variable expression may be passed and is exposed as an `AnyType` descriptor | STruCpp passes a `strucpp::AnyType` descriptor with `typeclass`, `pvalue`, `diSize`; generic parameters are rejected outside `VAR_INPUT` |
 | D4 | `__VARINFO` field population | `__VARINFO` returns a live view of the variable, including any runtime changes to values or location | The returned `VAR_INFO` descriptor is a compile-time constant; string fields (`TypeName`, `Symbol`, `Comment`) are baked into the binary and numeric fields (`BitSize`, `TypeClass`, etc.) are derived from the declaration type. Member/element enumeration is not implemented |
 
 ## Not Yet Implemented
@@ -196,5 +209,4 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 | Bit access (var.%X0) | Individual bit addressing |
 | ACTION blocks | Named action blocks |
 | TRY/CATCH/FINALLY | Exception handling |
-| Generics | Parameterized types |
 | Conditional compilation | Preprocessor-style conditionals |

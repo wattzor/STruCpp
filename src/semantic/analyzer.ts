@@ -42,6 +42,7 @@ import {
   resolveArrayElementType,
   buildEnumMemberMap,
   describeType,
+  isGenericTypeName,
   type EnumMemberEntry,
 } from "./type-utils.js";
 import {
@@ -2372,6 +2373,10 @@ export class SemanticAnalyzer {
    */
   private isKnownType(name: string): boolean {
     const upper = name.toUpperCase();
+    // IEC generic type groups (allowed only in VAR_INPUT — validated separately)
+    if (isGenericTypeName(upper)) {
+      return true;
+    }
     // Whitelist synthetic internal types
     if (upper.startsWith("__VLA_") || upper.startsWith("__INLINE_ARRAY_")) {
       return true;
@@ -2395,12 +2400,25 @@ export class SemanticAnalyzer {
   private validateSingleTypeReference(
     typeRef: TypeReference,
     context: string,
+    allowGeneric = false,
   ): void {
     // Skip empty or VOID type names
     if (!typeRef.name || typeRef.name.toUpperCase() === "VOID") return;
 
     // For inline arrays, validate the element type instead
     const nameToCheck = typeRef.elementTypeName ?? typeRef.name;
+    const nameUpper = nameToCheck.toUpperCase();
+
+    // IEC generic type groups are only permitted as VAR_INPUT parameter types
+    if (isGenericTypeName(nameUpper) && !allowGeneric) {
+      this.addError(
+        `Generic type '${nameToCheck}' is only allowed in VAR_INPUT parameters${context ? " in " + context : ""}`,
+        typeRef.sourceSpan.startLine,
+        typeRef.sourceSpan.startCol,
+        typeRef.sourceSpan.file,
+      );
+      return;
+    }
 
     if (!this.isKnownType(nameToCheck)) {
       this.addError(
@@ -2421,8 +2439,10 @@ export class SemanticAnalyzer {
     // Helper to validate var blocks
     const validateVarBlocks = (varBlocks: VarBlock[], context: string) => {
       for (const block of varBlocks) {
+        // IEC generic type groups (ANY, ANY_BIT, ...) are only valid in VAR_INPUT
+        const allowGeneric = block.blockType === "VAR_INPUT";
         for (const decl of block.declarations) {
-          this.validateSingleTypeReference(decl.type, context);
+          this.validateSingleTypeReference(decl.type, context, allowGeneric);
         }
       }
     };
