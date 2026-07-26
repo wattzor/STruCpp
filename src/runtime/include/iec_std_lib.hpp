@@ -1534,20 +1534,44 @@ inline IEC_ULINT MEMCPY(IEC_ULINT dest, IEC_ULINT src, std::size_t n) {
 }
 
 /**
- * __QUERYINTERFACE(source, target) runtime support.
- * Casts the source object/pointer to the target interface type. On success
- * the target pointer is updated and the function returns true; otherwise it
- * is set to null and the function returns false.
+ * Type-tag based interface query support.
  *
- * NOTE: this implementation relies on C++ RTTI (dynamic_cast). Compiling
- * STruC++ output for `-fno-rtti` embedded targets will currently fail when
- * `__QUERYINTERFACE` is used. A non-RTTI alternative would require a manually
- * maintained interface vtable/type-tag in every generated FB.
+ * Every generated interface class inherits `__IInterface` (usually as a
+ * virtual base).  A function block that implements one or more interfaces
+ * overrides `__strucpp_query_interface()` to return the correct subobject
+ * pointer for each implemented interface.  This replaces `dynamic_cast` and
+ * works under `-fno-rtti`.
+ */
+class __IInterface {
+public:
+    virtual ~__IInterface() = default;
+    virtual bool __strucpp_query_interface(const char* id, void*& out) const {
+        (void)id;
+        out = nullptr;
+        return false;
+    }
+};
+
+/**
+ * __QUERYINTERFACE(source, target) runtime support.
+ * Asks the source object/pointer whether it implements the target interface
+ * by type-tag. On success the target pointer is updated and the function
+ * returns true; otherwise it is set to null and the function returns false.
  */
 template <typename To, typename From>
 inline bool query_interface(From* from, To*& to) {
-    to = dynamic_cast<To*>(from);
-    return to != nullptr;
+    if (from == nullptr) {
+        to = nullptr;
+        return false;
+    }
+    void* ptr = nullptr;
+    bool ok = from->__strucpp_query_interface(To::__strucpp_interface_name(), ptr);
+    if (ok) {
+        to = reinterpret_cast<To*>(ptr);
+        return true;
+    }
+    to = nullptr;
+    return false;
 }
 
 } // namespace strucpp

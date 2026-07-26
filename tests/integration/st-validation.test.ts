@@ -75,9 +75,10 @@ describe.skipIf(!hasGpp)("ST Validation Suite", () => {
     const category = path.relative(VALIDATION_DIR, dir);
     const featureName = baseName.replace(/\.st$/, "");
 
-    // Skip if source file doesn't exist (visible in test output)
     if (!fs.existsSync(sourcePath)) {
-      it.skip(`validates ${category}/${featureName} (missing source: ${baseName})`, () => {});
+      it(`validates ${category}/${featureName} (missing source: ${baseName})`, () => {
+        throw new Error(`Missing source fixture ${baseName} for test ${path.basename(testPath)}`);
+      });
       continue;
     }
     const testName = `${category}/${featureName}`;
