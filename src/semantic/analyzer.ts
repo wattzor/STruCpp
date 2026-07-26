@@ -2470,11 +2470,19 @@ export class SemanticAnalyzer {
         );
       }
 
-      // Properties
+      // Properties — return type and local getter/setter VAR blocks
       for (const prop of fb.properties) {
         this.validateSingleTypeReference(
           prop.type,
           `PROPERTY '${prop.name}' of '${fb.name}'`,
+        );
+        validateVarBlocks(
+          prop.getterVarBlocks ?? [],
+          `PROPERTY '${prop.name}' GET of '${fb.name}'`,
+        );
+        validateVarBlocks(
+          prop.setterVarBlocks ?? [],
+          `PROPERTY '${prop.name}' SET of '${fb.name}'`,
         );
       }
     }
