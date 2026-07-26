@@ -59,16 +59,8 @@ enum class TYPE_CLASS : std::uint32_t {
     TYPE_LAZY = 36,
     TYPE_LTIME = 37,
     TYPE_BITCONST = 38,
-    TYPE_UXINT = 39,
-    TYPE_XWORD = 40,
-    TYPE_XINT = 41,
-    TYPE_XSTRING = 42,
-    TYPE_VARLENARRAY = 43,
-    TYPE_ANYSTRING = 44,
-    TYPE_VECTOR = 45,
-    TYPE_LDATE = 46,
-    TYPE_LDATEANDTIME = 47,
-    TYPE_LTIMEOFDAY = 48,
+    // Values above 38 are not documented in the CODESYS TYPE_CLASS enum.
+    // Undocumented types are reported as TYPE_USERDEF (28).
 };
 
 enum class MEMORY_AREA : std::int32_t {
