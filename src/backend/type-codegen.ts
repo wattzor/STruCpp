@@ -281,6 +281,7 @@ export class TypeCodeGenerator {
   private generateStructType(name: string, def: StructDefinition): void {
     this.emit(`struct ${name} {`);
 
+    const sizeMembers: string[] = [];
     for (const field of def.fields) {
       let cppType: string;
       if (field.type.arrayDimensions && field.type.elementTypeName) {
@@ -308,6 +309,7 @@ export class TypeCodeGenerator {
           fieldName.toUpperCase() === field.type.name.toUpperCase()
             ? `${fieldName}_`
             : fieldName;
+        sizeMembers.push(`iec_sizeof<${cppType}>::value`);
         if (field.initialValue) {
           const initVal = this.expressionToCpp(field.initialValue);
           // Array types can't be initialized with = 0; use {} instead
@@ -331,6 +333,11 @@ export class TypeCodeGenerator {
       }
     }
 
+    if (sizeMembers.length > 0) {
+      this.emit(
+        `${this.options.indent}static constexpr std::size_t iec_byte_size = ${sizeMembers.join(" + ")};`,
+      );
+    }
     this.emit("};");
     this.emit("");
   }

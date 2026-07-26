@@ -24,6 +24,8 @@
 #include "iec_traits.hpp"
 #include "iec_retain.hpp"
 #include "iec_ptr.hpp"
+#include "iec_array.hpp"
+#include "iec_enum.hpp"
 #include "iec_string.hpp"
 #include "iec_wstring.hpp"
 // IEC 61131-3 temporal types — pulled in here so the standard
@@ -1507,6 +1509,63 @@ inline IEC_ULINT ADR(T& var) {
     return static_cast<IEC_ULINT>(reinterpret_cast<std::uintptr_t>(&var));
 }
 
+// =============================================================================
+// IEC size trait - logical byte size as CODESYS SIZEOF reports
+// =============================================================================
+
+namespace detail {
+
+template<typename...> struct make_void { using type = void; };
+template<typename... Ts> using void_t = typename make_void<Ts...>::type;
+
+template<typename T, typename = void>
+struct iec_sizeof_impl { static constexpr std::size_t value = sizeof(T); };
+
+template<typename T>
+struct iec_sizeof_impl<T, void_t<decltype(T::iec_byte_size)>> {
+    static constexpr std::size_t value = T::iec_byte_size;
+};
+
+} // namespace detail
+
+template<typename T>
+struct iec_sizeof : detail::iec_sizeof_impl<T> {};
+
+template<typename T>
+struct iec_sizeof<IECVar<T>> { static constexpr std::size_t value = sizeof(T); };
+
+template<std::size_t N>
+struct iec_sizeof<IECString<N>> { static constexpr std::size_t value = N + 1; };
+
+template<std::size_t N>
+struct iec_sizeof<IECStringVar<N>> { static constexpr std::size_t value = N + 1; };
+
+template<std::size_t N>
+struct iec_sizeof<IECWString<N>> { static constexpr std::size_t value = 2 * (N + 1); };
+
+template<std::size_t N>
+struct iec_sizeof<IECWStringVar<N>> { static constexpr std::size_t value = 2 * (N + 1); };
+
+template<typename T, typename Bounds>
+struct iec_sizeof<IEC_ARRAY_1D<T, Bounds>> {
+    static constexpr std::size_t value = Bounds::size * iec_sizeof<T>::value;
+};
+
+template<typename T, typename Bounds1, typename Bounds2>
+struct iec_sizeof<IEC_ARRAY_2D<T, Bounds1, Bounds2>> {
+    static constexpr std::size_t value =
+        Bounds1::size * Bounds2::size * iec_sizeof<T>::value;
+};
+
+template<typename T, typename Bounds1, typename Bounds2, typename Bounds3>
+struct iec_sizeof<IEC_ARRAY_3D<T, Bounds1, Bounds2, Bounds3>> {
+    static constexpr std::size_t value =
+        Bounds1::size * Bounds2::size * Bounds3::size * iec_sizeof<T>::value;
+};
+
+template<typename EnumType>
+struct iec_sizeof<IEC_ENUM_Var<EnumType>> { static constexpr std::size_t value = sizeof(EnumType); };
+
 /**
  * IEC_SIZEOF(var) - Returns the logical IEC type size in bytes.
  * For IECVar<T> types, returns sizeof(T) (the underlying type),
@@ -1514,12 +1573,10 @@ inline IEC_ULINT ADR(T& var) {
  * Matches CODESYS SIZEOF behavior: SIZEOF(INT) = 2, SIZEOF(DINT) = 4, etc.
  */
 template<typename T>
-inline IEC_UDINT IEC_SIZEOF(const IECVar<T>&) noexcept {
-    return static_cast<IEC_UDINT>(sizeof(T));
-}
-template<typename T>
 inline IEC_UDINT IEC_SIZEOF(const T&) noexcept {
-    return static_cast<IEC_UDINT>(sizeof(T));
+    using NoRef = typename std::remove_reference<T>::type;
+    using NoCV = typename std::remove_cv<NoRef>::type;
+    return static_cast<IEC_UDINT>(iec_sizeof<NoCV>::value);
 }
 
 /**

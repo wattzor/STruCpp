@@ -155,6 +155,11 @@ public:
     bool is_null() const noexcept { return ptr_ == nullptr; }
 
     /**
+     * Check if reference points to a valid value (__ISVALIDREF)
+     */
+    bool is_valid() const noexcept { return ptr_ != nullptr; }
+
+    /**
      * Dereference - throws NullReferenceException if NULL
      * Used by generated code for ^ operator and DREF() function
      */
@@ -360,6 +365,11 @@ public:
     void bind(IECVar<T>& var) noexcept { ptr_ = &var; }
 
     /**
+     * Check if reference is bound to a variable (__ISVALIDREF)
+     */
+    bool is_bound() const noexcept { return ptr_ != nullptr; }
+
+    /**
      * Implicit value access (get) - reads from target
      */
     T get() const noexcept { return ptr_->get(); }
@@ -465,6 +475,20 @@ using REF_TO = IEC_REF_TO<T>;
  */
 template<typename T>
 using REFERENCE_TO = IEC_REFERENCE_TO<T>;
+
+// =============================================================================
+// CODESYS __ISVALIDREF operator
+// =============================================================================
+
+template<typename T>
+inline IEC_BOOL __ISVALIDREF(const IEC_REF_TO<T>& ref) noexcept {
+    return IEC_BOOL(ref.is_valid());
+}
+
+template<typename T>
+inline IEC_BOOL __ISVALIDREF(const IEC_REFERENCE_TO<T>& ref) noexcept {
+    return IEC_BOOL(ref.is_bound());
+}
 
 /*
  * Example usage (generated code for REF_TO):
