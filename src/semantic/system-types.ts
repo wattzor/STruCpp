@@ -57,17 +57,12 @@ export const TYPE_CLASS = {
   TYPE_LAZY: 36,
   TYPE_LTIME: 37,
   TYPE_BITCONST: 38,
-  TYPE_UXINT: 39,
-  TYPE_XWORD: 40,
-  TYPE_XINT: 41,
-  TYPE_XSTRING: 42,
-  TYPE_VARLENARRAY: 43,
-  TYPE_ANYSTRING: 44,
-  TYPE_VECTOR: 45,
-  TYPE_LDATE: 46,
-  TYPE_LDATEANDTIME: 47,
-  TYPE_LTIMEOFDAY: 48,
 } as const;
+
+/**
+ * Types whose TYPE_CLASS is not documented fall back to TYPE_USERDEF (28).
+ * This keeps the ABI honest rather than inventing plausible-looking values.
+ */
 
 /**
  * CODESYS __SYSTEM.MEMORY_AREA enum values.
@@ -128,7 +123,9 @@ export function resolveTypeClass(
       if (_ctx !== undefined && _ctx.isSubrange) {
         return TYPE_CLASS.TYPE_SUBRANGE;
       }
-      return TYPE_CLASS.TYPE_NONE;
+      // Elementary types with no documented TYPE_CLASS (e.g. target-dependent
+      // __XWORD) are reported as user-defined rather than NONE.
+      return TYPE_CLASS.TYPE_USERDEF;
     }
     case "array":
       return TYPE_CLASS.TYPE_ARRAY;
