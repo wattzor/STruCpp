@@ -127,4 +127,59 @@ int main() {
     });
     expect(stdout).toBe("77");
   });
+
+  it("supports explicit FB_Reinit calls", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Counter
+      VAR
+        count : INT;
+      END_VAR
+
+      METHOD FB_Init : BOOL
+      VAR_INPUT
+        bInitRetains : BOOL;
+        bInCopyCode : BOOL;
+      END_VAR
+        count := 42;
+        FB_Init := TRUE;
+      END_METHOD
+
+      METHOD FB_Reinit : BOOL
+        count := 100;
+        FB_Reinit := TRUE;
+      END_METHOD
+
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        c : Counter;
+        afterInit : INT;
+        afterReinit : INT;
+      END_VAR
+        afterInit := c.count;
+        c.FB_Reinit();
+        afterReinit := c.count;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "fb_reinit",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.AFTERINIT) << "," << static_cast<int>(prog.AFTERREINIT) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("42,100");
+  });
 });

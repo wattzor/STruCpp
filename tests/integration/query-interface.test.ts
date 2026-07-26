@@ -8,6 +8,47 @@ import { describe, it, expect } from "vitest";
 import { hasGpp, runE2ETestPipeline } from "./test-helpers.js";
 
 describe.skipIf(!hasGpp)("__QUERYINTERFACE runtime support", () => {
+  it("returns FALSE when the source object does not implement the requested interface", () => {
+    const sourceST = `
+      INTERFACE IBase
+        METHOD GetValue : INT
+        END_METHOD
+      END_INTERFACE
+
+      INTERFACE IOther
+        METHOD GetOther : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Comp IMPLEMENTS IBase
+        METHOD PUBLIC GetValue : INT
+          GetValue := 10;
+        END_METHOD
+      END_FUNCTION_BLOCK
+    `;
+
+    const testST = `
+      TEST 'QueryInterface failure returns FALSE'
+      VAR
+        c : Comp;
+        itf : IOther;
+        ok : BOOL;
+      END_VAR
+      ok := __QUERYINTERFACE(c, itf);
+      ASSERT_EQ(ok, FALSE);
+      END_TEST
+    `;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "query_interface_fail_test.st",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("1 passed, 0 failed");
+  });
+
   it("queries an interface from an FB and chains to a derived interface", () => {
     const sourceST = `
       INTERFACE IBase
