@@ -1405,7 +1405,8 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
         END_PROGRAM
       `);
 
-      expect(result.cppCode).toContain("ITF->GETVALUE()");
+      expect(result.cppCode).toContain("__itf->GETVALUE()");
+      expect(result.cppCode).toContain("iec_null_reference_fault");
     });
 
     it("should generate pointer return for interface-returning methods", () => {
