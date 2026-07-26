@@ -397,7 +397,7 @@ inline T SEL(IEC_BOOL g, T in0, T in1) noexcept {
  */
 template<typename T, enable_if_any_elementary<T> = 0>
 inline T MAX(T a, T b) noexcept {
-    return iec_unwrap(a) > iec_unwrap(b) ? a : b;
+    return iec_cmp_greater(iec_unwrap(a), iec_unwrap(b)) ? a : b;
 }
 
 /**
@@ -406,7 +406,7 @@ inline T MAX(T a, T b) noexcept {
  */
 template<typename T, enable_if_any_elementary<T> = 0>
 inline T MIN(T a, T b) noexcept {
-    return iec_unwrap(a) < iec_unwrap(b) ? a : b;
+    return iec_cmp_less(iec_unwrap(a), iec_unwrap(b)) ? a : b;
 }
 
 /**
@@ -415,8 +415,8 @@ inline T MIN(T a, T b) noexcept {
  */
 template<typename T, enable_if_any_elementary<T> = 0>
 inline T LIMIT(T mn, T in, T mx) noexcept {
-    if (iec_unwrap(in) < iec_unwrap(mn)) return mn;
-    if (iec_unwrap(in) > iec_unwrap(mx)) return mx;
+    if (iec_cmp_less(iec_unwrap(in), iec_unwrap(mn))) return mn;
+    if (iec_cmp_greater(iec_unwrap(in), iec_unwrap(mx))) return mx;
     return in;
 }
 
@@ -487,6 +487,26 @@ inline T MUX(IEC_INT k, T in0, T in1, Args... rest) noexcept {
     return MUX(IEC_INT(iec_unwrap(k) - 1), in1, rest...);
 }
 
+// Heterogeneous MUX: inputs may have different IEC types.  The selected value
+// is returned in a common result type wide/signed enough to hold every input.
+template<typename T, typename U, typename... Args,
+    std::enable_if_t<
+        !std::is_same_v<std::decay_t<T>, std::decay_t<U>> &&
+        is_any_elementary_v<iec_underlying_type_t<std::decay_t<T>>> &&
+        is_any_elementary_v<iec_underlying_type_t<std::decay_t<U>>>, int> = 0>
+inline auto MUX(IEC_INT k, T in0, U in1, Args... rest) noexcept {
+    using result_t = iec_common_result_t<
+        decltype(iec_unwrap(in0)),
+        decltype(iec_unwrap(in1)),
+        decltype(iec_unwrap(rest))...>;
+    if (iec_unwrap(k) == 0) return static_cast<result_t>(iec_unwrap(in0));
+    if constexpr (sizeof...(Args) == 0) {
+        return static_cast<result_t>(iec_unwrap(in1));
+    } else {
+        return static_cast<result_t>(MUX(IEC_INT(iec_unwrap(k) - 1), in1, rest...));
+    }
+}
+
 // =============================================================================
 // Comparison Functions (ANY_ELEMENTARY -> BOOL)
 // =============================================================================
@@ -496,28 +516,11 @@ inline T MUX(IEC_INT k, T in0, T in1, Args... rest) noexcept {
 // `EQ(my_int, 0)` (where the literal is int / IEC_INT) both type-check
 // without forcing the caller to wrap every literal in a cast. Each side
 // only has to land on an IEC elementary type after `iec_unwrap`; the
-// comparison itself uses C++'s usual arithmetic conversions to find a
-// common type.
-//
-// CONVERSION SEMANTICS — read this before writing cross-sign tests:
-// Mixing signed and unsigned operands follows C++'s usual arithmetic
-// conversions, not an IEC rule.
-//
-//   - When the unsigned operand has *lower* integer rank than `int`
-//     (IEC_USINT, IEC_UINT — uint8/uint16), both sides are promoted to
-//     `int` and the compare happens in signed land. No wrap.
-//
-//   - When the unsigned operand has rank >= `int` (IEC_UDINT, IEC_ULINT —
-//     uint32/uint64) the signed operand converts to the unsigned type
-//     and a negative value wraps to a large unsigned. So
-//     `EQ(IEC_UDINT(0xFFFFFFFFu), -1)` is TRUE because -1 becomes
-//     0xFFFFFFFF before the compare.
-//
-// STruC++ does not insert extra guards: IEC 61131-3 doesn't define
-// cross-sign-class comparison, and we want the generated C++ to behave
-// predictably under standard rules. If a project needs sign-strict
-// comparisons, cast both sides to the same type before calling
-// EQ/NE/LT/LE/GT/GE.
+// comparison uses the sign-aware `iec_cmp_*` helpers, so mixed signed/
+// unsigned operands compare as mathematical integer values (e.g.
+// `-1 < 0xFFFFFFFFu` is TRUE and `-1 = 1u` is FALSE), even for same-width
+// pairs like `LINT` vs `ULINT` where C++ usual arithmetic conversions would
+// silently promote to unsigned.
 template<typename A, typename B>
 using enable_if_two_elementary = std::enable_if_t<
     is_any_elementary_v<iec_underlying_type_t<std::decay_t<A>>> &&
@@ -1363,12 +1366,12 @@ inline T XOR(T first, T second, Args... rest) noexcept {
 
 /**
  * MAX - Maximum (variadic)
- * Input: ANY_ELEMENTARY, Output: ANY_ELEMENTARY (same type)
+ * Input: ANY_ELEMENTARY, Output: ANY_ELEMENTARY (widened when operands differ)
  * Returns the maximum of two or more values
  */
 template<typename T, typename... Args, enable_if_any_elementary<T> = 0>
-inline T MAX(T first, T second, Args... rest) noexcept {
-    T current_max = iec_unwrap(first) > iec_unwrap(second) ? first : second;
+inline auto MAX(T first, T second, Args... rest) noexcept {
+    auto current_max = iec_cmp_greater(iec_unwrap(first), iec_unwrap(second)) ? first : second;
     if constexpr (sizeof...(rest) > 0) {
         return MAX(current_max, rest...);
     } else {
@@ -1376,19 +1379,49 @@ inline T MAX(T first, T second, Args... rest) noexcept {
     }
 }
 
+// Heterogeneous first-two-argument form for 3+ argument MAX.
+template<typename T, typename U, typename... Args,
+    std::enable_if_t<
+        !std::is_same_v<std::decay_t<T>, std::decay_t<U>> &&
+        is_any_elementary_v<iec_underlying_type_t<std::decay_t<T>>> &&
+        is_any_elementary_v<iec_underlying_type_t<std::decay_t<U>>> &&
+        (sizeof...(Args) > 0), int> = 0>
+inline auto MAX(T first, U second, Args... rest) noexcept {
+    using R = iec_minmax_result_t<decltype(iec_unwrap(first)), decltype(iec_unwrap(second))>;
+    R current_max = iec_cmp_greater(iec_unwrap(first), iec_unwrap(second))
+        ? static_cast<R>(iec_unwrap(first))
+        : static_cast<R>(iec_unwrap(second));
+    return MAX(current_max, rest...);
+}
+
 /**
  * MIN - Minimum (variadic)
- * Input: ANY_ELEMENTARY, Output: ANY_ELEMENTARY (same type)
+ * Input: ANY_ELEMENTARY, Output: ANY_ELEMENTARY (widened when operands differ)
  * Returns the minimum of two or more values
  */
 template<typename T, typename... Args, enable_if_any_elementary<T> = 0>
-inline T MIN(T first, T second, Args... rest) noexcept {
-    T current_min = iec_unwrap(first) < iec_unwrap(second) ? first : second;
+inline auto MIN(T first, T second, Args... rest) noexcept {
+    auto current_min = iec_cmp_less(iec_unwrap(first), iec_unwrap(second)) ? first : second;
     if constexpr (sizeof...(rest) > 0) {
         return MIN(current_min, rest...);
     } else {
         return current_min;
     }
+}
+
+// Heterogeneous first-two-argument form for 3+ argument MIN.
+template<typename T, typename U, typename... Args,
+    std::enable_if_t<
+        !std::is_same_v<std::decay_t<T>, std::decay_t<U>> &&
+        is_any_elementary_v<iec_underlying_type_t<std::decay_t<T>>> &&
+        is_any_elementary_v<iec_underlying_type_t<std::decay_t<U>>> &&
+        (sizeof...(Args) > 0), int> = 0>
+inline auto MIN(T first, U second, Args... rest) noexcept {
+    using R = iec_minmax_result_t<decltype(iec_unwrap(first)), decltype(iec_unwrap(second))>;
+    R current_min = iec_cmp_less(iec_unwrap(first), iec_unwrap(second))
+        ? static_cast<R>(iec_unwrap(first))
+        : static_cast<R>(iec_unwrap(second));
+    return MIN(current_min, rest...);
 }
 
 /**

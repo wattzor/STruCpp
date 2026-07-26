@@ -529,6 +529,27 @@ struct iec_minmax_result<T, U, std::enable_if_t<
 template<typename T, typename U>
 using iec_minmax_result_t = typename iec_minmax_result<T, U>::type;
 
+// Common result type for a heterogeneous value list (e.g. MUX inputs or
+// variadic MIN/MAX).  Built by folding iec_minmax_result_t over the pack.
+namespace detail {
+    template<typename...>
+    struct iec_common_result_impl;
+
+    template<typename T>
+    struct iec_common_result_impl<T> {
+        using type = T;
+    };
+
+    template<typename T, typename U, typename... Rest>
+    struct iec_common_result_impl<T, U, Rest...> {
+        using first = iec_minmax_result_t<T, U>;
+        using type = typename iec_common_result_impl<first, Rest...>::type;
+    };
+}
+
+template<typename... Ts>
+using iec_common_result_t = typename detail::iec_common_result_impl<Ts...>::type;
+
 template<typename T, typename U>
 inline IECVar<iec_arith_result_t<T, U>> operator+(const IECVar<T>& a, const IECVar<U>& b) noexcept {
     using R = iec_arith_result_t<T, U>;
