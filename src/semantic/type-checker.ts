@@ -843,8 +843,14 @@ export class TypeChecker {
         if (stmt.target.kind === "VariableExpression") {
           const sym = scope.lookup(stmt.target.name);
           if (sym && sym.kind === "variable") {
-            const refKind = sym.declaration.type.referenceKind;
-            if (refKind !== "ref_to" && refKind !== "reference_to") {
+            const refKind = sym.declaration?.type?.referenceKind;
+            // Method/property result variables are synthetic and have no
+            // declaration; REF= to the method name is valid.
+            if (
+              refKind !== undefined &&
+              refKind !== "ref_to" &&
+              refKind !== "reference_to"
+            ) {
               this.addError(
                 `REF= requires a REF_TO or REFERENCE TO target; '${stmt.target.name}' is not a reference`,
                 stmt.target.sourceSpan.startLine,

@@ -383,8 +383,9 @@ export class STParser extends CstParser {
 
   /**
    * Identifier or contextual keyword.
-   * Allows SET, GET, ON, OVERRIDE, ABSTRACT, FINAL to be used as
+   * Allows SET, GET, ON, OVERRIDE, ABSTRACT, FINAL, and THIS to be used as
    * variable/parameter/function names in contexts where they are unambiguous.
+   * THIS is included so `THIS^` can appear as the source of a REF= bind.
    */
   public identifierOrKeyword = this.RULE("identifierOrKeyword", () => {
     this.OR({
@@ -396,6 +397,7 @@ export class STParser extends CstParser {
         { ALT: () => this.CONSUME(tokens.OVERRIDE) },
         { ALT: () => this.CONSUME(tokens.ABSTRACT) },
         { ALT: () => this.CONSUME(tokens.FINAL) },
+        { ALT: () => this.CONSUME(tokens.THIS) },
         // IEC 61131-3 operator keywords that can also be called as functions
         // (e.g. AND(a, b, c), OR(x, y), NOT(z), MOD(a, b), XOR(a, b))
         { ALT: () => this.CONSUME(tokens.AND) },
@@ -849,7 +851,9 @@ export class STParser extends CstParser {
         },
         {
           ALT: () => this.SUBRULE(this.thisStatement),
-          GATE: () => this.LA(1).tokenType === tokens.THIS,
+          GATE: () =>
+            this.LA(1).tokenType === tokens.THIS &&
+            this.LA(2).tokenType === tokens.Dot,
         },
         {
           ALT: () => this.SUBRULE(this.superCallStatement),

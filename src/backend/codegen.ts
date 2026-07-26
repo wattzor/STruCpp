@@ -34,6 +34,7 @@ import type {
   PropertyDeclaration,
   QueryInterfaceExpression,
   Visibility,
+  ReferenceKind,
 } from "../frontend/ast.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry } from "../types.js";
@@ -317,6 +318,10 @@ export class CodeGenerator {
 
   /** Current function name (for redirecting function name := to result variable) */
   private currentFunctionName: string | undefined;
+
+  /** True when the current method returns REFERENCE TO a user-defined type,
+   *  so REF= on the method name lowers to a pointer assignment. */
+  private currentFunctionReturnsReferenceToUserDefined: boolean = false;
 
   /** Standard function registry for name mapping and conversion resolution */
   private stdRegistry: StdFunctionRegistry;
@@ -1823,7 +1828,7 @@ export class CodeGenerator {
 
     for (const method of iface.methods) {
       const returnType = method.returnType
-        ? this.mapTypeRefToCpp(method.returnType)
+        ? this.mapMethodReturnTypeToCpp(method.returnType)
         : "void";
       const params = this.generateMethodParamList(method);
       if (method.sourceSpan) {
@@ -1900,7 +1905,7 @@ export class CodeGenerator {
 
       for (const method of visMethods) {
         const returnType = method.returnType
-          ? this.mapTypeRefToCpp(method.returnType)
+          ? this.mapMethodReturnTypeToCpp(method.returnType)
           : "void";
         const params = this.generateMethodParamList(method);
 
@@ -2006,8 +2011,10 @@ export class CodeGenerator {
   ): void {
     const isIfaceReturn =
       method.returnType && this.isInterfaceType(method.returnType.name);
+    const isRefToUserDefined =
+      method.returnType && this.isReferenceToUserDefined(method.returnType);
     const returnType = method.returnType
-      ? this.mapTypeRefToCpp(method.returnType)
+      ? this.mapMethodReturnTypeToCpp(method.returnType)
       : "void";
     const params = this.generateMethodParamList(method);
 
@@ -2022,10 +2029,13 @@ export class CodeGenerator {
         this.interfaceReturnMethod = true;
       } else {
         this.emit(
-          `    ${this.mapTypeRefToCpp(method.returnType)} ${method.name}_result;`,
+          `    ${this.mapMethodResultVarType(method.returnType)} ${method.name}_result${
+            isRefToUserDefined ? " = nullptr" : ""
+          };`,
         );
       }
       this.currentFunctionName = method.name;
+      this.currentFunctionReturnsReferenceToUserDefined = !!isRefToUserDefined;
     }
 
     // Set up VAR_INST name mangling
@@ -2071,9 +2081,14 @@ export class CodeGenerator {
     // Return if method has return type
     if (method.returnType) {
       if (!isIfaceReturn) {
-        this.emit(`    return ${method.name}_result;`);
+        if (isRefToUserDefined) {
+          this.emit(`    return *${method.name}_result;`);
+        } else {
+          this.emit(`    return ${method.name}_result;`);
+        }
       }
       this.currentFunctionName = undefined;
+      this.currentFunctionReturnsReferenceToUserDefined = false;
       this.interfaceReturnMethod = false;
     }
 
@@ -3394,6 +3409,19 @@ export class CodeGenerator {
     indent: string,
   ): void {
     const target = this.generateExpression(stmt.target);
+    // REF= to the current method's result variable for a REFERENCE TO
+    // user-defined return type is a pointer assignment, not a bind() call.
+    const isMethodResultRef =
+      stmt.target.kind === "VariableExpression" &&
+      this.currentFunctionName !== undefined &&
+      stmt.target.name.toUpperCase() ===
+        this.currentFunctionName.toUpperCase() &&
+      this.currentFunctionReturnsReferenceToUserDefined;
+    if (isMethodResultRef) {
+      const sourcePtr = this.generatePointerExpression(stmt.source);
+      this.emit(`${indent}${target} = ${sourcePtr};`);
+      return;
+    }
     const source = this.generateExpression(stmt.source);
     const targetKind =
       stmt.target.kind === "VariableExpression"
@@ -5262,6 +5290,66 @@ export class CodeGenerator {
   private isPointerInoutType(typeName: string): boolean {
     const upper = typeName.toUpperCase();
     return this.isFBType(typeName) || this.knownInterfaceTypes.has(upper);
+  }
+
+  /**
+   * Returns true when a TypeReference is a REFERENCE TO a user-defined
+   * (FB / struct / program) type. CODESYS method chaining relies on these
+   * returning a reference to the object rather than an IEC_REFERENCE_TO wrapper.
+   */
+  private isReferenceToUserDefined(typeRef: {
+    name: string;
+    referenceKind: ReferenceKind;
+  }): boolean {
+    if (typeRef.referenceKind !== "reference_to") return false;
+    const upper = typeRef.name.toUpperCase();
+    return (
+      this.knownFBTypes.has(upper) ||
+      this.knownStructTypes.has(upper) ||
+      this.knownProgramTypes.has(upper)
+    );
+  }
+
+  /**
+   * Map a method return type to C++. For REFERENCE TO a user-defined type this
+   * is a C++ reference (e.g. StringBuilder&); otherwise the normal wrapper.
+   */
+  private mapMethodReturnTypeToCpp(typeRef: {
+    name: string;
+    referenceKind: ReferenceKind;
+  }): string {
+    if (this.isReferenceToUserDefined(typeRef)) {
+      const upper = typeRef.name.toUpperCase();
+      const baseType = this.knownProgramTypes.has(upper)
+        ? `Program_${typeRef.name}`
+        : typeRef.name;
+      return `${baseType}&`;
+    }
+    return this.mapTypeRefToCpp({
+      name: typeRef.name,
+      referenceKind: typeRef.referenceKind,
+    });
+  }
+
+  /**
+   * Map the hidden result variable type for a method. For REFERENCE TO a
+   * user-defined type the variable is a pointer that is dereferenced on return.
+   */
+  private mapMethodResultVarType(typeRef: {
+    name: string;
+    referenceKind: ReferenceKind;
+  }): string {
+    if (this.isReferenceToUserDefined(typeRef)) {
+      const upper = typeRef.name.toUpperCase();
+      const baseType = this.knownProgramTypes.has(upper)
+        ? `Program_${typeRef.name}`
+        : typeRef.name;
+      return `${baseType}*`;
+    }
+    return this.mapTypeRefToCpp({
+      name: typeRef.name,
+      referenceKind: typeRef.referenceKind,
+    });
   }
 
   /**

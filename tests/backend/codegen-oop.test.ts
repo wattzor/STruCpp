@@ -66,6 +66,26 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       expect(result.headerCode).toContain("virtual void TURNON();");
       expect(result.cppCode).toContain("void LIGHT::TURNON() {");
     });
+
+    it("should generate a method returning REFERENCE TO the function block", () => {
+      const result = compileAndCheck(`
+        FUNCTION_BLOCK StringBuilder
+          VAR buffer : STRING(255); END_VAR
+          METHOD PUBLIC Append : REFERENCE TO StringBuilder
+            VAR_INPUT s : STRING(20); END_VAR
+            buffer := CONCAT(buffer, s);
+            Append ref= THIS^;
+          END_METHOD
+        END_FUNCTION_BLOCK
+        PROGRAM Main END_PROGRAM
+      `);
+
+      expect(result.headerCode).toContain("virtual STRINGBUILDER& APPEND(IECStringVar<20> S);");
+      expect(result.cppCode).toContain("STRINGBUILDER& STRINGBUILDER::APPEND(IECStringVar<20> S) {");
+      expect(result.cppCode).toContain("STRINGBUILDER* APPEND_result = nullptr;");
+      expect(result.cppCode).toContain("APPEND_result = this;");
+      expect(result.cppCode).toContain("return *APPEND_result;");
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────
