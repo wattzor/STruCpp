@@ -1503,6 +1503,11 @@ inline IEC_ULINT MEMCPY(IEC_ULINT dest, IEC_ULINT src, std::size_t n) {
  * Casts the source object/pointer to the target interface type. On success
  * the target pointer is updated and the function returns true; otherwise it
  * is set to null and the function returns false.
+ *
+ * NOTE: this implementation relies on C++ RTTI (dynamic_cast). Compiling
+ * STruC++ output for `-fno-rtti` embedded targets will currently fail when
+ * `__QUERYINTERFACE` is used. A non-RTTI alternative would require a manually
+ * maintained interface vtable/type-tag in every generated FB.
  */
 template <typename To, typename From>
 inline bool query_interface(From* from, To*& to) {

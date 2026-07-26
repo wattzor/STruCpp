@@ -611,3 +611,37 @@ describe("Undeclared Variables - Enum members", () => {
     expect(errors[0]!.message.toUpperCase()).toContain("POINT");
   });
 });
+
+// =============================================================================
+// REF= diagnostics
+// =============================================================================
+
+describe("REF= assignment diagnostics", () => {
+  it("should reject REF= on a non-reference variable", () => {
+    const result = analyzeSource(`
+      PROGRAM Main
+        VAR x : INT; y : INT; END_VAR
+        x ref= y;
+      END_PROGRAM
+    `);
+    const errors = result.errors.filter((e) =>
+      e.message.includes("REF= requires a REF_TO or REFERENCE TO target"),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message.toUpperCase()).toContain("X");
+  });
+
+  it("should accept REF= on a REFERENCE TO variable", () => {
+    const result = analyzeSource(`
+      FUNCTION_BLOCK Box
+      METHOD PUBLIC GetRef : REFERENCE TO Box
+        GetRef ref= THIS^;
+      END_METHOD
+      END_FUNCTION_BLOCK
+    `);
+    const errors = result.errors.filter((e) =>
+      e.message.includes("REF= requires a REF_TO or REFERENCE TO target"),
+    );
+    expect(errors).toHaveLength(0);
+  });
+});

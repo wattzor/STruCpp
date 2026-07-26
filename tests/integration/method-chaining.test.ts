@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { compile } from "../../src/index.js";
 import { hasGpp, runE2ETestPipeline } from "./test-helpers.js";
 
 describe.skipIf(!hasGpp)("method chaining", () => {
@@ -48,5 +49,21 @@ describe.skipIf(!hasGpp)("method chaining", () => {
 
     expect(exitCode).toBe(0);
     expect(stdout).toContain("1 passed, 0 failed");
+  });
+
+  it("warns when a REFERENCE TO return method is missing the ref= bind", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Box
+      METHOD PUBLIC GetRef : REFERENCE TO Box
+      END_METHOD
+      END_FUNCTION_BLOCK
+    `);
+
+    expect(result.success).toBe(true);
+    expect(
+      result.warnings.some((w) =>
+        w.message.includes("GETREF ref= ..."),
+      ),
+    ).toBe(true);
   });
 });

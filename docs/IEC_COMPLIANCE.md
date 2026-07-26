@@ -173,6 +173,7 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 | POINTER TO | Supported | Full pointer type with dereference |
 | Typed literals | Supported | `INT#5`, `DINT#42`, `REAL#3.14` |
 | FB_Init / FB_Exit | Supported | Called automatically from constructor/destructor |
+| FB_Reinit | Supported | Explicit calls; automatic online-change copy not modeled |
 | __QUERYINTERFACE | Supported | Runtime interface query |
 
 ## Not Yet Implemented
@@ -180,7 +181,6 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 | Feature | Notes |
 |---------|-------|
 | UNION | CODESYS union type |
-| FB_Reinit | Re-initialization after online-change copy |
 | Bit access (var.%X0) | Individual bit addressing |
 | ACTION blocks | Named action blocks |
 | TRY/CATCH/FINALLY | Exception handling |

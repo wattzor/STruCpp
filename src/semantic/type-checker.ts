@@ -25,6 +25,7 @@ import type {
   CompilationUnit,
   Statement,
   VarBlock,
+  MethodDeclaration,
 } from "../frontend/ast.js";
 import type { SymbolTables, Scope } from "./symbol-table.js";
 import type { StdFunctionRegistry } from "./std-function-registry.js";
@@ -174,6 +175,7 @@ export class TypeChecker {
           );
           this.checkVarBlocks(method.varBlocks, methodScope ?? scope);
           this.checkStatements(method.body, methodScope ?? scope);
+          this.checkReferenceReturnBound(method);
         }
 
         // Property getter/setter bodies
@@ -210,6 +212,84 @@ export class TypeChecker {
       errors: this.errors,
       warnings: this.warnings,
     };
+  }
+
+  /**
+   * Warn when a method returning REFERENCE TO a user-defined type has no
+   * `MethodName ref= ...` assignment. A missing bind leaves the reference
+   * null; codegen now guards the dereference at runtime, but the user should
+   * still be told the bind is missing.
+   */
+  private checkReferenceReturnBound(method: MethodDeclaration): void {
+    if (!method.returnType) return;
+    const ref = method.returnType;
+    if (ref.referenceKind !== "reference_to") return;
+    if (ELEMENTARY_TYPES[ref.name.toUpperCase()]) return;
+
+    const methodNameUpper = method.name.toUpperCase();
+    if (!this.statementContainsRefAssign(method.body, methodNameUpper)) {
+      this.addWarning(
+        `Method '${method.name}' returns REFERENCE TO '${ref.name}' but no '${method.name} ref= ...' assignment was found; the returned reference may be null`,
+        method.sourceSpan.startLine,
+        method.sourceSpan.startCol,
+        method.sourceSpan.file,
+      );
+    }
+  }
+
+  /** Recursively search for a RefAssignStatement that assigns the method result. */
+  private statementContainsRefAssign(
+    stmts: Statement[],
+    methodNameUpper: string,
+  ): boolean {
+    for (const stmt of stmts) {
+      if (this.refAssignsMethod(stmt, methodNameUpper)) return true;
+      if (stmt.kind === "IfStatement") {
+        if (
+          this.statementContainsRefAssign(stmt.thenStatements, methodNameUpper)
+        )
+          return true;
+        for (const clause of stmt.elsifClauses) {
+          if (
+            this.statementContainsRefAssign(clause.statements, methodNameUpper)
+          )
+            return true;
+        }
+        if (
+          stmt.elseStatements &&
+          this.statementContainsRefAssign(stmt.elseStatements, methodNameUpper)
+        )
+          return true;
+      }
+      if (
+        (stmt.kind === "WhileStatement" ||
+          stmt.kind === "RepeatStatement" ||
+          stmt.kind === "ForStatement") &&
+        this.statementContainsRefAssign(stmt.body, methodNameUpper)
+      )
+        return true;
+      if (
+        stmt.kind === "CaseStatement" &&
+        stmt.cases.some((c) =>
+          this.statementContainsRefAssign(c.statements, methodNameUpper),
+        )
+      )
+        return true;
+    }
+    return false;
+  }
+
+  private refAssignsMethod(stmt: Statement, methodNameUpper: string): boolean {
+    if (stmt.kind !== "RefAssignStatement") return false;
+    const target = stmt.target;
+    return (
+      target.kind === "VariableExpression" &&
+      target.name.toUpperCase() === methodNameUpper &&
+      !target.isDereference &&
+      target.subscripts.length === 0 &&
+      target.fieldAccess.length === 0 &&
+      (target.accessChain?.length ?? 0) === 0
+    );
   }
 
   // ===========================================================================

@@ -2093,6 +2093,21 @@ export class CodeGenerator {
     if (method.returnType) {
       if (!isIfaceReturn) {
         if (isRefToUserDefined) {
+          // Guard against a missing REF= bind: a REFERENCE TO return must be
+          // bound before the method exits. CODESYS requires the method to set
+          // its return name with `<Method> ref= ...`; if it was not, fail
+          // cleanly rather than dereferencing a null pointer.
+          this.emit(`    if (${method.name}_result == nullptr) {`);
+          this.emit("#if STRUCPP_HAS_EXCEPTIONS");
+          this.emit(
+            `        throw std::runtime_error("Unbound REFERENCE TO return value in method '${method.name}'");`,
+          );
+          this.emit("#else");
+          this.emit(
+            `        strucpp::iec_runtime_fault(strucpp::IecFault::NullReference, "Unbound REFERENCE TO return value in method '${method.name}'");`,
+          );
+          this.emit("#endif");
+          this.emit("    }");
           this.emit(`    return *${method.name}_result;`);
         } else {
           this.emit(`    return ${method.name}_result;`);
@@ -4517,11 +4532,13 @@ export class CodeGenerator {
         // Walk the full access chain (subscripts, ^, fields) so that
         // `observers[1].Update()` resolves to the element FB type and
         // `p^.Start()` resolves to the pointed FB type.
+        // `this.ast` is only required for array element resolution; field
+        // resolution can fall back to the library FB metadata cache.
         const ast = this.ast;
         let currentType = this.currentScopeVarTypes.get(
           expr.name.toUpperCase(),
         );
-        if (!currentType || !ast) return undefined;
+        if (!currentType) return undefined;
 
         const applyStep = (
           type: string,
@@ -4531,6 +4548,7 @@ export class CodeGenerator {
             case "field":
               return this.resolveMemberType(type, step.name);
             case "subscript":
+              if (!ast) return undefined;
               return resolveArrayElementType(type, ast);
             case "dereference":
               // The stored base type already represents the pointed/referred value.
@@ -4546,6 +4564,7 @@ export class CodeGenerator {
           }
         } else {
           for (let i = 0; i < expr.subscripts.length; i++) {
+            if (!ast) return undefined;
             const elem = resolveArrayElementType(currentType, ast);
             if (!elem) return undefined;
             currentType = elem;
@@ -4555,9 +4574,8 @@ export class CodeGenerator {
             if (!next) return undefined;
             currentType = next;
           }
-          if (expr.isDereference) {
-            // The stored base type already represents the pointed/referred value.
-          }
+          // `isDereference` does not change the type: the stored base type already
+          // represents the pointed/referred value.
         }
         return currentType.toUpperCase();
       }
