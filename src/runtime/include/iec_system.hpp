@@ -62,7 +62,7 @@ enum class TYPE_CLASS : std::uint32_t {
     TYPE_UXINT = 39,
     TYPE_XWORD = 40,
     TYPE_XINT = 41,
-    TYPE_XSRTING = 42,
+    TYPE_XSTRING = 42,
     TYPE_VARLENARRAY = 43,
     TYPE_ANYSTRING = 44,
     TYPE_VECTOR = 45,
