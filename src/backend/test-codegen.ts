@@ -73,6 +73,33 @@ export class TestCodeGenerator extends CodeGenerator {
     }
     for (const fb of ast.functionBlocks) {
       this.knownFBTypes.add(fb.name.toUpperCase());
+      const inputNames: string[] = [];
+      const inoutNames: string[] = [];
+      for (const block of fb.varBlocks) {
+        if (block.blockType === "VAR_INPUT") {
+          for (const decl of block.declarations) {
+            for (const name of decl.names) {
+              inputNames.push(name.toUpperCase());
+            }
+          }
+        } else if (block.blockType === "VAR_IN_OUT") {
+          for (const decl of block.declarations) {
+            for (const name of decl.names) {
+              inoutNames.push(name.toUpperCase());
+              this.fbInoutParamTypes.set(
+                `${fb.name.toUpperCase()}.${name.toUpperCase()}`,
+                decl.type.name,
+              );
+            }
+          }
+        }
+      }
+      if (inputNames.length > 0) {
+        this.fbInputParams.set(fb.name.toUpperCase(), inputNames);
+      }
+      if (inoutNames.length > 0) {
+        this.fbInoutParams.set(fb.name.toUpperCase(), new Set(inoutNames));
+      }
       for (const method of fb.methods) {
         this.methodNameMap.set(
           `${fb.name.toUpperCase()}.${method.name.toUpperCase()}`,

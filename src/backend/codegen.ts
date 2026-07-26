@@ -384,6 +384,10 @@ export class CodeGenerator {
    *  used e.g. to pick the correct lowering for a REF= rebind. */
   protected currentScopeVarRefKinds: Map<string, string> = new Map();
 
+  /** Set of VAR_IN_OUT FB-instance member names (upper case) in the current scope.
+   *  These are emitted as C++ pointers and must be dereferenced when used as objects. */
+  private currentScopeInoutFBPointers: Set<string> = new Set();
+
   /** Parent class name of current FB (for SUPER resolution) */
   private currentFBExtends: string | undefined;
 
@@ -438,13 +442,13 @@ export class CodeGenerator {
 
   /** Map of UPPER(fbTypeName) → ordered VAR_INPUT parameter names (UPPER case).
    *  Used to resolve positional arguments in FB invocations. */
-  private fbInputParams: Map<string, string[]> = new Map();
+  protected fbInputParams: Map<string, string[]> = new Map();
 
-  /** Map of UPPER(fbTypeName) → set of VAR_IN_OUT parameter names (UPPER case).
-   *  FB inout params are stored as by-value members with copy-in at the call
-   *  site; this set drives the matching copy-back after the call so a callee's
-   *  mutations propagate to the caller's variable (true inout semantics). */
-  private fbInoutParams: Map<string, Set<string>> = new Map();
+  /** Map of UPPER(fbTypeName) → set of VAR_IN_OUT parameter names (UPPER case). */
+  protected fbInoutParams: Map<string, Set<string>> = new Map();
+
+  /** Map of UPPER(fbTypeName).UPPER(paramName) → declared type name for VAR_IN_OUT parameters. */
+  protected fbInoutParamTypes: Map<string, string> = new Map();
 
   // IEC_TYPE_BITS and IEC_TYPE_CAT removed — use getTypeBits()/getTypeCategory() from type-utils.ts
 
@@ -953,6 +957,10 @@ export class CodeGenerator {
           for (const decl of block.declarations) {
             for (const name of decl.names) {
               inoutNames.push(name.toUpperCase());
+              this.fbInoutParamTypes.set(
+                `${fb.name.toUpperCase()}.${name.toUpperCase()}`,
+                decl.type.name,
+              );
             }
           }
         }
@@ -1554,7 +1562,17 @@ export class CodeGenerator {
 
       this.emitHeader(`    ${comment}`);
       for (const decl of block.declarations) {
-        const cppType = this.mapTypeRefToCpp(decl.type);
+        let cppType = this.mapTypeRefToCpp(decl.type);
+        const isInoutFBPointer =
+          block.blockType === "VAR_IN_OUT" &&
+          !decl.type.arrayDimensions &&
+          !decl.type.elementTypeName &&
+          this.isFBType(decl.type.name);
+        if (isInoutFBPointer) {
+          cppType += "*";
+        }
+        // Note: interface-typed VAR_IN_OUT already emits as IInterface* via
+        // mapTypeRefToCpp, so no extra * is added here.
         const tag = this.elaboratedTagIfShadowed(decl.type.name, fbMemberNames);
         for (const name of decl.names) {
           const memberName = this.mangleMemberIfNeeded(
@@ -2008,6 +2026,7 @@ export class CodeGenerator {
 
     // Merge FB scope + method scope so FB member types are visible (same pattern as properties)
     this.enterScope([...this.currentFBVarBlocks, ...method.varBlocks]);
+    this.setFBInoutFBPointers(this.currentFBVarBlocks);
 
     // Declare local variables (VAR, VAR_TEMP)
     for (const block of method.varBlocks) {
@@ -2086,6 +2105,7 @@ export class CodeGenerator {
         ...this.currentFBVarBlocks,
         ...(prop.getterVarBlocks ?? []),
       ]);
+      this.setFBInoutFBPointers(this.currentFBVarBlocks);
       emitLocalVars(prop.getterVarBlocks);
       this.emit(`    ${type} ${prop.name}_result;`);
       this.currentFunctionName = prop.name;
@@ -2107,6 +2127,7 @@ export class CodeGenerator {
         ...this.currentFBVarBlocks,
         ...(prop.setterVarBlocks ?? []),
       ]);
+      this.setFBInoutFBPointers(this.currentFBVarBlocks);
       emitLocalVars(prop.setterVarBlocks);
       // In setter, prop.name refers to the input parameter (no redirection)
       this.generateStatements(prop.setter);
@@ -2211,6 +2232,11 @@ export class CodeGenerator {
     for (const block of fb.varBlocks) {
       if (block.blockType === "VAR_EXTERNAL") continue;
       for (const decl of block.declarations) {
+        const isPointerInout =
+          block.blockType === "VAR_IN_OUT" &&
+          !decl.type.arrayDimensions &&
+          !decl.type.elementTypeName &&
+          this.isPointerInoutType(decl.type.name);
         if (decl.initialValue) {
           const initExpr = this.generateInitializer(
             decl.type,
@@ -2224,6 +2250,15 @@ export class CodeGenerator {
               decl.type.name,
             );
             fbInits.push(`${memberName}(${initExpr})`);
+          }
+        } else if (isPointerInout) {
+          for (const name of decl.names) {
+            const memberName = this.mangleMemberIfNeeded(
+              name,
+              decl.type.name,
+              decl.type.name,
+            );
+            fbInits.push(`${memberName}(nullptr)`);
           }
         }
       }
@@ -2247,6 +2282,7 @@ export class CodeGenerator {
       this.emit("    if (__mocked_) { __mock_state_.call_count++; return; }");
     }
     this.enterScope(fb.varBlocks);
+    this.setFBInoutFBPointers(fb.varBlocks);
     if (fb.body.length > 0) {
       this.generateStatements(fb.body);
     } else if (this.options.sourceComments) {
@@ -3733,6 +3769,10 @@ export class CodeGenerator {
     if (expr.kind === "VariableExpression") {
       const ve = expr;
       const nameUpper = ve.name.toUpperCase();
+      if (this.currentScopeInoutFBPointers.has(nameUpper)) {
+        // VAR_IN_OUT FB instances are stored as pointers already.
+        return this.getVariableBase(ve);
+      }
       const typeName =
         nameUpper === "THIS"
           ? this.currentFBName
@@ -3947,6 +3987,26 @@ export class CodeGenerator {
   }
 
   /**
+   * Resolve the unwrapped C++ base name for a variable expression, ignoring
+   * any VAR_IN_OUT FB-pointer dereference. Used by both value and pointer
+   * generation so the wrapping decision is made in one place.
+   */
+  private getVariableBase(expr: VariableExpression): string {
+    const nameUpper = expr.name.toUpperCase();
+    if (
+      this.currentFunctionName &&
+      nameUpper === this.currentFunctionName.toUpperCase()
+    ) {
+      return `${this.currentFunctionName}_result`;
+    }
+    const mangledName = this.varInstMangledNames.get(nameUpper);
+    if (mangledName) return mangledName;
+    const memberMangled = this.memberMangledNames.get(nameUpper);
+    if (memberMangled) return memberMangled;
+    return this.resolveVariableBaseName(expr.name);
+  }
+
+  /**
    * Generate C++ for a variable expression.
    */
   private generateVariableExpression(expr: VariableExpression): string {
@@ -4062,26 +4122,11 @@ export class CodeGenerator {
     }
 
     // In function/method bodies, references to the function/method name redirect to the result variable
-    let result: string;
-    if (
-      this.currentFunctionName &&
-      nameUpper === this.currentFunctionName.toUpperCase()
-    ) {
-      result = `${this.currentFunctionName}_result`;
-    } else {
-      // Check for VAR_INST name mangling
-      const mangledName = this.varInstMangledNames.get(nameUpper);
-      if (mangledName) {
-        result = mangledName;
-      } else {
-        // Check for member name collision mangling (SENSOR SENSOR → SENSOR SENSOR_)
-        const memberMangled = this.memberMangledNames.get(nameUpper);
-        if (memberMangled) {
-          result = memberMangled;
-        } else {
-          result = this.resolveVariableBaseName(expr.name);
-        }
-      }
+    let result = this.getVariableBase(expr);
+    // VAR_IN_OUT FB instances are stored as pointers; dereference when the
+    // variable is used as an object/value.
+    if (this.currentScopeInoutFBPointers.has(nameUpper)) {
+      result = `(*${result})`;
     }
 
     // Bare enum member: Stopped → Irrigation_State::Stopped
@@ -4812,11 +4857,21 @@ export class CodeGenerator {
         return `${this.currentFBExtends}::${resolvedMethod}(${args.join(", ")})`;
       } else {
         // instance.method() call; interface pointers use ->
-        const prefixType = this.currentScopeVarTypes.get(prefix.toUpperCase());
+        const prefixUpper = prefix.toUpperCase();
+        const prefixType = this.currentScopeVarTypes.get(prefixUpper);
         const isInterfacePointer =
           prefixType && this.knownInterfaceTypes.has(prefixType.toUpperCase());
         const accessOp = isInterfacePointer ? "->" : ".";
-        return `${prefix}${accessOp}${resolvedMethod}(${args.join(", ")})`;
+        // VAR_IN_OUT FB-instance members are stored as C++ pointers and must be
+        // dereferenced when used as the object of a method call.
+        const mangledPrefix =
+          this.varInstMangledNames.get(prefixUpper) ??
+          this.memberMangledNames.get(prefixUpper) ??
+          this.resolveVariableBaseName(prefix);
+        const prefixExpr = this.currentScopeInoutFBPointers.has(prefixUpper)
+          ? `(*${mangledPrefix})`
+          : mangledPrefix;
+        return `${prefixExpr}${accessOp}${resolvedMethod}(${args.join(", ")})`;
       }
     }
 
@@ -5171,6 +5226,15 @@ export class CodeGenerator {
   }
 
   /**
+   * VAR_IN_OUT parameters that are FB or interface types are stored as C++
+   * pointers and passed by pointer; primitive/structured inouts keep copy-in/copy-out.
+   */
+  private isPointerInoutType(typeName: string): boolean {
+    const upper = typeName.toUpperCase();
+    return this.isFBType(typeName) || this.knownInterfaceTypes.has(upper);
+  }
+
+  /**
    * When `typeName` (a member's declared type) is also the name of a sibling
    * member in the same scope, return the C++ elaborated-type-specifier keyword
    * (`class `/`struct `) needed so the bare type name isn't resolved to the data
@@ -5356,6 +5420,31 @@ export class CodeGenerator {
   }
 
   /**
+   * Populate the set of VAR_IN_OUT FB-instance pointers for the current FB scope.
+   * Call after enterScope() so all FB member types are known.
+   */
+  private setFBInoutFBPointers(
+    varBlocks: CompilationUnit["programs"][0]["varBlocks"],
+  ): void {
+    this.currentScopeInoutFBPointers.clear();
+    for (const block of varBlocks) {
+      if (block.blockType !== "VAR_IN_OUT") continue;
+      for (const decl of block.declarations) {
+        if (
+          decl.type.arrayDimensions ||
+          decl.type.elementTypeName ||
+          !this.isFBType(decl.type.name)
+        ) {
+          continue;
+        }
+        for (const name of decl.names) {
+          this.currentScopeInoutFBPointers.add(name.toUpperCase());
+        }
+      }
+    }
+  }
+
+  /**
    * Enter a new scope for code generation. Populates currentScopeVarTypes
    * from the variable blocks of a program or function block.
    */
@@ -5364,6 +5453,7 @@ export class CodeGenerator {
   ): void {
     this.currentScopeVarTypes.clear();
     this.currentScopeVarRefKinds.clear();
+    this.currentScopeInoutFBPointers.clear();
     this.memberMangledNames.clear();
     for (const block of varBlocks) {
       for (const decl of block.declarations) {
@@ -5619,12 +5709,34 @@ export class CodeGenerator {
       ? this.fbInputParams.get(fbTypeName.toUpperCase())
       : undefined;
 
+    const inoutParams = fbTypeName
+      ? this.fbInoutParams.get(fbTypeName.toUpperCase())
+      : undefined;
+
     // Assign input parameters (named or positional)
     let positionalIndex = 0;
     for (const arg of filteredArgs) {
       if (arg.isOutput) continue;
 
-      if (arg.name) {
+      const argName = arg.name;
+      const isInout =
+        argName && inoutParams && inoutParams.has(argName.toUpperCase());
+      if (isInout) {
+        const inoutTypeName = this.fbInoutParamTypes.get(
+          `${fbTypeName!.toUpperCase()}.${argName.toUpperCase()}`,
+        );
+        // FB/interface-typed VAR_IN_OUT is passed by pointer; everything else
+        // keeps the existing copy-in/copy-out lowering.
+        if (inoutTypeName && this.isPointerInoutType(inoutTypeName)) {
+          this.emit(
+            `${indent}${instanceName}.${argName} = ${this.generatePointerExpression(arg.value)};`,
+          );
+        } else {
+          this.emit(
+            `${indent}${instanceName}.${argName} = ${this.generateExpression(arg.value)};`,
+          );
+        }
+      } else if (arg.name) {
         // Named argument: assign directly
         this.emit(
           `${indent}${instanceName}.${arg.name} = ${this.generateExpression(arg.value)};`,
@@ -5658,19 +5770,18 @@ export class CodeGenerator {
       `${instanceName}.ENO`,
     );
 
-    // Copy VAR_IN_OUT parameters back to the caller's variables. FB inout params
-    // are stored as by-value members and copied IN before the call; without this
-    // copy-OUT the callee's mutations would be discarded (true inout semantics
-    // require both directions). Mirrors the graphical-language convention of
-    // tying an inout pin on both sides. A follow-up strucpp branch replaces this
-    // copy-in/copy-out with by-reference (pointer) inout members.
-    const inoutParams = fbTypeName
-      ? this.fbInoutParams.get(fbTypeName.toUpperCase())
-      : undefined;
+    // Copy VAR_IN_OUT parameters back to the caller's variables. For FB/interface
+    // inouts the member is a pointer, so the caller's object is mutated in place
+    // and no copy-out is needed. Primitive/structured inouts keep the existing
+    // copy-in/copy-out lowering.
     if (inoutParams && inoutParams.size > 0) {
       for (const arg of filteredArgs) {
         if (arg.isOutput) continue;
         if (arg.name && inoutParams.has(arg.name.toUpperCase())) {
+          const inoutTypeName = this.fbInoutParamTypes.get(
+            `${fbTypeName!.toUpperCase()}.${arg.name.toUpperCase()}`,
+          );
+          if (inoutTypeName && this.isPointerInoutType(inoutTypeName)) continue;
           this.emitCaptureToLvalue(
             arg.value,
             `${instanceName}.${arg.name}`,
