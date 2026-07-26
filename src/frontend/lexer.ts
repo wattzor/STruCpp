@@ -600,6 +600,12 @@ export const DirectAddress = createToken({
   pattern: /%[IQM][XBWDL]?[0-9]+(?:\.[0-9]+)*/i,
 });
 
+// Bit/byte/word/dword access suffix: var.%X0, var.%B1, var.%W0, var.%D0
+export const BitAccess = createToken({
+  name: "BitAccess",
+  pattern: /%[XBWDL][0-9]+/i,
+});
+
 // =============================================================================
 // Identifier (must be last to avoid matching keywords)
 // =============================================================================
@@ -866,6 +872,7 @@ export const allTokens = [
   StringLiteral,
   WideStringLiteral,
   DirectAddress,
+  BitAccess,
 
   // Single-character operators and punctuation
   Colon,
