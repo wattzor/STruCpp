@@ -37,6 +37,8 @@ import type {
   Visibility,
   ReferenceKind,
   IECType,
+  ElementaryType,
+  ArrayType,
 } from "../frontend/ast.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry } from "../types.js";
@@ -69,7 +71,14 @@ import {
   typeName as typeNameUtil,
   buildEnumMemberMap,
   type EnumMemberEntry,
+  ELEMENTARY_TYPES,
 } from "../semantic/type-utils.js";
+import {
+  resolveTypeClass,
+  TYPE_CLASS,
+  TYPE_CLASS_NAME,
+  getSystemType,
+} from "../semantic/system-types.js";
 
 // =============================================================================
 // Located Variable Support
@@ -339,6 +348,9 @@ export class CodeGenerator {
   /** Counter for generating unique temporary variable names */
   private tempVarCounter = 0;
 
+  /** Counter for generating unique __VARINFO descriptor identifiers */
+  private varInfoCounter = 0;
+
   /**
    * Stack of loop exit labels for EXIT codegen. C++ `break` only escapes the
    * innermost switch/loop, so `EXIT` inside a `CASE` nested in a loop must
@@ -560,6 +572,7 @@ export class CodeGenerator {
       : upper;
     if (suffix === "TYPE_CLASS") return "IEC_TYPE_CLASS";
     if (suffix === "MEMORY_AREA") return "IEC_MEMORY_AREA";
+    if (suffix === "VAR_INFO") return "strucpp::VAR_INFO";
     return undefined;
   }
 
@@ -1174,6 +1187,7 @@ export class CodeGenerator {
     this.emitHeader('#include "iec_std_lib.hpp"');
     this.emitHeader('#include "iec_enum.hpp"');
     this.emitHeader('#include "iec_system.hpp"');
+    this.emitHeader('#include "iec_varinfo.hpp"');
     this.emitHeader('#include "iec_memory.hpp"');
     this.emitHeader('#include "iec_pointer.hpp"');
     this.emitHeader('#include "iec_string.hpp"');
@@ -3934,9 +3948,156 @@ export class CodeGenerator {
 
   /**
    * Generate C++ for a __VARINFO(variable) expression.
+   *
+   * Builds a compile-time strucpp::VAR_INFO descriptor from the target
+   * variable's resolved type and declaration metadata.
    */
-  private generateVarInfoExpression(_expr: VarInfoExpression): string {
-    return "strucpp::VAR_INFO{}";
+  private generateVarInfoExpression(expr: VarInfoExpression): string {
+    const arg = expr.argument;
+
+    // Resolve the argument's type from the type-checker annotation if available.
+    let targetType: IECType | undefined = arg.resolvedType;
+    if (!targetType) {
+      // Fallback: treat the base variable name as an elementary type.
+      targetType = this.resolveTypeByName(arg.name);
+    }
+
+    const typeClass = targetType
+      ? resolveTypeClass(targetType)
+      : TYPE_CLASS.TYPE_NONE;
+    const typeClassName = TYPE_CLASS_NAME.get(typeClass) ?? "TYPE_NONE";
+    const bitSize = targetType ? this.getTypeBitsForIECType(targetType) : 0;
+    const elemBitSize = bitSize;
+    const numElements = 0;
+
+    const symbolName = this.generateVarInfoSymbol(arg);
+    const comment = "";
+    const byteAddress = this.generateVarInfoByteAddress();
+
+    const id = ++this.varInfoCounter;
+    const descriptorName = `__strucpp_varinfo_${id}`;
+
+    const fields = [
+      `/*BYTEADDRESS=*/ IEC_DWORD(${this.formatHex(byteAddress)}u)`,
+      `/*BYTEOFFSET=*/ IEC_DWORD(0u)`,
+      `/*AREA=*/ IEC_DINT(0)`,
+      `/*BITNR=*/ IEC_INT(-1)`,
+      `/*BITSIZE=*/ IEC_INT(${bitSize})`,
+      `/*BITADDRESS=*/ IEC_UDINT(0u)`,
+      `/*TYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${typeClassName})`,
+      `/*TYPENAME=*/ strucpp::IECString<79>("${this.escapeCString(typeClassName)}")`,
+      `/*NUMELEMENTS=*/ IEC_UDINT(${numElements}u)`,
+      `/*BASETYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${typeClassName})`,
+      `/*ELEMBITSIZE=*/ IEC_UDINT(${elemBitSize}u)`,
+      `/*MEMORYAREA=*/ IEC_MEMORY_AREA(strucpp::__SYSTEM::MEMORY_AREA::MEM_LOCAL)`,
+      `/*SYMBOL=*/ strucpp::IECString<39>("${this.escapeCString(symbolName)}")`,
+      `/*COMMENT=*/ strucpp::IECString<79>("${this.escapeCString(comment)}")`,
+    ];
+
+    return `([&]() -> strucpp::VAR_INFO { static const strucpp::VAR_INFO ${descriptorName} = { ${fields.join(", ")} }; return ${descriptorName}; })()`;
+  }
+
+  /**
+   * Resolve a type name to an IECType for __VARINFO metadata.
+   */
+  private resolveTypeByName(name: string): IECType | undefined {
+    const upper = name.toUpperCase();
+    if (ELEMENTARY_TYPES[upper]) {
+      return ELEMENTARY_TYPES[upper];
+    }
+    const systemType = getSystemType(name);
+    if (systemType) return systemType;
+    return this.symbolTables.lookupType(upper)?.resolvedType ?? undefined;
+  }
+
+  /**
+   * True if `typeName` denotes the synthetic __SYSTEM.VAR_INFO type.
+   */
+  private isVarInfoTypeName(typeName: string | undefined): boolean {
+    return (
+      typeName !== undefined &&
+      (typeName.toUpperCase() === "__SYSTEM.VAR_INFO" ||
+        typeName.toUpperCase() === "VAR_INFO")
+    );
+  }
+
+  /**
+   * Return the C++ type name for a __SYSTEM.VAR_INFO field.
+   */
+  private varInfoFieldTypeName(field: string): string | undefined {
+    const systemType = getSystemType("__SYSTEM.VAR_INFO");
+    if (systemType?.typeKind !== "struct") return undefined;
+    const st = systemType as import("../frontend/ast.js").StructType;
+    const fu = field.toUpperCase();
+    for (const [fname, ftype] of st.fields) {
+      if (fname.toUpperCase() === fu) {
+        return typeNameUtil(ftype);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Compute the logical bit size for an IECType.
+   */
+  private getTypeBitsForIECType(type: IECType): number {
+    switch (type.typeKind) {
+      case "elementary":
+        return getTypeBits((type as ElementaryType).name) ?? 0;
+      case "enum":
+        return 32;
+      case "reference": {
+        const pointerTypes = ["POINTER", "REF_TO", "REFERENCE_TO"];
+        const typeName = typeNameUtil(type);
+        if (pointerTypes.some((p) => typeName.toUpperCase().startsWith(p))) {
+          return 32;
+        }
+        return 32;
+      }
+      case "array": {
+        const arr = type as ArrayType;
+        let elements = 1;
+        for (const dim of arr.dimensions) {
+          elements *= Math.max(1, dim.end - dim.start + 1);
+        }
+        const elemBits = this.getTypeBitsForIECType(arr.elementType);
+        return elements * elemBits;
+      }
+      default:
+        return 0;
+    }
+  }
+
+  /**
+   * Build a human-readable symbol string for a __VARINFO argument.
+   */
+  private generateVarInfoSymbol(arg: VariableExpression): string {
+    const parts: string[] = [arg.name];
+    for (const step of arg.accessChain ?? []) {
+      if (step.kind === "field") {
+        parts.push(step.name);
+      } else if (step.kind === "subscript") {
+        parts[parts.length - 1] = `${parts[parts.length - 1]}[]`;
+      }
+    }
+    return parts.join(".");
+  }
+
+  /**
+   * Allocate a synthetic byte-address handle for a __VARINFO descriptor.
+   */
+  private generateVarInfoByteAddress(): number {
+    return 0xca000000 + this.varInfoCounter + 1;
+  }
+
+  /** Format a number as a C++ hex literal. */
+  private formatHex(n: number): string {
+    return `0x${Math.abs(n).toString(16).toUpperCase()}`;
+  }
+
+  /** Escape a string for use in a C string literal. */
+  private escapeCString(s: string): string {
+    return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
 
   /**
@@ -4455,6 +4616,14 @@ export class CodeGenerator {
           result = `((static_cast<uint64_t>(${result}) >> ${field}) & 1)`;
           continue;
         }
+        // CODESYS __SYSTEM.VAR_INFO fields are emitted in uppercase.
+        if (this.isVarInfoTypeName(currentType)) {
+          result += `.${field.toUpperCase()}`;
+          if (!isLast) {
+            currentType = this.varInfoFieldTypeName(field);
+          }
+          continue;
+        }
         if (isLast) {
           const propName = this.resolvePropertyName(currentType, field);
           if (propName) {
@@ -4516,6 +4685,12 @@ export class CodeGenerator {
           if (/^\d+$/.test(step.name)) {
             result = `((static_cast<uint64_t>(${result}) >> ${step.name}) & 1)`;
             continue;
+          }
+          // CODESYS __SYSTEM.VAR_INFO fields are emitted in uppercase.
+          if (this.isVarInfoTypeName(currentType)) {
+            result += `.${step.name.toUpperCase()}`;
+            currentType = this.varInfoFieldTypeName(step.name);
+            break;
           }
           // Property access on the last step
           if (isLast) {

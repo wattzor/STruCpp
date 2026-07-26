@@ -8,7 +8,12 @@
  * do not change them without checking the CODESYS documentation.
  */
 
-import type { EnumType, IECType } from "../frontend/ast.js";
+import type {
+  EnumType,
+  IECType,
+  StructType,
+  ElementaryType,
+} from "../frontend/ast.js";
 import { lookupBaseType } from "./iec-types-data.js";
 
 /**
@@ -133,6 +138,53 @@ export const SYSTEM_ENUM_NAMES: ReadonlySet<string> = new Set<string>([
   "MEMORY_AREA",
 ]);
 
+/** The set of struct types exposed through the synthetic __SYSTEM namespace. */
+export const SYSTEM_STRUCT_NAMES: ReadonlySet<string> = new Set<string>([
+  "VAR_INFO",
+]);
+
+function elementaryType(name: string): ElementaryType {
+  const meta = lookupBaseType(name);
+  return {
+    typeKind: "elementary",
+    name,
+    sizeBits: meta?.bits ?? 0,
+  };
+}
+
+function systemEnumType(name: "TYPE_CLASS" | "MEMORY_AREA"): EnumType {
+  return {
+    typeKind: "enum",
+    name,
+    values: [...(SYSTEM_ENUM_MEMBERS[name] ?? [])],
+  };
+}
+
+/**
+ * The CODESYS __SYSTEM.VAR_INFO struct type as exposed to the compiler.
+ * Field order and types follow the CODESYS Development System documentation.
+ */
+export const VAR_INFO_TYPE: StructType = {
+  typeKind: "struct",
+  name: "VAR_INFO",
+  fields: new Map<string, IECType>([
+    ["BYTEADDRESS", elementaryType("DWORD")],
+    ["BYTEOFFSET", elementaryType("DWORD")],
+    ["AREA", elementaryType("DINT")],
+    ["BITNR", elementaryType("INT")],
+    ["BITSIZE", elementaryType("INT")],
+    ["BITADDRESS", elementaryType("UDINT")],
+    ["TYPECLASS", systemEnumType("TYPE_CLASS")],
+    ["TYPENAME", elementaryType("STRING")],
+    ["NUMELEMENTS", elementaryType("UDINT")],
+    ["BASETYPECLASS", systemEnumType("TYPE_CLASS")],
+    ["ELEMBITSIZE", elementaryType("UDINT")],
+    ["MEMORYAREA", systemEnumType("MEMORY_AREA")],
+    ["SYMBOL", elementaryType("STRING")],
+    ["COMMENT", elementaryType("STRING")],
+  ]),
+};
+
 /**
  * True when `name` (any case) is the synthetic __SYSTEM namespace identifier.
  */
@@ -198,14 +250,26 @@ export function getSystemEnumType(name: string): EnumType | undefined {
 }
 
 /**
- * True when `name` refers to a __SYSTEM enum type through the qualified
- * namespace (e.g. "__SYSTEM.TYPE_CLASS").
+ * True when `name` refers to a __SYSTEM type through the qualified
+ * namespace (e.g. "__SYSTEM.TYPE_CLASS" or "__SYSTEM.VAR_INFO").
  */
 export function isSystemTypeReference(name: string): boolean {
   const upper = name.toUpperCase();
   if (!upper.startsWith("__SYSTEM.")) return false;
   const suffix = upper.slice("__SYSTEM.".length);
-  return SYSTEM_ENUM_NAMES.has(suffix);
+  return SYSTEM_ENUM_NAMES.has(suffix) || SYSTEM_STRUCT_NAMES.has(suffix);
+}
+
+/**
+ * Resolve a __SYSTEM qualified type name to its IECType (enum or struct).
+ */
+export function getSystemType(name: string): IECType | undefined {
+  const upper = name.toUpperCase();
+  const suffix = upper.startsWith("__SYSTEM.")
+    ? upper.slice("__SYSTEM.".length)
+    : upper;
+  if (suffix === "VAR_INFO") return VAR_INFO_TYPE;
+  return getSystemEnumType(name);
 }
 
 /**
