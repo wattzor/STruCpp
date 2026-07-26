@@ -1565,6 +1565,11 @@ export class CodeGenerator {
     const inheritance = bases.length > 0 ? ` : ${bases.join(", ")}` : "";
     const finalSpec = fb.isFinal ? " final" : "";
 
+    const iecSizeMembers: string[] = [];
+    if (fb.extends) {
+      iecSizeMembers.push(`iec_sizeof<${fb.extends}>::value`);
+    }
+
     this.emitHeaderLineDirective(fb.sourceSpan.startLine);
     const classLine = this.currentHeaderLine;
     this.emitHeader(`class ${fb.name}${finalSpec}${inheritance} {`);
@@ -1628,6 +1633,7 @@ export class CodeGenerator {
           const memberLine = this.currentHeaderLine;
           this.emitHeader(`    ${tag}${cppType} ${memberName};`);
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
+          iecSizeMembers.push(`iec_sizeof<${tag}${cppType}>::value`);
         }
       }
     }
@@ -1641,6 +1647,7 @@ export class CodeGenerator {
         this.emitHeader(
           `    GlobalVar<${ext.cppType}>* ${ext.name} = nullptr;`,
         );
+        iecSizeMembers.push(`iec_sizeof<GlobalVar<${ext.cppType}>*>::value`);
       }
     }
 
@@ -1651,6 +1658,7 @@ export class CodeGenerator {
       this.emitHeader("    // Method instance variables (VAR_INST)");
       for (const m of varInstMembers) {
         this.emitHeader(`    ${m.cppType} ${m.mangledName};`);
+        iecSizeMembers.push(`iec_sizeof<${m.cppType}>::value`);
       }
     }
 
@@ -1712,6 +1720,15 @@ export class CodeGenerator {
       );
     }
 
+    // Logical IEC byte size (sum of member logical sizes, for SIZEOF)
+    if (iecSizeMembers.length > 0) {
+      this.emitHeader("");
+      this.emitHeader("    // Logical IEC byte size (for SIZEOF)");
+      this.emitHeader(
+        `    static constexpr std::size_t iec_byte_size = ${iecSizeMembers.join(" + ")};`,
+      );
+    }
+
     // Test build: add mock infrastructure
     if (this.options.isTestBuild) {
       this.emitHeader("");
@@ -1737,6 +1754,7 @@ export class CodeGenerator {
     this.recordHeaderLineMapping(prog.sourceSpan.startLine, classLine);
 
     // Generate member variables and collect located variables
+    const iecSizeMembers: string[] = [];
     for (const block of prog.varBlocks) {
       for (const decl of block.declarations) {
         const cppType = this.mapTypeRefToCpp(decl.type);
@@ -1759,6 +1777,7 @@ export class CodeGenerator {
             this.emitHeader(`    ${cppType} ${memberName};`);
           }
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
+          iecSizeMembers.push(`iec_sizeof<${cppType}>::value`);
         }
       }
     }
@@ -1777,6 +1796,15 @@ export class CodeGenerator {
     this.emitHeader("");
     this.emitHeader("    // Run program");
     this.emitHeader("    void run() override;");
+
+    if (iecSizeMembers.length > 0) {
+      this.emitHeader("");
+      this.emitHeader("    // Logical IEC byte size (for SIZEOF)");
+      this.emitHeader(
+        `    static constexpr std::size_t iec_byte_size = ${iecSizeMembers.join(" + ")};`,
+      );
+    }
+
     this.emitHeader("};");
     this.emitHeader("");
   }
@@ -2546,6 +2574,7 @@ export class CodeGenerator {
    */
   private generateProgramHeaderFromModel(prog: ProgramDecl): void {
     const className = `Program_${prog.name}`;
+    const iecSizeMembers: string[] = [];
 
     // Look up AST program for source spans
     const astProg = this.ast?.programs.find(
@@ -2632,6 +2661,8 @@ export class CodeGenerator {
           this.recordHeaderLineMapping(stLine, memberLine);
         }
 
+        iecSizeMembers.push(`iec_sizeof<${constQualifier}${cppType}>::value`);
+
         // Collect retain variables (cppType — same metadata-aware lookup
         // as the member emission above, so inline arrays don't end up as
         // IEC___INLINE_ARRAY_<T> in the retain table either).
@@ -2672,6 +2703,7 @@ export class CodeGenerator {
         this.emitHeader(
           `    GlobalVar<${extTypes[i]!}>* ${ext.name} = nullptr;`,
         );
+        iecSizeMembers.push(`iec_sizeof<GlobalVar<${extTypes[i]!}>*>::value`);
       }
     }
 
@@ -2735,6 +2767,14 @@ export class CodeGenerator {
 
       // Store retain vars for implementation file generation
       this.programRetainVars.set(prog.name, retainVars);
+    }
+
+    if (iecSizeMembers.length > 0) {
+      this.emitHeader("");
+      this.emitHeader("    // Logical IEC byte size (for SIZEOF)");
+      this.emitHeader(
+        `    static constexpr std::size_t iec_byte_size = ${iecSizeMembers.join(" + ")};`,
+      );
     }
 
     this.emitHeader("};");
@@ -5144,7 +5184,41 @@ export class CodeGenerator {
       return `${conversion.cppName}(${args.join(", ")})`;
     }
 
-    // 2. Check for standard function (may have different cppName)
+    // 2. SIZEOF(typeName) - CODESYS allows SIZEOF(INT), SIZEOF(MyStruct), etc.
+    // When the argument is a bare identifier that is not a variable in scope,
+    // treat it as a type and emit a compile-time iec_sizeof constant.
+    const firstArg =
+      expr.arguments.length === 1 ? expr.arguments[0]?.value : undefined;
+    if (
+      nameUpper === "SIZEOF" &&
+      firstArg &&
+      firstArg.kind === "VariableExpression"
+    ) {
+      const arg = firstArg;
+      if (
+        arg.fieldAccess.length === 0 &&
+        (!arg.accessChain || arg.accessChain.length === 0)
+      ) {
+        const argNameUpper = arg.name.toUpperCase();
+        if (
+          !this.currentScopeVarTypes.has(argNameUpper) &&
+          !this.currentScopeVarRefKinds.has(argNameUpper)
+        ) {
+          const isType =
+            isElementaryType(argNameUpper) ||
+            this.isUserDefinedType(arg.name) ||
+            this.enumTypeMembers.has(argNameUpper) ||
+            argNameUpper === "STRING" ||
+            argNameUpper === "WSTRING";
+          if (isType) {
+            const cppType = this.mapVarTypeToCpp(arg.name);
+            return `IEC_UDINT(iec_sizeof<${cppType}>::value)`;
+          }
+        }
+      }
+    }
+
+    // 3. Check for standard function (may have different cppName)
     const stdFunc = this.stdRegistry.lookup(nameUpper);
     if (stdFunc) {
       const args = expr.arguments.map((arg, idx) => {
