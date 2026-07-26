@@ -21,6 +21,7 @@ export type TypeConstraint =
   | "ANY_INT"
   | "ANY_REAL"
   | "ANY_BIT"
+  | "ANY_BIT_OR_INT"
   | "ANY_ELEMENTARY"
   | "ANY_STRING"
   | "BOOL"
@@ -511,7 +512,10 @@ export class StdFunctionRegistry {
         returnConstraint: "ANY_BIT",
         returnMatchesFirstParam: true,
         params: [
-          { name: "IN", constraint: "ANY_BIT", isByRef: false },
+          // CODESYS permits bit-shift operations on signed/unsigned integers
+          // in addition to the IEC bit-string types (with static-analysis
+          // warnings); the runtime mirrors this with is_any_int overloads.
+          { name: "IN", constraint: "ANY_BIT_OR_INT", isByRef: false },
           {
             name: "N",
             constraint: "specific",
