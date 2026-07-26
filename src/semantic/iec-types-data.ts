@@ -175,12 +175,13 @@ export const IEC_BASE_TYPES: readonly IECTypeMetadata[] = [
     // may declare it for generic pointer functions/blocks). The byteSize/bits
     // here are NOMINAL (max width); the type-checker exempts __XWORD from
     // width-narrowing checks since its real width is target-dependent.
+    // Its TYPE_CLASS is not documented, so it falls back to TYPE_USERDEF (28).
     name: "__XWORD",
     aliases: [],
     byteSize: 8,
     bits: 64,
     signed: false,
-    typeClass: 40,
+    typeClass: 28,
     cppType: "XWORD_t",
     wireFormat: "uint64",
     xml: { elementName: "__XWORD", plcopenStandard: false },

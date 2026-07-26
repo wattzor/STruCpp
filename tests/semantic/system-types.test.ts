@@ -28,7 +28,9 @@ describe("system-types", () => {
     expect(TYPE_CLASS.TYPE_STRING).toBe(16);
     expect(TYPE_CLASS.TYPE_ARRAY).toBe(26);
     expect(TYPE_CLASS.TYPE_USERDEF).toBe(28);
-    expect(TYPE_CLASS.TYPE_XWORD).toBe(40);
+    expect(TYPE_CLASS.TYPE_BITCONST).toBe(38);
+    // Values beyond 38 are not in the documented CODESYS enum and are not exposed.
+    expect((TYPE_CLASS as Record<string, number>).TYPE_XWORD).toBeUndefined();
   });
 
   it("exposes MEMORY_AREA constants with documented numeric values", () => {
@@ -44,7 +46,8 @@ describe("system-types", () => {
   it("reverse maps type-class numbers to names", () => {
     expect(TYPE_CLASS_NAME.get(0)).toBe("TYPE_BOOL");
     expect(TYPE_CLASS_NAME.get(7)).toBe("TYPE_INT");
-    expect(TYPE_CLASS_NAME.get(40)).toBe("TYPE_XWORD");
+    expect(TYPE_CLASS_NAME.get(28)).toBe("TYPE_USERDEF");
+    expect(TYPE_CLASS_NAME.get(40)).toBeUndefined();
   });
 
   it("reverse maps memory-area numbers to names", () => {
