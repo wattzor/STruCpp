@@ -220,6 +220,13 @@ public:
 template<typename EnumType>
 using IEC_ENUM = IEC_ENUM_Var<EnumType>;
 
+/** Unwrap an IEC enum variable so it can be passed to generic conversions. */
+template<typename EnumType>
+inline auto iec_unwrap(const IEC_ENUM_Var<EnumType>& v) noexcept
+    -> IEC_ENUM_Value<EnumType> {
+    return v.get();
+}
+
 #ifndef __AVR__
 // Stream output for IEC_ENUM_Var — outputs underlying integer value
 template<typename EnumType>

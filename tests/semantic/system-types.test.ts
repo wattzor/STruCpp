@@ -8,6 +8,10 @@ import {
   TYPE_CLASS_NAME,
   MEMORY_AREA_NAME,
   resolveTypeClass,
+  isSystemNamespaceName,
+  isSystemTypeReference,
+  getSystemEnumType,
+  resolveSystemAccess,
 } from "../../src/semantic/system-types.js";
 import { lookupBaseType } from "../../src/semantic/iec-types-data.js";
 import type {
@@ -134,5 +138,53 @@ describe("system-types", () => {
     expect(
       resolveTypeClass(unknown, { typeName: "Foo", isSubrange: true }),
     ).toBe(TYPE_CLASS.TYPE_SUBRANGE);
+  });
+
+  describe("__SYSTEM namespace helpers", () => {
+    it("recognises the __SYSTEM namespace identifier case-insensitively", () => {
+      expect(isSystemNamespaceName("__SYSTEM")).toBe(true);
+      expect(isSystemNamespaceName("__system")).toBe(true);
+      expect(isSystemNamespaceName("SYSTEM")).toBe(false);
+    });
+
+    it("recognises qualified __SYSTEM enum type references", () => {
+      expect(isSystemTypeReference("__SYSTEM.TYPE_CLASS")).toBe(true);
+      expect(isSystemTypeReference("__SYSTEM.MEMORY_AREA")).toBe(true);
+      expect(isSystemTypeReference("TYPE_CLASS")).toBe(false);
+      expect(isSystemTypeReference("__SYSTEM.UNKNOWN")).toBe(false);
+    });
+
+    it("resolves __SYSTEM enum types", () => {
+      const tc = getSystemEnumType("__SYSTEM.TYPE_CLASS");
+      expect(tc).toBeDefined();
+      expect(tc?.typeKind).toBe("enum");
+      expect(tc?.name).toBe("TYPE_CLASS");
+      expect(tc?.values).toContain("TYPE_BOOL");
+
+      const ma = getSystemEnumType("__SYSTEM.MEMORY_AREA");
+      expect(ma?.name).toBe("MEMORY_AREA");
+    });
+
+    it("resolves __SYSTEM enum member access", () => {
+      const boolEntry = resolveSystemAccess(["TYPE_CLASS", "TYPE_BOOL"]);
+      expect(boolEntry?.kind).toBe("enumValue");
+      expect(boolEntry?.value).toBe(TYPE_CLASS.TYPE_BOOL);
+
+      const inputEntry = resolveSystemAccess(["MEMORY_AREA", "MEM_INPUT"]);
+      expect(inputEntry?.value).toBe(MEMORY_AREA.MEM_INPUT);
+    });
+
+    it("rejects unknown __SYSTEM members", () => {
+      expect(resolveSystemAccess(["TYPE_CLASS", "FOO"])).toBeUndefined();
+      expect(resolveSystemAccess(["UNKNOWN", "FOO"])).toBeUndefined();
+      expect(resolveSystemAccess(["TYPE_CLASS"])).toEqual({
+        kind: "enumType",
+        enumType: {
+          typeKind: "enum",
+          name: "TYPE_CLASS",
+          values: getSystemEnumType("__SYSTEM.TYPE_CLASS")!.values,
+        },
+      });
+    });
   });
 });

@@ -1438,8 +1438,24 @@ export class ASTBuilder {
   buildTypeReference(node: CstNode): TypeReference {
     const children = node.children as CstChildren;
 
-    const nameToken = getFirstToken(children.Identifier);
-    const name = nameToken?.image ?? "INT";
+    const allIdents = getAllTokens(children.Identifier);
+    const dotTokens = getAllTokens(children.Dot);
+    const hasDots = dotTokens.length > 0;
+
+    let name: string;
+    let maxLength: number | string | undefined;
+    if (hasDots) {
+      // Namespace-qualified type: __SYSTEM.TYPE_CLASS
+      name = allIdents.map((t) => t.image).join(".");
+    } else {
+      name = allIdents[0]?.image ?? "INT";
+      // Check for identifier-based length (STRING(CONSTANT_NAME))
+      // Note: children.Identifier[0] is the type name itself; [1] would be the length constant
+      if (allIdents.length > 1) {
+        maxLength = allIdents[1]!.image;
+      }
+    }
+
     const isRefTo = !!children.REF_TO;
     const isReferenceTo = !!children.REFERENCE_TO;
     const isPointerTo = !!children.POINTER;
@@ -1455,17 +1471,9 @@ export class ASTBuilder {
     }
 
     // Extract optional parameterized length: STRING(n) / WSTRING(n) / STRING(CONSTANT)
-    let maxLength: number | string | undefined;
     const lengthToken = getFirstToken(children.IntegerLiteral);
     if (lengthToken) {
       maxLength = parseInt(lengthToken.image, 10);
-    } else {
-      // Check for identifier-based length (STRING(CONSTANT_NAME))
-      // Note: children.Identifier[0] is the type name itself; [1] would be the length constant
-      const allIdents = getAllTokens(children.Identifier);
-      if (allIdents.length > 1) {
-        maxLength = allIdents[1]!.image;
-      }
     }
 
     const result: TypeReference = {

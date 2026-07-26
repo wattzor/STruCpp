@@ -171,11 +171,18 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 | Global constants (`-D`) | Supported | CLI `-D NAME=VALUE`, emits `constexpr` |
 | Dynamic memory | Supported | `__NEW(type)`, `__DELETE(ptr)` |
 | POINTER TO | Supported | Full pointer type with dereference |
+| CODESYS `__SYSTEM` namespace | Supported | `__SYSTEM.TYPE_CLASS`, `__SYSTEM.MEMORY_AREA` |
 | Typed literals | Supported | `INT#5`, `DINT#42`, `REAL#3.14` |
 | FB_Init / FB_Exit | Supported | Called automatically from constructor/destructor |
 | FB_Reinit | Supported | Explicit calls; automatic online-change copy not modeled |
 | __QUERYINTERFACE | Supported | Runtime interface query |
 | Bit access (var.%X0) | Supported | Read/write on BYTE/WORD/DWORD/LWORD |
+
+## Known Deviations from CODESYS Runtime Behaviour
+
+| ID | Feature | CODESYS Behaviour | STruC++ Behaviour |
+|----|---------|-------------------|-------------------|
+| D2 | `__SYSTEM` enum emission | Enums defined per project or in the runtime as CODESYS sees fit | `__SYSTEM.TYPE_CLASS` and `__SYSTEM.MEMORY_AREA` are emitted as fixed `enum class` definitions in the runtime header (`iec_system.hpp`) and wrapped with `IEC_ENUM_Var<>` |
 
 ## Not Yet Implemented
 
