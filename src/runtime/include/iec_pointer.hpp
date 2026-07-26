@@ -405,22 +405,22 @@ public:
 
     // Arithmetic compound assignment operators (write through to target)
     IEC_REFERENCE_TO& operator+=(const T& v) noexcept {
-        set(get() + v);
+        set(iec_add(get(), v));
         return *this;
     }
 
     IEC_REFERENCE_TO& operator-=(const T& v) noexcept {
-        set(get() - v);
+        set(iec_sub(get(), v));
         return *this;
     }
 
     IEC_REFERENCE_TO& operator*=(const T& v) noexcept {
-        set(get() * v);
+        set(iec_mul(get(), v));
         return *this;
     }
 
-    IEC_REFERENCE_TO& operator/=(const T& v) noexcept {
-        set(get() / v);
+    IEC_REFERENCE_TO& operator/=(const T& v) {
+        set(iec_div(get(), v));
         return *this;
     }
 };
