@@ -425,34 +425,31 @@ template<typename T, typename U,
     std::enable_if_t<!std::is_same_v<std::decay_t<T>, std::decay_t<U>>, int> = 0>
 inline auto MAX(T a, U b) noexcept {
     using CT = iec_minmax_result_t<decltype(iec_unwrap(a)), decltype(iec_unwrap(b))>;
-    auto va = static_cast<CT>(iec_unwrap(a));
-    auto vb = static_cast<CT>(iec_unwrap(b));
-    return iec_cmp_greater(va, vb) ? va : vb;
+    return iec_cmp_greater(iec_unwrap(a), iec_unwrap(b))
+        ? static_cast<CT>(iec_unwrap(a))
+        : static_cast<CT>(iec_unwrap(b));
 }
 
 template<typename T, typename U,
     std::enable_if_t<!std::is_same_v<std::decay_t<T>, std::decay_t<U>>, int> = 0>
 inline auto MIN(T a, U b) noexcept {
     using CT = iec_minmax_result_t<decltype(iec_unwrap(a)), decltype(iec_unwrap(b))>;
-    auto va = static_cast<CT>(iec_unwrap(a));
-    auto vb = static_cast<CT>(iec_unwrap(b));
-    return iec_cmp_less(va, vb) ? va : vb;
+    return iec_cmp_less(iec_unwrap(a), iec_unwrap(b))
+        ? static_cast<CT>(iec_unwrap(a))
+        : static_cast<CT>(iec_unwrap(b));
 }
 
 template<typename T1, typename T2, typename T3,
     std::enable_if_t<!(std::is_same_v<std::decay_t<T1>, std::decay_t<T2>> &&
                        std::is_same_v<std::decay_t<T2>, std::decay_t<T3>>), int> = 0>
 inline auto LIMIT(T1 mn, T2 in, T3 mx) noexcept {
-    using TIn = decltype(iec_unwrap(in));
-    using TMx = decltype(iec_unwrap(mx));
-    using TInner = iec_minmax_result_t<TIn, TMx>;
-    using CT = iec_minmax_result_t<decltype(iec_unwrap(mn)), TInner>;
-    auto vmn = static_cast<CT>(iec_unwrap(mn));
-    auto vin = static_cast<CT>(iec_unwrap(in));
-    auto vmx = static_cast<CT>(iec_unwrap(mx));
-    if (iec_cmp_less(vin, vmn)) return vmn;
-    if (iec_cmp_greater(vin, vmx)) return vmx;
-    return vin;
+    using CT = iec_common_result_t<
+        decltype(iec_unwrap(mn)),
+        decltype(iec_unwrap(in)),
+        decltype(iec_unwrap(mx))>;
+    if (iec_cmp_less(iec_unwrap(in), iec_unwrap(mn))) return static_cast<CT>(iec_unwrap(mn));
+    if (iec_cmp_greater(iec_unwrap(in), iec_unwrap(mx))) return static_cast<CT>(iec_unwrap(mx));
+    return static_cast<CT>(iec_unwrap(in));
 }
 
 template<typename T, typename U,

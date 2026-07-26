@@ -147,4 +147,47 @@ int main() {
     });
     expect(stdout).toBe(expected);
   });
+
+  // Same-width LINT/ULINT cannot be widened further, so the compare must be
+  // sign-aware on the original types. Result values used here are positive and
+  // fit in the unsigned common result type.
+  it("MAX/MIN/LIMIT with LINT/ULINT same-width pairs are sign-aware", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        max_lu, min_lu, limit_lu, max_lu_first : ULINT;
+      END_VAR
+        max_lu      := MAX(-LINT#1, ULINT#1);
+        max_lu_first := MAX(ULINT#1, -LINT#1);
+        min_lu      := MIN(ULINT#3, LINT#2);
+        limit_lu    := LIMIT(LINT#0, -LINT#1, ULINT#1);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const mainCode = `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout
+      << static_cast<unsigned long long>(prog.MAX_LU) << '\\n'
+      << static_cast<unsigned long long>(prog.MAX_LU_FIRST) << '\\n'
+      << static_cast<unsigned long long>(prog.MIN_LU) << '\\n'
+      << static_cast<unsigned long long>(prog.LIMIT_LU) << std::endl;
+    return 0;
+}
+`;
+    const expected = ["1", "1", "2", "0"].join("\n");
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "mixed_lint_ulint_sel",
+      mainCode,
+    });
+    expect(stdout).toBe(expected);
+  });
 });
