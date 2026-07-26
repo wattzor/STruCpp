@@ -632,8 +632,10 @@ inline IEC_BOOL NE(A a, B b, C c, Rest... rest) noexcept {
  */
 template<typename T, enable_if_any_bit<T> = 0>
 inline T SHL(T in, IEC_INT n) noexcept {
-    auto shift = iec_unwrap(n);
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
+    auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     return T(iec_unwrap(in) << shift);
 }
 
@@ -642,8 +644,10 @@ template<typename T, typename N,
     enable_if_any_bit<T> = 0,
     std::enable_if_t<!std::is_same_v<std::decay_t<N>, IEC_INT>, int> = 0>
 inline T SHL(T in, N n) noexcept {
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
     auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     return T(iec_unwrap(in) << shift);
 }
 
@@ -653,8 +657,10 @@ inline T SHL(T in, N n) noexcept {
  */
 template<typename T, enable_if_any_bit<T> = 0>
 inline T SHR(T in, IEC_INT n) noexcept {
-    auto shift = iec_unwrap(n);
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
+    auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     return T(iec_unwrap(in) >> shift);
 }
 
@@ -663,8 +669,10 @@ template<typename T, typename N,
     enable_if_any_bit<T> = 0,
     std::enable_if_t<!std::is_same_v<std::decay_t<N>, IEC_INT>, int> = 0>
 inline T SHR(T in, N n) noexcept {
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
     auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     return T(iec_unwrap(in) >> shift);
 }
 
@@ -673,8 +681,10 @@ inline T SHR(T in, N n) noexcept {
 template<typename T, typename N,
     std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
 inline T SHL(T in, N n) noexcept {
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
     auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return T(0);
     using UT = std::make_unsigned_t<iec_underlying_type_t<T>>;
     return T(static_cast<iec_underlying_type_t<T>>(
         static_cast<UT>(iec_unwrap(in)) << shift));
@@ -683,8 +693,10 @@ inline T SHL(T in, N n) noexcept {
 template<typename T, typename N,
     std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
 inline T SHR(T in, N n) noexcept {
+    constexpr int bits = sizeof(iec_underlying_type_t<T>) * 8;
     auto shift = static_cast<int>(iec_unwrap(n));
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= bits) return in < T(0) ? T(-1) : T(0);
     return T(iec_unwrap(in) >> shift);
 }
 
@@ -1201,12 +1213,12 @@ inline T NEG(T value) noexcept {
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T ADD(T a, T b) noexcept {
-    return T(iec_unwrap(a) + iec_unwrap(b));
+    return T(iec_add(iec_unwrap(a), iec_unwrap(b)));
 }
 
 template<typename T, typename... Args, enable_if_any_num<T> = 0>
 inline T ADD(T first, T second, Args... rest) noexcept {
-    return ADD(T(iec_unwrap(first) + iec_unwrap(second)), rest...);
+    return ADD(T(iec_add(iec_unwrap(first), iec_unwrap(second))), rest...);
 }
 
 /**
@@ -1216,12 +1228,12 @@ inline T ADD(T first, T second, Args... rest) noexcept {
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T MUL(T a, T b) noexcept {
-    return T(iec_unwrap(a) * iec_unwrap(b));
+    return T(iec_mul(iec_unwrap(a), iec_unwrap(b)));
 }
 
 template<typename T, typename... Args, enable_if_any_num<T> = 0>
 inline T MUL(T first, T second, Args... rest) noexcept {
-    return MUL(T(iec_unwrap(first) * iec_unwrap(second)), rest...);
+    return MUL(T(iec_mul(iec_unwrap(first), iec_unwrap(second))), rest...);
 }
 
 /**
@@ -1231,7 +1243,7 @@ inline T MUL(T first, T second, Args... rest) noexcept {
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T SUB(T a, T b) noexcept {
-    return T(iec_unwrap(a) - iec_unwrap(b));
+    return T(iec_sub(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
@@ -1240,8 +1252,8 @@ inline T SUB(T a, T b) noexcept {
  * Divides first value by second
  */
 template<typename T, enable_if_any_num<T> = 0>
-inline T DIV(T a, T b) noexcept {
-    return T(iec_unwrap(a) / iec_unwrap(b));
+inline T DIV(T a, T b) {
+    return T(iec_div(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
@@ -1250,11 +1262,14 @@ inline T DIV(T a, T b) noexcept {
  * Returns remainder of division
  */
 template<typename T, enable_if_any_num<T> = 0>
-inline T MOD(T a, T b) noexcept {
+inline T MOD(T a, T b) {
     if constexpr (std::is_floating_point_v<iec_underlying_type_t<T>>) {
+        if (iec_unwrap(b) == 0) {
+            iec_arithmetic_fault("Modulo by zero");
+        }
         return T(std::fmod(static_cast<double>(iec_unwrap(a)), static_cast<double>(iec_unwrap(b))));
     } else {
-        return T(iec_unwrap(a) % iec_unwrap(b));
+        return T(iec_mod(iec_unwrap(a), iec_unwrap(b)));
     }
 }
 
