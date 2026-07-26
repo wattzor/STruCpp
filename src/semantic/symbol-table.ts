@@ -272,6 +272,9 @@ export class SymbolTables {
   /** Map of "FBNAME.METHODNAME" to their local scopes (parent = FB scope) */
   private methodScopes: Map<string, Scope> = new Map();
 
+  /** Map of "FBNAME.PROPNAME.GETTER/SETTER" to their local scopes (parent = FB scope) */
+  private propertyScopes: Map<string, Scope> = new Map();
+
   constructor() {
     this.globalScope = new Scope("global");
     this.initializeBuiltinTypes();
@@ -390,6 +393,36 @@ export class SymbolTables {
   getMethodScope(fbName: string, methodName: string): Scope | undefined {
     const key = `${fbName.toUpperCase()}.${methodName.toUpperCase()}`;
     return this.methodScopes.get(key);
+  }
+
+  /**
+   * Create a new scope for a property getter or setter within a function block.
+   * The property scope's parent is the FB scope, giving the lookup chain:
+   * accessor locals → FB members → globals.
+   */
+  createPropertyScope(
+    fbName: string,
+    propName: string,
+    accessor: "getter" | "setter",
+  ): Scope {
+    const fbScope = this.getFBScope(fbName);
+    const parent = fbScope ?? this.globalScope;
+    const key = `${fbName.toUpperCase()}.${propName.toUpperCase()}.${accessor}`;
+    const scope = new Scope(`${fbName}.${propName}.${accessor}`, parent);
+    this.propertyScopes.set(key, scope);
+    return scope;
+  }
+
+  /**
+   * Get the scope for a property getter or setter within a function block.
+   */
+  getPropertyScope(
+    fbName: string,
+    propName: string,
+    accessor: "getter" | "setter",
+  ): Scope | undefined {
+    const key = `${fbName.toUpperCase()}.${propName.toUpperCase()}.${accessor}`;
+    return this.propertyScopes.get(key);
   }
 
   /**

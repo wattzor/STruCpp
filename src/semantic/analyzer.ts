@@ -404,6 +404,54 @@ export class SemanticAnalyzer {
             }
           }
         }
+
+        // Create property getter/setter scopes (parent = FB scope)
+        for (const prop of fbDecl.properties) {
+          for (const accessor of ["getter", "setter"] as const) {
+            const body = accessor === "getter" ? prop.getter : prop.setter;
+            const varBlocks =
+              accessor === "getter"
+                ? prop.getterVarBlocks
+                : prop.setterVarBlocks;
+            if (!body && (!varBlocks || varBlocks.length === 0)) continue;
+            try {
+              const propScope = this.symbolTables.createPropertyScope(
+                fbDecl.name,
+                prop.name,
+                accessor,
+              );
+              this.buildVarBlockSymbols(
+                varBlocks ?? [],
+                propScope,
+                "functionBlock",
+                fbDecl.name,
+              );
+              // Register implicit result/input variable (PropName := value / := PropName)
+              const propType = this.resolveVarType(prop.type.name);
+              propScope.define({
+                name: prop.name,
+                kind: "variable",
+                type: propType,
+                declaration: undefined as unknown as VarDeclaration,
+                isInput: accessor === "setter",
+                isOutput: accessor === "getter",
+                isInOut: false,
+                isExternal: false,
+                isGlobal: false,
+                isRetain: false,
+              });
+            } catch (propErr) {
+              if (propErr instanceof Error) {
+                this.addError(
+                  propErr.message,
+                  prop.sourceSpan.startLine,
+                  prop.sourceSpan.startCol,
+                  prop.sourceSpan.file,
+                );
+              }
+            }
+          }
+        }
       } catch (err) {
         if (err instanceof Error) {
           this.addError(
@@ -2358,11 +2406,19 @@ export class SemanticAnalyzer {
         );
       }
 
-      // Properties
+      // Properties — return type and local getter/setter VAR blocks
       for (const prop of fb.properties) {
         this.validateSingleTypeReference(
           prop.type,
           `PROPERTY '${prop.name}' of '${fb.name}'`,
+        );
+        validateVarBlocks(
+          prop.getterVarBlocks ?? [],
+          `PROPERTY '${prop.name}' GET of '${fb.name}'`,
+        );
+        validateVarBlocks(
+          prop.setterVarBlocks ?? [],
+          `PROPERTY '${prop.name}' SET of '${fb.name}'`,
         );
       }
     }
@@ -2494,16 +2550,34 @@ export class SemanticAnalyzer {
         }
         for (const prop of fb.properties) {
           if (prop.getter) {
-            this.walkStatementsForUndeclaredVars(prop.getter, scope, {
-              fbName: fb.name,
-              propertyName: prop.name,
-            });
+            const getterScope = this.symbolTables.getPropertyScope(
+              fb.name,
+              prop.name,
+              "getter",
+            );
+            this.walkStatementsForUndeclaredVars(
+              prop.getter,
+              getterScope ?? scope,
+              {
+                fbName: fb.name,
+                propertyName: prop.name,
+              },
+            );
           }
           if (prop.setter) {
-            this.walkStatementsForUndeclaredVars(prop.setter, scope, {
-              fbName: fb.name,
-              propertyName: prop.name,
-            });
+            const setterScope = this.symbolTables.getPropertyScope(
+              fb.name,
+              prop.name,
+              "setter",
+            );
+            this.walkStatementsForUndeclaredVars(
+              prop.setter,
+              setterScope ?? scope,
+              {
+                fbName: fb.name,
+                propertyName: prop.name,
+              },
+            );
           }
         }
       }

@@ -481,6 +481,33 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       // No getter should be generated
       expect(result.headerCode).not.toContain("get_TARGET");
     });
+
+    it("should generate local VAR declarations inside property accessors", () => {
+      const result = compileAndCheck(`
+        FUNCTION_BLOCK Motor
+          VAR _speed : INT; END_VAR
+          PROPERTY Speed : INT
+            GET
+              VAR scaled : INT; END_VAR
+              scaled := _speed * 2;
+              Speed := scaled;
+            END_GET
+            SET
+              VAR clamped : INT; END_VAR
+              clamped := Speed;
+              IF clamped > 100 THEN clamped := 100; END_IF;
+              _speed := clamped;
+            END_SET
+          END_PROPERTY
+        END_FUNCTION_BLOCK
+        PROGRAM Main END_PROGRAM
+      `);
+
+      expect(result.cppCode).toContain("IEC_INT SCALED;");
+      expect(result.cppCode).toContain("IEC_INT CLAMPED;");
+      expect(result.cppCode).toContain("SPEED_result = SCALED;");
+      expect(result.cppCode).toContain("_SPEED = CLAMPED;");
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────

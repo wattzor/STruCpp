@@ -351,6 +351,48 @@ describe("Semantic Analyzer - Read-only Property Write", () => {
   });
 });
 
+describe("Semantic Analyzer - Property Local VAR Type References", () => {
+  it("should error on an undefined type in a property getter local VAR block", () => {
+    const result = analyzeSource(`
+      FUNCTION_BLOCK Motor
+        VAR _speed : INT; END_VAR
+        PROPERTY PUBLIC Speed : INT
+          GET
+            VAR tmp : NoSuchType; END_VAR
+            Speed := _speed;
+          END_GET
+        END_PROPERTY
+      END_FUNCTION_BLOCK
+    `);
+
+    expect(result.errors.some((e) => {
+      const msg = e.message;
+      return msg.includes("Undefined type 'NOSUCHTYPE'") &&
+             msg.includes("PROPERTY 'SPEED' GET of 'MOTOR'");
+    })).toBe(true);
+  });
+
+  it("should error on an undefined type in a property setter local VAR block", () => {
+    const result = analyzeSource(`
+      FUNCTION_BLOCK Motor
+        VAR _speed : INT; END_VAR
+        PROPERTY PUBLIC Speed : INT
+          SET
+            VAR tmp : UnknownType; END_VAR
+            _speed := Speed;
+          END_SET
+        END_PROPERTY
+      END_FUNCTION_BLOCK
+    `);
+
+    expect(result.errors.some((e) => {
+      const msg = e.message;
+      return msg.includes("Undefined type 'UNKNOWNTYPE'") &&
+             msg.includes("PROPERTY 'SPEED' SET of 'MOTOR'");
+    })).toBe(true);
+  });
+});
+
 describe("Semantic Analyzer - Access Modifier Enforcement", () => {
   it("should error when calling PRIVATE method from PROGRAM", () => {
     const result = analyzeSource(`
