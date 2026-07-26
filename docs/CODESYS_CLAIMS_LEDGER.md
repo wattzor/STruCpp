@@ -11,6 +11,11 @@ Every CODESYS behavioural claim made across this work, with its evidence status.
 Tier C is the important part of this document. If a value is in Tier C and it is in the compiler
 rather than in an `@oracle: assumed` snapshot, that is a defect waiting to surface.
 
+**Rule for moving a claim from Tier C to Tier A:** the entry must quote the exact sentence or table
+from the source that covers the specific claim. A source that only covers the related concept is not
+enough — e.g. A1 documents `NumElements` for arrays, so it cannot be used to settle the value for
+non-arrays without an explicit non-array statement.
+
 ---
 
 ## Tier A — Verified against CODESYS documentation
@@ -21,7 +26,8 @@ Settles: field names, field order, and **exact types** — `ByteAddress: DWORD`,
 `Area: INT`, `BitNr: INT`, `BitSize: UDINT`, `BitAdress: UDINT`, `TypeClass`, `TypeName: STRING(79)`,
 `NumElements: UDINT`, `BaseTypeClass`, `ElemBitSize: UDINT`, `MemoryArea`, `Symbol: STRING(39)`,
 `Comment: STRING(79)`. Also settles that `BitAdress` is undefined unless the variable is at
-`%M`/`%I`/`%Q`, and that `BitNr` is `-1` for non-bit types.
+`%M`/`%I`/`%Q`, that `BitNr` is `-1` for non-bit types, and that for arrays `NumElements` is the
+"number of base elements". It does **not** state the value of `NumElements` for non-arrays.
 Used by: ABI spec §1; implementation spec §5; review findings B2.
 
 ### A2. `__SYSTEM.TYPE_CLASS` — exactly 39 values, 0–38
@@ -148,7 +154,7 @@ CODESYS source**. Every one needs either a documentation link or an oracle run.
 | # | Claim | Status |
 |---|---|---|
 | C16 | `__VARINFO` on a `VAR_IN_OUT` describes the parameter, not the caller's argument | A Forge thread implies it; not authoritative. |
-| C17 | `NumElements` for a non-array | **Resolved.** A1 documents `NumElements` as `0` for non-arrays and as the product of dimensions for arrays; `src/backend/codegen.ts` now computes it. `@oracle: codesys-doc` (A1). |
+| C17 | `NumElements` for a non-array | **Unverified.** A1 documents `NumElements` for arrays only. Currently hardcoded to `0`; tagged `@oracle: assumed` until a source or oracle run confirms it. |
 | C18 | `TYPE_CLASS` values 39–48 (`TYPE_UXINT` … `TYPE_LTIMEOFDAY`) | **No source found.** I searched and fetched the enum page; it ends at 38. Review blocker B1. |
 | C19 | `AnyType` memory layout — padding and alignment | Declaration order is documented (A4). Actual in-memory layout is not. |
 | C20 | `VAR_INFO` members accessible case-insensitively (`vi.ByteAddress`) | ST is case-insensitive in general, but untested here. |
