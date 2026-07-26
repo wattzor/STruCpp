@@ -68,11 +68,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify g++ and cc are present
+        run: |
+          command -v g++ || (echo "g++ not found" && exit 1)
+          command -v cc || (echo "cc not found" && exit 1)
+          g++ --version
+          cc --version
+
       - name: Build
         run: npm run build
 
       - name: Run tests with coverage
-        run: npm run test:coverage -- --run
+        run: npm run test:coverage -- --run --reporter=default --reporter=json --outputFile=./vitest-results.json
+
+      - name: Verify minimum executed test count
+        run: node -e "
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('./vitest-results.json', 'utf8'));
+          const executed = (data.numPassedTests || 0) + (data.numFailedTests || 0);
+          if (executed < 2000) {
+            console.error('Only ' + executed + ' tests executed; expected at least 2000');
+            process.exit(1);
+          }
+          console.log('Executed ' + executed + ' tests');
+        "
 
   extension:
     name: Extension Build & Test
