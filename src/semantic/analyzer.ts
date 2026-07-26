@@ -42,8 +42,15 @@ import {
   resolveArrayElementType,
   buildEnumMemberMap,
   describeType,
+  isGenericTypeName,
   type EnumMemberEntry,
 } from "./type-utils.js";
+import {
+  getSystemType,
+  isSystemNamespaceName,
+  isSystemTypeReference,
+  resolveSystemAccess,
+} from "./system-types.js";
 import { isEnArgument, isEnoArgument, stripEnEno } from "../ast-utils.js";
 
 // =============================================================================
@@ -236,6 +243,11 @@ export class SemanticAnalyzer {
     typeName: string,
     referenceKind?: ReferenceKind,
   ): IECType {
+    if (isSystemTypeReference(typeName)) {
+      const systemType = getSystemType(typeName);
+      if (systemType) return systemType;
+    }
+
     const typeSymbol = this.symbolTables.globalScope.lookup(typeName);
     const baseType: IECType =
       typeSymbol?.kind === "type" && typeSymbol.resolvedType
@@ -2361,9 +2373,17 @@ export class SemanticAnalyzer {
    */
   private isKnownType(name: string): boolean {
     const upper = name.toUpperCase();
+    // IEC generic type groups (allowed only in VAR_INPUT — validated separately)
+    if (isGenericTypeName(upper)) {
+      return true;
+    }
     // Whitelist synthetic internal types
     if (upper.startsWith("__VLA_") || upper.startsWith("__INLINE_ARRAY_")) {
       return true;
+    }
+    // CODESYS __SYSTEM qualified types (enums and VAR_INFO)
+    if (isSystemTypeReference(name)) {
+      return getSystemType(name) !== undefined;
     }
     const sym = this.symbolTables.globalScope.lookup(upper);
     if (!sym) return false;
@@ -2380,12 +2400,25 @@ export class SemanticAnalyzer {
   private validateSingleTypeReference(
     typeRef: TypeReference,
     context: string,
+    allowGeneric = false,
   ): void {
     // Skip empty or VOID type names
     if (!typeRef.name || typeRef.name.toUpperCase() === "VOID") return;
 
     // For inline arrays, validate the element type instead
     const nameToCheck = typeRef.elementTypeName ?? typeRef.name;
+    const nameUpper = nameToCheck.toUpperCase();
+
+    // IEC generic type groups are only permitted as VAR_INPUT parameter types
+    if (isGenericTypeName(nameUpper) && !allowGeneric) {
+      this.addError(
+        `Generic type '${nameToCheck}' is only allowed in VAR_INPUT parameters${context ? " in " + context : ""}`,
+        typeRef.sourceSpan.startLine,
+        typeRef.sourceSpan.startCol,
+        typeRef.sourceSpan.file,
+      );
+      return;
+    }
 
     if (!this.isKnownType(nameToCheck)) {
       this.addError(
@@ -2406,8 +2439,10 @@ export class SemanticAnalyzer {
     // Helper to validate var blocks
     const validateVarBlocks = (varBlocks: VarBlock[], context: string) => {
       for (const block of varBlocks) {
+        // IEC generic type groups (ANY, ANY_BIT, ...) are only valid in VAR_INPUT
+        const allowGeneric = block.blockType === "VAR_INPUT";
         for (const decl of block.declarations) {
-          this.validateSingleTypeReference(decl.type, context);
+          this.validateSingleTypeReference(decl.type, context, allowGeneric);
         }
       }
     };
@@ -2730,6 +2765,19 @@ export class SemanticAnalyzer {
   ): void {
     switch (expr.kind) {
       case "VariableExpression":
+        // CODESYS __SYSTEM namespace: __SYSTEM.TYPE_CLASS.TYPE_BOOL
+        if (this.checkSystemAccess(expr)) {
+          if (expr.accessChain) {
+            for (const step of expr.accessChain) {
+              if (step.kind === "subscript") {
+                for (const idx of step.indices) {
+                  this.checkExpressionForUndeclaredVars(idx, scope, ctx);
+                }
+              }
+            }
+          }
+          break;
+        }
         this.checkNameDeclared(expr.name, scope, ctx, expr.sourceSpan);
         // Reject member access on a type-level symbol (FB / program / type).
         // Resolves the bug where `RED_YELLOW_GREEN.GREENTIME := …` is
@@ -2803,6 +2851,9 @@ export class SemanticAnalyzer {
           this.checkExpressionForUndeclaredVars(expr.arraySize, scope, ctx);
         }
         break;
+      case "VarInfoExpression":
+        this.checkExpressionForUndeclaredVars(expr.argument, scope, ctx);
+        break;
     }
   }
 
@@ -2852,6 +2903,45 @@ export class SemanticAnalyzer {
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,
     );
+  }
+
+  /**
+   * Validate a CODESYS __SYSTEM qualified reference. Returns true when the
+   * expression starts with __SYSTEM and the remainder is a valid enum type
+   * or enum member path. Otherwise reports an error and returns true so
+   * the caller does not fall through to the normal undeclared-variable check.
+   */
+  private checkSystemAccess(expr: VariableExpression): boolean {
+    if (!isSystemNamespaceName(expr.name)) return false;
+
+    const path =
+      expr.accessChain?.length === 2 &&
+      expr.accessChain.every((s) => s.kind === "field")
+        ? expr.accessChain.map((s) => s.name)
+        : expr.fieldAccess.length === 2
+          ? expr.fieldAccess
+          : undefined;
+
+    if (path === undefined) {
+      this.addError(
+        "Invalid __SYSTEM reference — expected __SYSTEM.<EnumType>.<Member>",
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+      return true;
+    }
+
+    const resolved = resolveSystemAccess(path);
+    if (!resolved) {
+      this.addError(
+        `Unknown __SYSTEM reference '__SYSTEM.${path.join(".")}'`,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+    }
+    return true;
   }
 
   /**

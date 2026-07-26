@@ -9,7 +9,6 @@
 
 import type {
   CompilationUnit,
-  VarBlock,
   VarDeclaration,
   Statement,
   Expression,
@@ -27,6 +26,7 @@ import type {
   UnaryExpression,
   LiteralExpression,
   VariableExpression,
+  VarInfoExpression,
   AccessStep,
   ExternalCodePragma,
   MethodDeclaration,
@@ -36,6 +36,9 @@ import type {
   Visibility,
   ReferenceKind,
   IECType,
+  ElementaryType,
+  ArrayType,
+  VarBlock,
 } from "../frontend/ast.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry } from "../types.js";
@@ -57,6 +60,12 @@ import {
   parseTodLiteralToNs,
 } from "../project-model.js";
 import { isElementaryType, TypeRegistry } from "../semantic/type-registry.js";
+import {
+  resolveTypeClass,
+  TYPE_CLASS,
+  TYPE_CLASS_NAME,
+  getSystemType,
+} from "../semantic/system-types.js";
 import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
 import { formatArrayType, iecBaseToCppLiteral } from "./codegen-utils.js";
 import {
@@ -67,7 +76,9 @@ import {
   resolveArrayElementType,
   typeName as typeNameUtil,
   buildEnumMemberMap,
+  isGenericTypeName,
   type EnumMemberEntry,
+  ELEMENTARY_TYPES,
 } from "../semantic/type-utils.js";
 
 // =============================================================================
@@ -338,6 +349,15 @@ export class CodeGenerator {
   /** Counter for generating unique temporary variable names */
   private tempVarCounter = 0;
 
+  /** Counter for generating unique __VARINFO descriptor identifiers */
+  private varInfoCounter = 0;
+
+  /** Stable symbol-to-id map for deterministic synthetic byte addresses */
+  private varInfoSymbolIds = new Map<string, number>();
+
+  /** Cache descriptor names by symbol so two __VARINFO(x) calls share one descriptor */
+  private varInfoDescriptorCache = new Map<string, string>();
+
   /**
    * Stack of loop exit labels for EXIT codegen. C++ `break` only escapes the
    * innermost switch/loop, so `EXIT` inside a `CASE` nested in a loop must
@@ -497,6 +517,16 @@ export class CodeGenerator {
     typeName: string,
     maxLength?: number | string,
   ): string {
+    // CODESYS generic type groups (ANY, ANY_BIT, ANY_NUM, ...) lower to the
+    // runtime AnyType descriptor.
+    if (isGenericTypeName(typeName.toUpperCase())) {
+      return "strucpp::AnyType";
+    }
+
+    // CODESYS __SYSTEM enum types: __SYSTEM.TYPE_CLASS → IEC_TYPE_CLASS
+    const systemCpp = this.mapSystemTypeToCpp(typeName);
+    if (systemCpp) return systemCpp;
+
     // Handle VLA synthetic names: __VLA_{ndims}D_{elementType}
     // Use IECVar-wrapped types to match concrete Array1D<IEC_T, ...> elements
     const vlaMatch = typeName.match(/^__VLA_(\d+)D_(.+)$/);
@@ -542,6 +572,21 @@ export class CodeGenerator {
     // wrapper isn't simply `IEC_<NAME>` (e.g. __XWORD → IEC_XWORD) resolve
     // correctly; all standard types map to `IEC_<NAME>` as before.
     return IEC_TO_CPP_VAR_TYPE[typeName.toUpperCase()] ?? `IEC_${typeName}`;
+  }
+
+  /**
+   * Map CODESYS __SYSTEM enum type names to their IEC_ENUM wrapper.
+   * Accepts both "__SYSTEM.TYPE_CLASS" and bare "TYPE_CLASS" forms.
+   */
+  private mapSystemTypeToCpp(typeName: string): string | undefined {
+    const upper = typeName.toUpperCase();
+    const suffix = upper.startsWith("__SYSTEM.")
+      ? upper.slice("__SYSTEM.".length)
+      : upper;
+    if (suffix === "TYPE_CLASS") return "IEC_TYPE_CLASS";
+    if (suffix === "MEMORY_AREA") return "IEC_MEMORY_AREA";
+    if (suffix === "VAR_INFO") return "strucpp::VAR_INFO";
+    return undefined;
   }
 
   /**
@@ -971,7 +1016,13 @@ export class CodeGenerator {
     this.locatedVars = [];
     this.codegenWarnings = [];
     this.tempVarCounter = 0;
+    this.varInfoCounter = 0;
+    this.varInfoSymbolIds = new Map();
+    this.varInfoDescriptorCache = new Map();
     this.ast = ast; // Store AST for looking up program bodies
+
+    // Assign stable synthetic byte-address IDs from sorted __VARINFO symbols.
+    this.buildVarInfoSymbolIds(ast);
 
     // Build set of known FB types from AST (library FB types already registered
     // via registerLibraryFBTypes() before generate() is called)
@@ -1154,6 +1205,8 @@ export class CodeGenerator {
     this.emitHeader('#include "iec_located.hpp"');
     this.emitHeader('#include "iec_std_lib.hpp"');
     this.emitHeader('#include "iec_enum.hpp"');
+    this.emitHeader('#include "iec_system.hpp"');
+    this.emitHeader('#include "iec_varinfo.hpp"');
     this.emitHeader('#include "iec_memory.hpp"');
     this.emitHeader('#include "iec_pointer.hpp"');
     this.emitHeader('#include "iec_string.hpp"');
@@ -3905,7 +3958,396 @@ export class CodeGenerator {
       case "QueryInterfaceExpression": {
         return this.generateQueryInterfaceExpression(expr);
       }
+      case "VarInfoExpression": {
+        return this.generateVarInfoExpression(expr);
+      }
     }
+    throw new Error("Unsupported expression kind");
+  }
+
+  /**
+   * Generate C++ for a __VARINFO(variable) expression.
+   *
+   * Builds a compile-time strucpp::VAR_INFO descriptor from the target
+   * variable's resolved type and declaration metadata.
+   */
+  private generateVarInfoExpression(expr: VarInfoExpression): string {
+    const arg = expr.argument;
+    const symbolName = this.generateVarInfoSymbol(arg);
+
+    const cached = this.varInfoDescriptorCache.get(symbolName);
+    if (cached) return cached;
+
+    const varInfo = this.findVarInfo(arg.name);
+    const declaration = varInfo?.decl;
+    const block = varInfo?.block;
+
+    // Resolve the argument's type from the type-checker annotation if available.
+    let targetType: IECType | undefined = arg.resolvedType;
+    if (!targetType) {
+      // Fallback: treat the base variable name as an elementary type.
+      targetType = this.resolveTypeByName(arg.name);
+    }
+
+    let typeClassName = "TYPE_NONE";
+    let typeName = "TYPE_NONE";
+    let bitSize = 0;
+    let elemBitSize = 0;
+    let numElements = 0;
+    let baseTypeClassName = "TYPE_BOOL";
+
+    if (targetType?.typeKind === "array") {
+      const arr = targetType as ArrayType;
+      typeClassName = "TYPE_ARRAY";
+      typeName = "ARRAY";
+      bitSize = this.getTypeBitsForIECType(arr);
+      elemBitSize = this.getTypeBitsForIECType(arr.elementType);
+      numElements = 1;
+      for (const dim of arr.dimensions) {
+        numElements *= Math.max(1, dim.end - dim.start + 1);
+      }
+      const baseTypeClass = resolveTypeClass(arr.elementType);
+      baseTypeClassName = TYPE_CLASS_NAME.get(baseTypeClass) ?? "TYPE_NONE";
+    } else if (
+      declaration?.type.arrayDimensions &&
+      declaration.type.arrayDimensions.length > 0 &&
+      declaration.type.elementTypeName
+    ) {
+      // Inline ARRAY [...] OF T uses a synthetic __INLINE_ARRAY_<T> elementary
+      // type in the type-checker; recover the real shape from the declaration.
+      const elementType = this.resolveTypeByName(
+        declaration.type.elementTypeName,
+      );
+      elemBitSize = elementType ? this.getTypeBitsForIECType(elementType) : 0;
+      numElements = 1;
+      for (const dim of declaration.type.arrayDimensions) {
+        numElements *= Math.max(1, dim.end - dim.start + 1);
+      }
+      bitSize = numElements * elemBitSize;
+      typeClassName = "TYPE_ARRAY";
+      typeName = "ARRAY";
+      const baseTypeClass = elementType
+        ? resolveTypeClass(elementType)
+        : TYPE_CLASS.TYPE_NONE;
+      baseTypeClassName = TYPE_CLASS_NAME.get(baseTypeClass) ?? "TYPE_NONE";
+    } else if (targetType) {
+      const typeClass = resolveTypeClass(targetType);
+      typeClassName = TYPE_CLASS_NAME.get(typeClass) ?? "TYPE_NONE";
+      typeName = typeNameUtil(targetType);
+      bitSize = this.getTypeBitsForIECType(targetType);
+    }
+
+    const comment = declaration?.comment ?? "";
+
+    const { area, memoryAreaName, bitNr, bitAddress, byteAddress, byteOffset } =
+      this.inferVarInfoAddressFields(declaration, block, symbolName);
+
+    const id = this.varInfoSymbolIds.get(symbolName) ?? ++this.varInfoCounter;
+    const descriptorName = `__strucpp_varinfo_${id}`;
+
+    const fields = [
+      `/*BYTEADDRESS=*/ IEC_DWORD(${this.formatHex(byteAddress)}u)`,
+      `/*BYTEOFFSET=*/ IEC_DINT(${byteOffset})`,
+      `/*AREA=*/ IEC_INT(${area})`,
+      `/*BITNR=*/ IEC_INT(${bitNr})`,
+      `/*BITSIZE=*/ IEC_UDINT(${bitSize}u)`,
+      `/*BITADDRESS=*/ IEC_UDINT(${bitAddress}u)`,
+      `/*TYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${typeClassName})`,
+      `/*TYPENAME=*/ strucpp::IECString<79>("${this.escapeCString(typeName)}")`,
+      `/*NUMELEMENTS=*/ IEC_UDINT(${numElements}u)`,
+      `/*BASETYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${baseTypeClassName})`,
+      `/*ELEMBITSIZE=*/ IEC_UDINT(${elemBitSize}u)`,
+      `/*MEMORYAREA=*/ IEC_MEMORY_AREA(strucpp::__SYSTEM::MEMORY_AREA::${memoryAreaName})`,
+      `/*SYMBOL=*/ strucpp::IECString<39>("${this.escapeCString(symbolName)}")`,
+      `/*COMMENT=*/ strucpp::IECString<79>("${this.escapeCString(comment)}")`,
+    ];
+
+    const result = `([&]() -> strucpp::VAR_INFO { static const strucpp::VAR_INFO ${descriptorName} = { ${fields.join(", ")} }; return ${descriptorName}; })()`;
+    this.varInfoDescriptorCache.set(symbolName, result);
+    return result;
+  }
+
+  /**
+   * Find the VarDeclaration and owning VarBlock for a variable referenced by a
+   * __VARINFO expression. Searches all POU, global and configuration var blocks
+   * in the AST. VAR_EXTERNAL declarations resolve to the matching global if one
+   * exists; otherwise they are treated as global references.
+   */
+  private findVarInfo(
+    name: string,
+  ): { decl: VarDeclaration; block: VarBlock } | undefined {
+    if (!this.ast) return undefined;
+    const nameUpper = name.toUpperCase();
+
+    const pouBlocks: VarBlock[] = [];
+    for (const prog of this.ast.programs) pouBlocks.push(...prog.varBlocks);
+    for (const func of this.ast.functions) pouBlocks.push(...func.varBlocks);
+    for (const fb of this.ast.functionBlocks) {
+      pouBlocks.push(...fb.varBlocks);
+      for (const method of fb.methods) pouBlocks.push(...method.varBlocks);
+    }
+    for (const iface of this.ast.interfaces) {
+      for (const method of iface.methods) pouBlocks.push(...method.varBlocks);
+    }
+
+    let externalMatch: { decl: VarDeclaration; block: VarBlock } | undefined;
+    for (const block of pouBlocks) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === nameUpper)) {
+          if (block.blockType === "VAR_EXTERNAL") {
+            externalMatch = { decl, block };
+          } else {
+            return { decl, block };
+          }
+        }
+      }
+    }
+
+    const globalBlocks: VarBlock[] = [...this.ast.globalVarBlocks];
+    for (const config of this.ast.configurations) {
+      globalBlocks.push(...config.varBlocks);
+    }
+
+    for (const block of globalBlocks) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === nameUpper)) {
+          return { decl, block };
+        }
+      }
+    }
+
+    return externalMatch;
+  }
+
+  /**
+   * Infer the address and memory-area fields for a __VARINFO descriptor.
+   * Located variables (AT %I/%Q/%M) get real byte/bit addresses; all other
+   * variables use synthetic stable IDs derived from their qualified symbol.
+   */
+  private inferVarInfoAddressFields(
+    declaration: VarDeclaration | undefined,
+    block: VarBlock | undefined,
+    symbolName: string,
+  ): {
+    area: number;
+    memoryAreaName: string;
+    bitNr: number;
+    bitAddress: number;
+    byteAddress: number;
+    byteOffset: number;
+  } {
+    const byteAddress = this.generateVarInfoByteAddress(symbolName);
+
+    if (declaration?.address) {
+      const parsed = parseLocatedAddress(declaration.address);
+      if (parsed) {
+        const realByteAddress = parsed.byteIndex;
+        const realByteOffset = parsed.byteIndex;
+        const realBitAddress = parsed.byteIndex * 8 + parsed.bitIndex;
+        const realBitNr = parsed.size === "Bit" ? parsed.bitIndex : -1;
+        switch (parsed.area) {
+          case "Input":
+            return {
+              area: 2,
+              memoryAreaName: "MEM_INPUT",
+              bitNr: realBitNr,
+              bitAddress: realBitAddress,
+              byteAddress: realByteAddress,
+              byteOffset: realByteOffset,
+            };
+          case "Output":
+            return {
+              area: 3,
+              memoryAreaName: "MEM_OUTPUT",
+              bitNr: realBitNr,
+              bitAddress: realBitAddress,
+              byteAddress: realByteAddress,
+              byteOffset: realByteOffset,
+            };
+          case "Memory":
+          default:
+            return {
+              area: 1,
+              memoryAreaName: "MEM_MEMORY",
+              bitNr: realBitNr,
+              bitAddress: realBitAddress,
+              byteAddress: realByteAddress,
+              byteOffset: realByteOffset,
+            };
+        }
+      }
+    }
+
+    let memoryAreaName = "MEM_LOCAL";
+    let area = -1;
+    if (block) {
+      if (block.blockType === "VAR_GLOBAL") {
+        memoryAreaName = block.isRetain ? "MEM_RETAIN" : "MEM_GLOBAL";
+        area = 0;
+      } else if (block.blockType === "VAR_EXTERNAL") {
+        memoryAreaName = "MEM_GLOBAL";
+        area = 0;
+      }
+    }
+
+    return {
+      area,
+      memoryAreaName,
+      bitNr: -1,
+      bitAddress: 0,
+      byteAddress,
+      byteOffset: 0,
+    };
+  }
+
+  /**
+   * Resolve a type name to an IECType for __VARINFO metadata.
+   */
+  private resolveTypeByName(name: string): IECType | undefined {
+    const upper = name.toUpperCase();
+    if (ELEMENTARY_TYPES[upper]) {
+      return ELEMENTARY_TYPES[upper];
+    }
+    const systemType = getSystemType(name);
+    if (systemType) return systemType;
+    return this.symbolTables.lookupType(upper)?.resolvedType ?? undefined;
+  }
+
+  /**
+   * True if `typeName` denotes the synthetic __SYSTEM.VAR_INFO type.
+   */
+  private isVarInfoTypeName(typeName: string | undefined): boolean {
+    return (
+      typeName !== undefined &&
+      (typeName.toUpperCase() === "__SYSTEM.VAR_INFO" ||
+        typeName.toUpperCase() === "VAR_INFO")
+    );
+  }
+
+  /**
+   * Return the C++ type name for a __SYSTEM.VAR_INFO field.
+   */
+  private varInfoFieldTypeName(field: string): string | undefined {
+    const systemType = getSystemType("__SYSTEM.VAR_INFO");
+    if (systemType?.typeKind !== "struct") return undefined;
+    const st = systemType as import("../frontend/ast.js").StructType;
+    const fu = field.toUpperCase();
+    for (const [fname, ftype] of st.fields) {
+      if (fname.toUpperCase() === fu) {
+        return typeNameUtil(ftype);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Compute the logical bit size for an IECType.
+   */
+  private getTypeBitsForIECType(type: IECType): number {
+    switch (type.typeKind) {
+      case "elementary":
+        return getTypeBits((type as ElementaryType).name) ?? 0;
+      case "enum":
+        return 32;
+      case "reference": {
+        const pointerTypes = ["POINTER", "REF_TO", "REFERENCE_TO"];
+        const typeName = typeNameUtil(type);
+        if (pointerTypes.some((p) => typeName.toUpperCase().startsWith(p))) {
+          return 32;
+        }
+        return 32;
+      }
+      case "array": {
+        const arr = type as ArrayType;
+        let elements = 1;
+        for (const dim of arr.dimensions) {
+          elements *= Math.max(1, dim.end - dim.start + 1);
+        }
+        const elemBits = this.getTypeBitsForIECType(arr.elementType);
+        return elements * elemBits;
+      }
+      default:
+        return 0;
+    }
+  }
+
+  /**
+   * Build a human-readable symbol string for a __VARINFO argument.
+   */
+  private generateVarInfoSymbol(arg: VariableExpression): string {
+    const parts: string[] = [arg.name];
+    for (const step of arg.accessChain ?? []) {
+      if (step.kind === "field") {
+        parts.push(step.name);
+      } else if (step.kind === "subscript") {
+        parts[parts.length - 1] = `${parts[parts.length - 1]}[]`;
+      }
+    }
+    return parts.join(".");
+  }
+
+  /**
+   * Allocate a synthetic byte-address handle for a __VARINFO descriptor.
+   * The ID is assigned from a sorted list of all __VARINFO symbols so the
+   * output is byte-identical regardless of source order.
+   */
+  private generateVarInfoByteAddress(symbolName: string): number {
+    const id = this.varInfoSymbolIds.get(symbolName) ?? 0;
+    return 0xca000000 + id;
+  }
+
+  /**
+   * Pre-scan the AST for all __VARINFO calls, collect their qualified symbols,
+   * and assign stable IDs from a sorted ordering.
+   */
+  private buildVarInfoSymbolIds(ast: CompilationUnit): void {
+    const expressions = this.collectVarInfoExpressions(ast);
+    const symbolSet = new Set<string>();
+    for (const expr of expressions) {
+      symbolSet.add(this.generateVarInfoSymbol(expr.argument));
+    }
+    const sorted = [...symbolSet].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (let i = 0; i < sorted.length; i++) {
+      this.varInfoSymbolIds.set(sorted[i]!, i + 1);
+    }
+  }
+
+  /**
+   * Recursively collect every VarInfoExpression in the AST.
+   */
+  private collectVarInfoExpressions(
+    node: unknown,
+    result: VarInfoExpression[] = [],
+    visited = new Set<unknown>(),
+  ): VarInfoExpression[] {
+    if (node === null || typeof node !== "object") return result;
+    if (visited.has(node)) return result;
+    visited.add(node);
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectVarInfoExpressions(item, result, visited);
+      }
+    } else {
+      const obj = node as Record<string, unknown>;
+      if (obj.kind === "VarInfoExpression") {
+        result.push(obj as unknown as VarInfoExpression);
+      }
+      for (const key of Object.keys(obj)) {
+        if (key === "sourceSpan") continue;
+        this.collectVarInfoExpressions(obj[key], result, visited);
+      }
+    }
+    return result;
+  }
+
+  /** Format a number as a C++ hex literal. */
+  private formatHex(n: number): string {
+    return `0x${Math.abs(n).toString(16).toUpperCase()}`;
+  }
+
+  /** Escape a string for use in a C string literal. */
+  private escapeCString(s: string): string {
+    return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
 
   /**
@@ -4215,6 +4657,20 @@ export class CodeGenerator {
   private generateVariableExpression(expr: VariableExpression): string {
     const nameUpper = expr.name.toUpperCase();
 
+    // CODESYS __SYSTEM qualified enum access: __SYSTEM.TYPE_CLASS.TYPE_BOOL
+    if (nameUpper === "__SYSTEM") {
+      const path =
+        expr.accessChain?.length === 2 &&
+        expr.accessChain.every((s) => s.kind === "field")
+          ? expr.accessChain.map((s) => s.name)
+          : expr.fieldAccess.length === 2
+            ? expr.fieldAccess
+            : undefined;
+      if (path) {
+        return `__SYSTEM::${path[0]}::${path[1]}`;
+      }
+    }
+
     // Composite shared global (struct / array / function-block) accessed in a
     // body: reach its canonical value directly through the GlobalVar pointer
     // (`g->value` / `g->value.field` / `g->value.field.N`). The per-global mutex
@@ -4410,6 +4866,14 @@ export class CodeGenerator {
           result = `((static_cast<uint64_t>(${result}) >> ${field}) & 1)`;
           continue;
         }
+        // CODESYS __SYSTEM.VAR_INFO fields are emitted in uppercase.
+        if (this.isVarInfoTypeName(currentType)) {
+          result += `.${field.toUpperCase()}`;
+          if (!isLast) {
+            currentType = this.varInfoFieldTypeName(field);
+          }
+          continue;
+        }
         if (isLast) {
           const propName = this.resolvePropertyName(currentType, field);
           if (propName) {
@@ -4471,6 +4935,12 @@ export class CodeGenerator {
           if (/^\d+$/.test(step.name)) {
             result = `((static_cast<uint64_t>(${result}) >> ${step.name}) & 1)`;
             continue;
+          }
+          // CODESYS __SYSTEM.VAR_INFO fields are emitted in uppercase.
+          if (this.isVarInfoTypeName(currentType)) {
+            result += `.${step.name.toUpperCase()}`;
+            currentType = this.varInfoFieldTypeName(step.name);
+            break;
           }
           // Property access on the last step
           if (isLast) {
@@ -4810,6 +5280,61 @@ export class CodeGenerator {
         return this.inferExprType(expr.expression);
       default:
         return undefined;
+    }
+  }
+
+  /**
+   * Build a CODESYS AnyType descriptor for a function-call argument.
+   * The type-class id is taken from the argument's resolved IEC type.
+   */
+  private buildAnyTypeDescriptor(expr: Expression, valueCode: string): string {
+    const typeClass = this.getTypeClassLiteral(expr);
+    return `strucpp::make_any_type<${typeClass}>(${valueCode})`;
+  }
+
+  /**
+   * Return the C++ __SYSTEM.TYPE_CLASS enum literal for an expression,
+   * or TYPE_NONE when the type cannot be determined.
+   */
+  private getTypeClassLiteral(expr: Expression): string {
+    let resolved = expr.resolvedType;
+    if (!resolved) {
+      const inferred = this.inferExprType(expr);
+      if (inferred) {
+        resolved = {
+          typeKind: "elementary",
+          name: inferred,
+          sizeBits: 0,
+        } as IECType;
+      }
+    }
+    const typeClassNum =
+      resolved !== undefined ? resolveTypeClass(resolved) : undefined;
+    const memberName =
+      typeClassNum !== undefined
+        ? TYPE_CLASS_NAME.get(typeClassNum)
+        : undefined;
+    if (memberName) {
+      return `strucpp::__SYSTEM::TYPE_CLASS::${memberName}`;
+    }
+    return `strucpp::__SYSTEM::TYPE_CLASS::TYPE_NONE`;
+  }
+
+  /**
+   * Wrap positional or named arguments whose formal parameter is an IEC
+   * generic type group (ANY, ANY_BIT, ...) in a runtime AnyType descriptor.
+   * Modifies `args` in place.
+   */
+  private wrapAnyTypeArgs(
+    args: string[],
+    argExprs: FunctionCallExpression["arguments"],
+    paramTypes: string[],
+  ): void {
+    for (let i = 0; i < args.length && i < paramTypes.length; i++) {
+      if (!isGenericTypeName(paramTypes[i]!.toUpperCase())) continue;
+      const argExpr = argExprs[i]?.value;
+      if (!argExpr) continue; // omitted/default argument
+      args[i] = this.buildAnyTypeDescriptor(argExpr, args[i]!);
     }
   }
 
@@ -5300,6 +5825,12 @@ export class CodeGenerator {
     const paramTypes = this.getParamTypes(nameUpper);
     if (paramTypes) {
       this.coerceUserFuncArgs(args, expr.arguments, paramTypes);
+    }
+
+    // Wrap arguments whose formal parameter is a generic ANY group in an
+    // AnyType runtime descriptor.
+    if (paramTypes) {
+      this.wrapAnyTypeArgs(args, expr.arguments, paramTypes);
     }
 
     return `${expr.functionName}(${args.join(", ")})`;

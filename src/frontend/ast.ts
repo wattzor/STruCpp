@@ -242,6 +242,8 @@ export interface VarDeclaration extends ASTNode {
   type: TypeReference;
   initialValue?: Expression;
   address?: string;
+  /** Declaration comment, bound by the trailing-or-preceding-line rule. */
+  comment?: string;
 }
 
 // =============================================================================
@@ -573,6 +575,7 @@ export type Expression =
   | DrefExpression
   | NewExpression
   | QueryInterfaceExpression
+  | VarInfoExpression
   | ArrayLiteralExpression;
 
 /**
@@ -739,6 +742,14 @@ export interface QueryInterfaceExpression extends TypedNode {
   kind: "QueryInterfaceExpression";
   source: Expression;
   target: Expression;
+}
+
+/**
+ * __VARINFO(<variable>) expression - CODESYS runtime variable reflection.
+ */
+export interface VarInfoExpression extends TypedNode {
+  kind: "VarInfoExpression";
+  argument: VariableExpression;
 }
 
 /**

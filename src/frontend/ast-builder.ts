@@ -45,6 +45,7 @@ import type {
   DrefExpression,
   NewExpression,
   QueryInterfaceExpression,
+  VarInfoExpression,
   DeleteStatement,
   ArrayLiteralExpression,
   FunctionCallExpression,
@@ -90,6 +91,20 @@ function tokenToSourceSpan(token: IToken): SourceSpan {
     startCol: token.startColumn ?? 0,
     endCol: token.endColumn ?? 0,
   };
+}
+
+/**
+ * Strip ST comment delimiters and trim whitespace.
+ * Preserves nested block-comment delimiters inside the body.
+ */
+function cleanCommentText(image: string): string {
+  if (image.startsWith("//")) {
+    return image.slice(2).trim();
+  }
+  if (image.startsWith("(*") && image.endsWith("*)")) {
+    return image.slice(2, -2).trim();
+  }
+  return image.trim();
 }
 
 /**
@@ -326,9 +341,79 @@ export class ASTBuilder {
   /** Global constants that persist across POU scans (never cleared). */
   private globalConstantMap: Map<string, number> = new Map();
 
+  /** Captured comment tokens, sorted by source offset. */
+  private comments: IToken[];
+
+  /** Indices of comments already bound to a declaration. */
+  private usedCommentIndices = new Set<number>();
+
+  constructor(comments?: IToken[]) {
+    this.comments = (comments ?? [])
+      .slice()
+      .sort((a, b) => a.startOffset - b.startOffset);
+  }
+
   /** Seed a global constant for dimension resolution. */
   setGlobalConstant(name: string, value: number): void {
     this.globalConstantMap.set(name.toUpperCase(), value);
+  }
+
+  /**
+   * Bind a comment token to a variable declaration.
+   * - trailing comment on the same line as the declaration binds to it
+   * - otherwise a comment on the immediately preceding line binds to it
+   * - anything else is discarded
+   *
+   * This is intentionally independent of the order in which declarations are
+   * visited, so POU blocks can be built in any order without consuming a
+   * comment that belongs to an earlier declaration.
+   */
+  private findComment(node: CstNode): string | undefined {
+    const span = nodeToSourceSpan(node);
+
+    let bestTrailingIdx = -1;
+    let bestTrailingStartCol = Infinity;
+    let bestPrecedingIdx = -1;
+    let bestPrecedingEndCol = -1;
+
+    for (let i = 0; i < this.comments.length; i++) {
+      if (this.usedCommentIndices.has(i)) continue;
+
+      const comment = this.comments[i]!;
+      const commentStartLine = comment.startLine ?? 0;
+      const commentEndLine = comment.endLine ?? commentStartLine;
+      const commentStartColumn = comment.startColumn ?? 0;
+      const commentEndColumn = comment.endColumn ?? 0;
+
+      // Trailing: same line as declaration end, starting after the declaration.
+      // Pick the earliest such comment to avoid grabbing later unrelated comments.
+      if (
+        commentStartLine === span.endLine &&
+        commentStartColumn > span.endCol &&
+        commentStartColumn < bestTrailingStartCol
+      ) {
+        bestTrailingIdx = i;
+        bestTrailingStartCol = commentStartColumn;
+      }
+
+      // Preceding: comment ends on the line immediately before the declaration.
+      // Pick the one that ends latest (closest to the declaration).
+      if (
+        commentEndLine === span.startLine - 1 &&
+        commentEndColumn > bestPrecedingEndCol
+      ) {
+        bestPrecedingIdx = i;
+        bestPrecedingEndCol = commentEndColumn;
+      }
+    }
+
+    const bestIdx = bestTrailingIdx !== -1 ? bestTrailingIdx : bestPrecedingIdx;
+    if (bestIdx !== -1) {
+      this.usedCommentIndices.add(bestIdx);
+      return cleanCommentText(this.comments[bestIdx]!.image);
+    }
+
+    return undefined;
   }
 
   /**
@@ -1032,9 +1117,9 @@ export class ASTBuilder {
     let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
-      const elemNameToken = getFirstToken(elemChildren.Identifier);
-      if (elemNameToken) {
-        elementTypeName = elemNameToken.image;
+      const elemNameTokens = getAllTokens(elemChildren.Identifier);
+      if (elemNameTokens.length > 0) {
+        elementTypeName = elemNameTokens.map((t) => t.image).join(".");
       }
       if (getAllTokens(elemChildren.POINTER).length > 0) {
         elementReferenceKind = "pointer_to";
@@ -1421,8 +1506,10 @@ export class ASTBuilder {
       }
     }
 
+    const comment = this.findComment(node);
+
     // Use conditional spreading for optional properties to comply with exactOptionalPropertyTypes
-    return {
+    const result: VarDeclaration = {
       kind: "VarDeclaration",
       sourceSpan: nodeToSourceSpan(node),
       names,
@@ -1430,6 +1517,10 @@ export class ASTBuilder {
       ...(initialValue !== undefined ? { initialValue } : {}),
       ...(address !== undefined ? { address } : {}),
     };
+    if (comment !== undefined) {
+      result.comment = comment;
+    }
+    return result;
   }
 
   /**
@@ -1438,8 +1529,24 @@ export class ASTBuilder {
   buildTypeReference(node: CstNode): TypeReference {
     const children = node.children as CstChildren;
 
-    const nameToken = getFirstToken(children.Identifier);
-    const name = nameToken?.image ?? "INT";
+    const allIdents = getAllTokens(children.Identifier);
+    const dotTokens = getAllTokens(children.Dot);
+    const hasDots = dotTokens.length > 0;
+
+    let name: string;
+    let maxLength: number | string | undefined;
+    if (hasDots) {
+      // Namespace-qualified type: __SYSTEM.TYPE_CLASS
+      name = allIdents.map((t) => t.image).join(".");
+    } else {
+      name = allIdents[0]?.image ?? "INT";
+      // Check for identifier-based length (STRING(CONSTANT_NAME))
+      // Note: children.Identifier[0] is the type name itself; [1] would be the length constant
+      if (allIdents.length > 1) {
+        maxLength = allIdents[1]!.image;
+      }
+    }
+
     const isRefTo = !!children.REF_TO;
     const isReferenceTo = !!children.REFERENCE_TO;
     const isPointerTo = !!children.POINTER;
@@ -1455,17 +1562,9 @@ export class ASTBuilder {
     }
 
     // Extract optional parameterized length: STRING(n) / WSTRING(n) / STRING(CONSTANT)
-    let maxLength: number | string | undefined;
     const lengthToken = getFirstToken(children.IntegerLiteral);
     if (lengthToken) {
       maxLength = parseInt(lengthToken.image, 10);
-    } else {
-      // Check for identifier-based length (STRING(CONSTANT_NAME))
-      // Note: children.Identifier[0] is the type name itself; [1] would be the length constant
-      const allIdents = getAllTokens(children.Identifier);
-      if (allIdents.length > 1) {
-        maxLength = allIdents[1]!.image;
-      }
     }
 
     const result: TypeReference = {
@@ -1509,9 +1608,9 @@ export class ASTBuilder {
     let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
-      const elemNameToken = getFirstToken(elemChildren.Identifier);
-      if (elemNameToken) {
-        elementTypeName = elemNameToken.image;
+      const elemNameTokens = getAllTokens(elemChildren.Identifier);
+      if (elemNameTokens.length > 0) {
+        elementTypeName = elemNameTokens.map((t) => t.image).join(".");
       }
       if (getAllTokens(elemChildren.POINTER).length > 0) {
         elementReferenceKind = "pointer_to";
@@ -2370,6 +2469,13 @@ export class ASTBuilder {
       );
     }
 
+    // Check for __VARINFO(variable) expression
+    if (children.varInfoExpression) {
+      return this.buildVarInfoExpression(
+        getFirstNode(children.varInfoExpression)!,
+      );
+    }
+
     // Check for THIS access expression
     if (children.thisAccess) {
       return this.buildThisAccessExpression(getFirstNode(children.thisAccess)!);
@@ -2512,6 +2618,24 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       source: source!,
       target: target!,
+    };
+  }
+
+  /**
+   * Build a VarInfoExpression from a CST node.
+   * Handles: __VARINFO(variable)
+   */
+  buildVarInfoExpression(node: CstNode): VarInfoExpression {
+    const children = node.children as CstChildren;
+    const variableNode = getFirstNode(children.variable);
+    const argument = variableNode
+      ? this.buildVariableExpression(variableNode)
+      : this.createDummyVariable(node);
+
+    return {
+      kind: "VarInfoExpression",
+      sourceSpan: nodeToSourceSpan(node),
+      argument,
     };
   }
 
@@ -3804,8 +3928,9 @@ export function buildAST(
   cst: CstNode,
   fileName?: string,
   globalConstants?: Record<string, number>,
+  comments?: IToken[],
 ): CompilationUnit {
-  const builder = new ASTBuilder();
+  const builder = new ASTBuilder(comments);
   // Seed the constant map with global constants (e.g., STRING_LENGTH, LIST_LENGTH)
   // so inline array dimensions like ARRAY[0..STRING_LENGTH] resolve correctly.
   if (globalConstants) {
@@ -3829,8 +3954,9 @@ export function buildAST(
 export function buildTestAST(
   cst: CstNode,
   fileName: string,
+  comments?: IToken[],
 ): import("./ast.js").TestFile {
-  const builder = new ASTBuilder();
+  const builder = new ASTBuilder(comments);
   const testFile = builder.buildTestFile(cst);
   testFile.fileName = fileName;
   // Set file on all sourceSpan objects

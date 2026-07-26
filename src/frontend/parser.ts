@@ -7,7 +7,7 @@
  * Uses Chevrotain's embedded DSL for grammar definition.
  */
 
-import { CstParser, CstNode, type TokenType } from "chevrotain";
+import { CstParser, CstNode, type TokenType, type IToken } from "chevrotain";
 import * as tokens from "./lexer.js";
 import { resolveErrorMessageProvider } from "./parser-error-message-provider.js";
 
@@ -750,6 +750,11 @@ export class STParser extends CstParser {
         });
         this.CONSUME(tokens.RParen);
       },
+    });
+    // Optional namespace-qualified type: __SYSTEM.TYPE_CLASS
+    this.MANY(() => {
+      this.CONSUME(tokens.Dot);
+      this.CONSUME5(tokens.Identifier);
     });
   });
 
@@ -1522,6 +1527,10 @@ export class STParser extends CstParser {
           GATE: () => this.LA(1).tokenType === tokens.__QUERYINTERFACE,
         },
         {
+          ALT: () => this.SUBRULE(this.varInfoExpression),
+          GATE: () => this.LA(1).tokenType === tokens.__VARINFO,
+        },
+        {
           ALT: () => this.SUBRULE(this.thisAccess),
           GATE: () => this.LA(1).tokenType === tokens.THIS,
         },
@@ -1699,6 +1708,17 @@ export class STParser extends CstParser {
       this.CONSUME(tokens.RParen);
     },
   );
+
+  /**
+   * __VARINFO(variable) - CODESYS variable reflection operator.
+   * The argument is a variable reference with optional field access and subscripts.
+   */
+  public varInfoExpression = this.RULE("varInfoExpression", () => {
+    this.CONSUME(tokens.__VARINFO);
+    this.CONSUME(tokens.LParen);
+    this.SUBRULE(this.variable);
+    this.CONSUME(tokens.RParen);
+  });
 
   /**
    * Variable reference (with optional array subscripts and field access)
@@ -2082,6 +2102,7 @@ export const testParser = new STParser(tokens.allTestTokens);
 export function parse(source: string): {
   cst: CstNode | null;
   errors: unknown[];
+  comments: IToken[];
 } {
   const lexResult = tokens.tokenize(source);
 
@@ -2089,6 +2110,7 @@ export function parse(source: string): {
     return {
       cst: null,
       errors: lexResult.errors,
+      comments: [],
     };
   }
 
@@ -2098,6 +2120,8 @@ export function parse(source: string): {
   return {
     cst,
     errors: parser.errors,
+    comments:
+      (lexResult.groups as { comments?: IToken[] } | undefined)?.comments ?? [],
   };
 }
 
@@ -2110,6 +2134,7 @@ export function parse(source: string): {
 export function parseTestSource(source: string): {
   cst: CstNode | null;
   errors: unknown[];
+  comments: IToken[];
 } {
   const lexResult = tokens.tokenizeTest(source);
 
@@ -2117,6 +2142,7 @@ export function parseTestSource(source: string): {
     return {
       cst: null,
       errors: lexResult.errors,
+      comments: [],
     };
   }
 
@@ -2126,5 +2152,7 @@ export function parseTestSource(source: string): {
   return {
     cst,
     errors: testParser.errors,
+    comments:
+      (lexResult.groups as { comments?: IToken[] } | undefined)?.comments ?? [],
   };
 }

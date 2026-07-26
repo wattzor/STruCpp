@@ -213,7 +213,7 @@ export const Comment = createToken({
   name: "Comment",
   pattern: matchComment,
   line_breaks: true, // Essential for multi-line block comments
-  group: Lexer.SKIPPED,
+  group: "comments",
 });
 
 // =============================================================================
@@ -359,6 +359,12 @@ export const __DELETE = createToken({ name: "__DELETE", pattern: /__DELETE/i });
 export const __QUERYINTERFACE = createToken({
   name: "__QUERYINTERFACE",
   pattern: /__QUERYINTERFACE/i,
+});
+
+// Variable reflection (CODESYS extension)
+export const __VARINFO = createToken({
+  name: "__VARINFO",
+  pattern: /__VARINFO/i,
 });
 
 // Test framework keywords (only active in test file lexing)
@@ -717,6 +723,7 @@ const keywordTokens = [
   __NEW,
   __DELETE,
   __QUERYINTERFACE,
+  __VARINFO,
   METHOD,
   END_METHOD,
   INTERFACE,
@@ -845,6 +852,7 @@ export const allTokens = [
   __NEW,
   __DELETE,
   __QUERYINTERFACE,
+  __VARINFO,
   END_METHOD,
   END_INTERFACE,
   END_PROPERTY,
