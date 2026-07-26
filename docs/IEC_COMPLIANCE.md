@@ -172,14 +172,15 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 | Dynamic memory | Supported | `__NEW(type)`, `__DELETE(ptr)` |
 | POINTER TO | Supported | Full pointer type with dereference |
 | Typed literals | Supported | `INT#5`, `DINT#42`, `REAL#3.14` |
+| FB_Init / FB_Exit | Supported | Called automatically from constructor/destructor |
+| __QUERYINTERFACE | Supported | Runtime interface query |
 
 ## Not Yet Implemented
 
 | Feature | Notes |
 |---------|-------|
 | UNION | CODESYS union type |
-| FB_Init / FB_Exit | Constructor/destructor lifecycle methods |
-| __QUERYINTERFACE | Runtime interface query |
+| FB_Reinit | Re-initialization after online-change copy |
 | Bit access (var.%X0) | Individual bit addressing |
 | ACTION blocks | Named action blocks |
 | TRY/CATCH/FINALLY | Exception handling |

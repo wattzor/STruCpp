@@ -1663,10 +1663,23 @@ export class CodeGenerator {
       this.generatePropertyDeclarations(fb.properties);
     }
 
-    // Virtual destructor (needed for classes with virtual methods)
-    if (fb.methods.length > 0 || fb.properties.length > 0 || !fb.isFinal) {
+    // Virtual destructor (needed for classes with virtual methods, or for
+    // calling FB_Exit lifecycle cleanup).
+    const hasFBExit = fb.methods.some(
+      (m) => m.name.toUpperCase() === "FB_EXIT",
+    );
+    if (
+      hasFBExit ||
+      fb.methods.length > 0 ||
+      fb.properties.length > 0 ||
+      !fb.isFinal
+    ) {
       this.emitHeader("");
-      this.emitHeader(`    virtual ~${fb.name}() = default;`);
+      if (hasFBExit) {
+        this.emitHeader(`    virtual ~${fb.name}();`);
+      } else {
+        this.emitHeader(`    virtual ~${fb.name}() = default;`);
+      }
     }
 
     // Test build: add mock infrastructure
@@ -2295,6 +2308,12 @@ export class CodeGenerator {
         }
       }
     }
+    const hasFBInit = fb.methods.some(
+      (m) => m.name.toUpperCase() === "FB_INIT",
+    );
+    const hasFBExit = fb.methods.some(
+      (m) => m.name.toUpperCase() === "FB_EXIT",
+    );
     if (fbInits.length > 0) {
       this.emit(`${fb.name}::${fb.name}()`);
       this.emit(`    : ${fbInits.join(", ")}`);
@@ -2303,6 +2322,10 @@ export class CodeGenerator {
       this.emit(`${fb.name}::${fb.name}() {`);
     }
     this.emit("    // Initialize variables");
+    if (hasFBInit) {
+      // First-download invocation: retain variables are initialized, not in copy code.
+      this.emit("    this->FB_INIT(true, false);");
+    }
     this.emit("}");
     this.emit("");
 
@@ -2331,6 +2354,15 @@ export class CodeGenerator {
       if (!method.isAbstract) {
         this.generateMethodImplementation(method, fb.name);
       }
+    }
+
+    // Destructor with FB_Exit lifecycle call
+    if (hasFBExit) {
+      this.emit(`${fb.name}::~${fb.name}() {`);
+      // Normal instance destruction (not an online change copy operation).
+      this.emit("    this->FB_EXIT(false);");
+      this.emit("}");
+      this.emit("");
     }
 
     // Property implementations (enter FB scope so FB member types are visible)
