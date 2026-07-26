@@ -575,6 +575,7 @@ export type Expression =
   | DrefExpression
   | NewExpression
   | QueryInterfaceExpression
+  | VarInfoExpression
   | ArrayLiteralExpression;
 
 /**
@@ -741,6 +742,14 @@ export interface QueryInterfaceExpression extends TypedNode {
   kind: "QueryInterfaceExpression";
   source: Expression;
   target: Expression;
+}
+
+/**
+ * __VARINFO(<variable>) expression - CODESYS runtime variable reflection.
+ */
+export interface VarInfoExpression extends TypedNode {
+  kind: "VarInfoExpression";
+  argument: VariableExpression;
 }
 
 /**
