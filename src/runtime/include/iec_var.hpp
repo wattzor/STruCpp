@@ -368,13 +368,100 @@ private:
 // Binary Operators
 // =============================================================================
 
-// Helper: arithmetic result type for mixed IECVar/raw and IECVar/IECVar
-// operations. This widens to the larger of the two C++ underlying types so
-// intermediate values do not silently truncate before the operation is
-// applied; the final assignment back to the IEC destination performs any
-// needed narrowing/wrap.
+// -----------------------------------------------------------------------------
+// IEC arithmetic result type.
+//
+// C++ `std::common_type` performs the usual arithmetic conversions, which
+// promote every integer narrower than `int` to `int`.  That breaks CODESYS
+// semantics where BYTE + WORD must wrap at 16 bits and INT + UINT must wrap
+// at 16 bits.  Instead, pick the IEC result by bit-width and signedness:
+//   * width = max(width(T), width(U))
+//   * signedness = signedness of the wider operand; when widths are equal,
+//     unsigned if either operand is unsigned (C usual-arithmetic rule).
+// For non-IEC raw types, fall back to `std::common_type`.
+// -----------------------------------------------------------------------------
+namespace detail {
+
+template<typename T>
+struct iec_arith_info {
+    static constexpr bool is_iec = false;
+    static constexpr unsigned width = 0;
+    static constexpr bool is_signed = false;
+    static constexpr bool is_real = false;
+};
+
+template<> struct iec_arith_info<int8_t>   { static constexpr bool is_iec = true; static constexpr unsigned width = 8;  static constexpr bool is_signed = true;  static constexpr bool is_real = false; };
+template<> struct iec_arith_info<uint8_t>  { static constexpr bool is_iec = true; static constexpr unsigned width = 8;  static constexpr bool is_signed = false; static constexpr bool is_real = false; };
+template<> struct iec_arith_info<int16_t>  { static constexpr bool is_iec = true; static constexpr unsigned width = 16; static constexpr bool is_signed = true;  static constexpr bool is_real = false; };
+template<> struct iec_arith_info<uint16_t> { static constexpr bool is_iec = true; static constexpr unsigned width = 16; static constexpr bool is_signed = false; static constexpr bool is_real = false; };
+template<> struct iec_arith_info<int32_t>  { static constexpr bool is_iec = true; static constexpr unsigned width = 32; static constexpr bool is_signed = true;  static constexpr bool is_real = false; };
+template<> struct iec_arith_info<uint32_t> { static constexpr bool is_iec = true; static constexpr unsigned width = 32; static constexpr bool is_signed = false; static constexpr bool is_real = false; };
+template<> struct iec_arith_info<int64_t>  { static constexpr bool is_iec = true; static constexpr unsigned width = 64; static constexpr bool is_signed = true;  static constexpr bool is_real = false; };
+template<> struct iec_arith_info<uint64_t> { static constexpr bool is_iec = true; static constexpr unsigned width = 64; static constexpr bool is_signed = false; static constexpr bool is_real = false; };
+template<> struct iec_arith_info<float>    { static constexpr bool is_iec = true; static constexpr unsigned width = 32; static constexpr bool is_signed = true;  static constexpr bool is_real = true; };
+template<> struct iec_arith_info<double>   { static constexpr bool is_iec = true; static constexpr unsigned width = 64; static constexpr bool is_signed = true;  static constexpr bool is_real = true; };
+
+template<unsigned Width, bool IsSigned, bool IsReal>
+struct iec_arith_select;
+
+template<> struct iec_arith_select<8,  true, false> { using type = int8_t; };
+template<> struct iec_arith_select<8,  false, false> { using type = uint8_t; };
+template<> struct iec_arith_select<16, true,  false> { using type = int16_t; };
+template<> struct iec_arith_select<16, false, false> { using type = uint16_t; };
+template<> struct iec_arith_select<32, true,  false> { using type = int32_t; };
+template<> struct iec_arith_select<32, false, false> { using type = uint32_t; };
+template<> struct iec_arith_select<32, true,  true>  { using type = float; };
+template<> struct iec_arith_select<64, true,  false> { using type = int64_t; };
+template<> struct iec_arith_select<64, false, false> { using type = uint64_t; };
+template<> struct iec_arith_select<64, true,  true>  { using type = double; };
+
+// SFINAE-friendly detection of `std::common_type<T, U>::type`.
+// If no common type exists (e.g. T is an IEC type and U is an unrelated class
+// like IECVar), we fall back to T so the operator signatures remain valid
+// while their `enable_if` guards reject the overload.
+template<typename...>
+struct iec_voider { using type = void; };
+template<typename... Ts>
+using iec_void_t = typename iec_voider<Ts...>::type;
+
+template<typename T, typename U, typename = void>
+struct iec_common_type_fallback { static constexpr bool has = false; using type = T; };
+
 template<typename T, typename U>
-using iec_arith_result_t = typename std::common_type<T, U>::type;
+struct iec_common_type_fallback<T, U, iec_void_t<typename std::common_type<T, U>::type>> {
+    static constexpr bool has = true;
+    using type = typename std::common_type<T, U>::type;
+};
+
+template<typename T, typename U, bool BothIEC = iec_arith_info<T>::is_iec && iec_arith_info<U>::is_iec>
+struct iec_arith_result_impl;
+
+template<typename T, typename U>
+struct iec_arith_result_impl<T, U, false> {
+    using type = typename iec_common_type_fallback<T, U>::type;
+};
+
+template<typename T, typename U>
+struct iec_arith_result_impl<T, U, true> {
+    static constexpr unsigned width =
+        (iec_arith_info<T>::width > iec_arith_info<U>::width)
+            ? iec_arith_info<T>::width
+            : iec_arith_info<U>::width;
+    static constexpr bool same_width = iec_arith_info<T>::width == iec_arith_info<U>::width;
+    static constexpr bool is_real = iec_arith_info<T>::is_real || iec_arith_info<U>::is_real;
+    static constexpr bool is_signed = is_real ? true :
+        (same_width
+            ? (iec_arith_info<T>::is_signed && iec_arith_info<U>::is_signed)
+            : (iec_arith_info<T>::width > iec_arith_info<U>::width
+                ? iec_arith_info<T>::is_signed
+                : iec_arith_info<U>::is_signed));
+    using type = typename iec_arith_select<width, is_signed, is_real>::type;
+};
+
+} // namespace detail
+
+template<typename T, typename U>
+using iec_arith_result_t = typename detail::iec_arith_result_impl<T, U>::type;
 
 template<typename T, typename U>
 inline IECVar<iec_arith_result_t<T, U>> operator+(const IECVar<T>& a, const IECVar<U>& b) noexcept {
