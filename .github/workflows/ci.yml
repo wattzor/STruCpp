@@ -121,7 +121,7 @@ jobs:
         run: npm run build
 
       - name: Run CODESYS semantics tests under 32-bit target width
-        run: npx vitest run tests/integration/codesys-semantics.test.ts tests/integration/codesys-semantics-assumed.test.ts
+        run: npx vitest run tests/integration/codesys-semantics.test.ts tests/integration/codesys-semantics-assumed.test.ts tests/integration/codesys-semantics-target.test.ts
 
   extension:
     name: Extension Build & Test

@@ -146,11 +146,12 @@ Format is auto-detected. Extracts ST source from the binary/ZIP format, compiles
 
 | Flag                  | Description                                                   |
 | --------------------- | ------------------------------------------------------------- |
-| `--build`             | Build interactive REPL binary after compilation               |
-| `--gpp <path>`        | Custom g++ path (default: `g++`)                              |
-| `--cc <path>`         | Custom C compiler path (default: `cc`)                        |
-| `--cxx-flags <flags>` | Extra flags passed to g++ (supports quoted paths)             |
-| `-D NAME=VALUE`       | Define global constant (repeatable, emits `constexpr size_t`) |
+| `--build`                  | Build interactive REPL binary after compilation               |
+| `--gpp <path>`             | Custom g++ path (default: `g++`)                              |
+| `--cc <path>`              | Custom C compiler path (default: `cc`)                        |
+| `--target-width <32\|64>` | CODESYS target integer width (default: 32)                    |
+| `--cxx-flags <flags>`      | Extra flags passed to g++ (supports quoted paths)             |
+| `-D NAME=VALUE`            | Define global constant (repeatable, emits `constexpr size_t`) |
 | `-d, --debug`         | Enable debug output                                           |
 
 ### Info
@@ -193,6 +194,9 @@ strucpp main.st utils.st -o program.cpp -L libs/
 
 # Build and run interactive REPL
 strucpp program.st -o program.cpp --build
+
+# Build for a 32-bit PLC target (matches CODESYS x86/ARM native width)
+strucpp program.st -o program.cpp --build --target-width 32
 
 # Compile a library from a directory of ST files
 strucpp --compile-lib src/mylib/ -o libs/ --lib-name my-lib --lib-version 2.0.0
