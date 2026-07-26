@@ -44,7 +44,7 @@ END_TEST
     const sourceST = `
 PROGRAM VarInfoBoolTest
   VAR
-    bFlag : BOOL;
+    bFlag : BOOL; (* enable flag *)
     info : __SYSTEM.VAR_INFO;
   END_VAR
   info := __VARINFO(bFlag);
@@ -58,6 +58,7 @@ TEST '__VARINFO BOOL'
   ASSERT_EQ(uut.info.TypeClass, __SYSTEM.TYPE_CLASS.TYPE_BOOL);
   ASSERT_EQ(uut.info.BitSize, 1);
   ASSERT_EQ(uut.info.TypeName, 'TYPE_BOOL');
+  ASSERT_EQ(uut.info.Comment, 'enable flag');
 END_TEST
 `;
 

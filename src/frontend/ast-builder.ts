@@ -344,8 +344,8 @@ export class ASTBuilder {
   /** Captured comment tokens, sorted by source offset. */
   private comments: IToken[];
 
-  /** Index of the next unused comment in the sorted list. */
-  private nextCommentIdx = 0;
+  /** Indices of comments already bound to a declaration. */
+  private usedCommentIndices = new Set<number>();
 
   constructor(comments?: IToken[]) {
     this.comments = (comments ?? [])
@@ -363,45 +363,54 @@ export class ASTBuilder {
    * - trailing comment on the same line as the declaration binds to it
    * - otherwise a comment on the immediately preceding line binds to it
    * - anything else is discarded
+   *
+   * This is intentionally independent of the order in which declarations are
+   * visited, so POU blocks can be built in any order without consuming a
+   * comment that belongs to an earlier declaration.
    */
   private findComment(node: CstNode): string | undefined {
     const span = nodeToSourceSpan(node);
 
-    while (this.nextCommentIdx < this.comments.length) {
-      const comment = this.comments[this.nextCommentIdx]!;
+    let bestTrailingIdx = -1;
+    let bestTrailingStartCol = Infinity;
+    let bestPrecedingIdx = -1;
+    let bestPrecedingEndCol = -1;
+
+    for (let i = 0; i < this.comments.length; i++) {
+      if (this.usedCommentIndices.has(i)) continue;
+
+      const comment = this.comments[i]!;
       const commentStartLine = comment.startLine ?? 0;
       const commentEndLine = comment.endLine ?? commentStartLine;
       const commentStartColumn = comment.startColumn ?? 0;
       const commentEndColumn = comment.endColumn ?? 0;
 
-      // Trailing: same line as declaration end, starting after the declaration
+      // Trailing: same line as declaration end, starting after the declaration.
+      // Pick the earliest such comment to avoid grabbing later unrelated comments.
       if (
         commentStartLine === span.endLine &&
-        commentStartColumn > span.endCol
+        commentStartColumn > span.endCol &&
+        commentStartColumn < bestTrailingStartCol
       ) {
-        this.nextCommentIdx++;
-        return cleanCommentText(comment.image);
+        bestTrailingIdx = i;
+        bestTrailingStartCol = commentStartColumn;
       }
 
-      // Preceding: comment ends on the line immediately before the declaration
-      if (commentEndLine === span.startLine - 1) {
-        this.nextCommentIdx++;
-        return cleanCommentText(comment.image);
-      }
-
-      // Discard comments that are wholly before this declaration and cannot
-      // bind to any later declaration (they would be too far above).
+      // Preceding: comment ends on the line immediately before the declaration.
+      // Pick the one that ends latest (closest to the declaration).
       if (
-        commentEndLine < span.startLine ||
-        (commentEndLine === span.startLine && commentEndColumn < span.startCol)
+        commentEndLine === span.startLine - 1 &&
+        commentEndColumn > bestPrecedingEndCol
       ) {
-        this.nextCommentIdx++;
-        continue;
+        bestPrecedingIdx = i;
+        bestPrecedingEndCol = commentEndColumn;
       }
+    }
 
-      // Comment is inside or after the node but does not match the binding
-      // rules; stop to avoid binding it to a later declaration by mistake.
-      break;
+    const bestIdx = bestTrailingIdx !== -1 ? bestTrailingIdx : bestPrecedingIdx;
+    if (bestIdx !== -1) {
+      this.usedCommentIndices.add(bestIdx);
+      return cleanCommentText(this.comments[bestIdx]!.image);
     }
 
     return undefined;

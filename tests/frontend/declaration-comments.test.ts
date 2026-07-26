@@ -136,4 +136,32 @@ describe("Declaration comment binding", () => {
     expect(decl.names).toEqual(["E"]);
     expect(decl.comment).toBeUndefined();
   });
+
+  it("binds comments correctly when source order differs from build order", () => {
+    // buildCompilationUnit visits PROGRAMs before FUNCTION_BLOCKs, but the
+    // FB appears first in the source. The FB's comment must not be consumed
+    // by the PROGRAM's variable.
+    const ast = compileUnit(`
+      FUNCTION_BLOCK Motor
+      VAR
+        (* motor speed *)
+        speed : REAL;
+      END_VAR
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        // main counter
+        counter : INT;
+      END_VAR
+      END_PROGRAM
+    `);
+    const motorDecl = ast.functionBlocks[0]!.varBlocks[0]!.declarations[0]!;
+    expect(motorDecl.names).toEqual(["SPEED"]);
+    expect(motorDecl.comment).toBe("motor speed");
+
+    const mainDecl = ast.programs[0]!.varBlocks[0]!.declarations[0]!;
+    expect(mainDecl.names).toEqual(["COUNTER"]);
+    expect(mainDecl.comment).toBe("main counter");
+  });
 });
