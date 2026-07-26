@@ -1,13 +1,13 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`CODESYS semantics - @oracle: assumed > F1: BYTE * BYTE assigned to WORD @oracle: assumed 1`] = `"144"`;
+exports[`CODESYS semantics - @oracle: assumed > F1: BYTE * BYTE assigned to WORD @oracle: assumed 1`] = `"400"`;
 
-exports[`CODESYS semantics - @oracle: assumed > F2: (BYTE + BYTE) / 2 assigned to WORD @oracle: assumed 1`] = `"22"`;
+exports[`CODESYS semantics - @oracle: assumed > F2: (BYTE + BYTE) / 2 assigned to WORD @oracle: assumed 1`] = `"150"`;
 
-exports[`CODESYS semantics - @oracle: assumed > F3: (WORD * WORD) + WORD assigned to DWORD @oracle: assumed 1`] = `"24564"`;
+exports[`CODESYS semantics - @oracle: assumed > F3: (WORD * WORD) + WORD assigned to DWORD @oracle: assumed 1`] = `"90100"`;
 
-exports[`CODESYS semantics - @oracle: assumed > F4: BYTE + WORD crossing 65535 assigned to DWORD @oracle: assumed 1`] = `"64"`;
+exports[`CODESYS semantics - @oracle: assumed > F4: BYTE + WORD crossing 65535 assigned to DWORD @oracle: assumed 1`] = `"65600"`;
 
-exports[`CODESYS semantics - @oracle: assumed > F5: INT + UINT assigned to DINT @oracle: assumed 1`] = `"4464"`;
+exports[`CODESYS semantics - @oracle: assumed > F5: INT + UINT assigned to DINT @oracle: assumed 1`] = `"70000"`;
 
 exports[`CODESYS semantics - @oracle: assumed > F8: TO_INT rounding for 1.5, 2.5, -1.5 @oracle: assumed 1`] = `"2,3,-2"`;

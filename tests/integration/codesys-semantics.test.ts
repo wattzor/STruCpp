@@ -648,4 +648,151 @@ int main() {
     });
     expect(stdout).toBe("129,1,32769,1,2147483649,1,9223372036854775809,1");
   });
+
+  // CODESYS Operators reference examples
+  // https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_struct_reference_operators.html
+  // These are the published worked examples for overflow/underflow handling.
+  it("doc example 1: WORD + 1 assigned to DWORD is not truncated @oracle: codesys-doc", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        wVar  : WORD;
+        dwVar : DWORD;
+      END_VAR
+        wVar  := 65535;
+        dwVar := wVar + 1;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "doc_ex1",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<unsigned int>(prog.DWVAR) << ','
+              << static_cast<int>(prog.WVAR) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("65536,65535");
+  });
+
+  it("doc example 2: (WORD +/- 1) = WORD is FALSE without truncation @oracle: codesys-doc", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        wVar1 : WORD;
+        wVar2 : WORD;
+        bVar1 : BOOL;
+        bVar2 : BOOL;
+      END_VAR
+        wVar1 := 65535;
+        wVar2 := 0;
+        bVar1 := (wVar1 + 1) = wVar2;
+        bVar2 := (wVar2 - 1) = wVar1;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "doc_ex2",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.BVAR1) << ','
+              << static_cast<int>(prog.BVAR2) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("0,0");
+  });
+
+  it("doc example 3: assignment truncates the temporary to the target type @oracle: codesys-doc", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        wVar1 : WORD;
+        wVar2 : WORD;
+        wVar3 : WORD;
+        bVar1 : BOOL;
+      END_VAR
+        wVar1 := 65535;
+        wVar2 := 0;
+        wVar3 := (wVar1 + 1);
+        bVar1 := wVar3 = wVar2;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "doc_ex3",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.WVAR3) << ','
+              << static_cast<int>(prog.BVAR1) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("0,1");
+  });
+
+  it("doc example 4: explicit TO_WORD forces 16-bit truncation @oracle: codesys-doc", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        wVar1 : WORD;
+        wVar2 : WORD;
+        bVar1 : BOOL;
+        bVar2 : BOOL;
+      END_VAR
+        wVar1 := 65535;
+        wVar2 := 0;
+        bVar1 := TO_WORD(wVar1 + 1) = wVar2;
+        bVar2 := TO_WORD(wVar2 - 1) = wVar1;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "doc_ex4",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.BVAR1) << ','
+              << static_cast<int>(prog.BVAR2) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("1,1");
+  });
 });

@@ -90,6 +90,21 @@ https://forge.codesys.com/forge/talk/Engineering/thread/1841b60548/
 A user asks directly whether `__SYSTEM.VAR_INFO` can enumerate the elements of a structure. No
 mechanism is offered. Basis for the "do not build enumeration" scope decision.
 
+### A12. Temporary arithmetic results are computed at the target native width
+https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_struct_reference_operators.html
+Settles: "The CODESYS compiler ... computes temporary results always with the native size that is
+defined by the target device." It is at least 32-bit on x86/ARM and 64-bit on x64. Overflow/underflow
+is not truncated in temporaries; truncation happens on assignment or via an explicit conversion.
+Implemented as native-width promotion in `iec_arith_result_t`; target width can be overridden with
+`-DSTRUCPP_TARGET_WIDTH=32/64`.
+
+### A13. `WORD + 1` assigned to `DWORD` is not truncated in the temporary
+https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_struct_reference_operators.html
+Settles the four worked examples: `dwVar := wVar + 1` yields `65536`; `(wVar1 + 1) = wVar2` and
+`(wVar2 - 1) = wVar1` are `FALSE`; assignment to `wVar3` truncates and makes `wVar3 = wVar2` `TRUE`;
+`TO_WORD(wVar1 + 1) = wVar2` is `TRUE` because the conversion forces 16-bit truncation. These are
+asserted in `tests/integration/codesys-semantics.test.ts` under `@oracle: codesys-doc`.
+
 ### Vendor mirrors — useful cross-checks
 Beckhoff TwinCAT: https://infosys.beckhoff.com/content/1033/tc3_plc_intro/3527777675.html
 ABB Automation Builder: https://help.plc.abb.com/d65c2f6ba848a40a0c1142b3e895c6da_1_en_us.html
@@ -114,7 +129,7 @@ behaviour is vendor-specific and must not be treated as CODESYS canon.
 | B9 | `__XWORD` falls back to `TYPE_USERDEF` because its `TYPE_CLASS` is undocumented | `src/semantic/iec-types-data.ts` |
 | B10 | PR#6/#7 are rebased onto PR#3 (`devin/query-interface`) | `git merge-base devin/query-interface devin/p4-var-info` → `aff7bda` |
 | B11 | Vitest emits `numPendingTests`/`numTodoTests`, never `numSkippedTests` | run any suite with `--reporter=json` |
-| B12 | Current promotion behaviour: F1=144, F2=22, F3=24564, F4=64, F5=4464, F8=2/3/−2 | `tests/integration/__snapshots__/codesys-semantics-assumed.test.ts.snap` |
+| B12 | Current promotion behaviour: F1=400, F2=150, F3=90100, F4=65600, F5=70000, F8=2/3/−2 | `tests/integration/__snapshots__/codesys-semantics-assumed.test.ts.snap` |
 
 ---
 
@@ -126,8 +141,8 @@ CODESYS source**. Every one needs either a documentation link or an oracle run.
 ### Arithmetic and conversion
 | # | Claim | Status |
 |---|---|---|
-| C1 | `BYTE * BYTE` result stays `BYTE` and wraps | Implemented; snapshot 144. **Partial source:** CODESYS says overflow/underflow in the data type is not truncated on x86/ARM/x64 and depends on the native width of the target processor. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html |
-| C2 | Mixed-width result takes the larger operand type and wraps there | Implemented in `e79eee4`; F4=64, F5=4464. **Partial source:** Vendor docs (PLCnext, Fernhill) agree promotion is to the larger type within the same category; CODESYS states temporary results use the target processor's native width. Exact width selection for mixed `INT + UINT` is `@oracle: assumed` until a CODESYS runtime measurement. Sources: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html; https://engineer.plcnext.help/2025.0_en/DataTypes_ImpliciteTypeConversion.htm; https://www.fernhillsoftware.com/help/iec-61131/common-elements/datatypes-elementary.html |
+| C1 | `BYTE * BYTE` result stays `BYTE` and wraps | **Resolved.** CODESYS computes temporary results at the target native width and only truncates on assignment or explicit conversion; `BYTE * BYTE` assigned to `BYTE` wraps, but the temporary itself is not truncated. Implemented via `iec_arith_result_t` native-width promotion. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_struct_reference_operators.html |
+| C2 | Mixed-width result takes the larger operand type and wraps there | **Resolved.** The CODESYS Operators reference shows `wVar := wVar + 1` produces `65536` in a `DWORD`, and `(wVar1 + 1) = wVar2` is `FALSE` because the temporary is not truncated. Implemented as native-width promotion (at least 32-bit on x86/ARM, 64-bit on x64), truncating only on assignment or `TO_*`. Target width is configurable via `-DSTRUCPP_TARGET_WIDTH=32/64`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_struct_reference_operators.html |
 | C3 | `INT + UINT` is permitted rather than a type error | Implemented as permitted. **Partial source:** PLCnext table allows `UINT` → `DINT`/`LINT`/`REAL`/`LREAL` implicit conversion, which makes `INT + UINT` valid by promoting `UINT`. CODESYS does not explicitly state this combination; `@oracle: assumed`. Source: https://engineer.plcnext.help/2025.0_en/DataTypes_ImpliciteTypeConversion.htm |
 | C4 | `TO_INT` rounds to nearest | Implemented. **Partial source:** CODESYS conversion operators page notes rounding for borderline cases depends on the target FPU, so the tie rule is not universally fixed. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html |
 | C5 | The `.5` tie rule is half-away-from-zero | **Target-dependent per CODESYS docs.** `ROUND` borderline cases depend on the target FPU; CODESYS gives `-1.5` as an example of target-specific behavior. STruCpp uses `std::round` (half-away-from-zero on Linux/x86_64); snapshot is `@oracle: host-x86_64-fpu`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html |
@@ -189,9 +204,10 @@ cross-platform, and CODESYS Control Win/Linux SL runs unlicensed for two hours p
 
 ### Priority for resolution
 
-C8 (short-circuit) and C6 (`TRUNC` return type) shape implementation rather than test
-expectations — getting them wrong means rework, not a re-baseline. C18 is a live ABI defect.
-C2 and C5 are already in the compiler and load-bearing. Those five first.
+C1 and C2 are resolved: the CODESYS Operators reference explicitly states that intermediate results
+are not truncated to the operand data type without an explicit conversion, and STruCpp now implements
+native-width promotion with truncation only on assignment or `TO_*`. C8 and C6 are verified/implemented.
+C5 remains target-dependent. C18 is a live ABI defect. Next: C3/C4/C17/C21 for the oracle.
 
 ---
 
