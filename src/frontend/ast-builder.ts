@@ -45,6 +45,7 @@ import type {
   DrefExpression,
   NewExpression,
   QueryInterfaceExpression,
+  VarInfoExpression,
   DeleteStatement,
   ArrayLiteralExpression,
   FunctionCallExpression,
@@ -2459,6 +2460,13 @@ export class ASTBuilder {
       );
     }
 
+    // Check for __VARINFO(variable) expression
+    if (children.varInfoExpression) {
+      return this.buildVarInfoExpression(
+        getFirstNode(children.varInfoExpression)!,
+      );
+    }
+
     // Check for THIS access expression
     if (children.thisAccess) {
       return this.buildThisAccessExpression(getFirstNode(children.thisAccess)!);
@@ -2601,6 +2609,24 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       source: source!,
       target: target!,
+    };
+  }
+
+  /**
+   * Build a VarInfoExpression from a CST node.
+   * Handles: __VARINFO(variable)
+   */
+  buildVarInfoExpression(node: CstNode): VarInfoExpression {
+    const children = node.children as CstChildren;
+    const variableNode = getFirstNode(children.variable);
+    const argument = variableNode
+      ? this.buildVariableExpression(variableNode)
+      : this.createDummyVariable(node);
+
+    return {
+      kind: "VarInfoExpression",
+      sourceSpan: nodeToSourceSpan(node),
+      argument,
     };
   }
 

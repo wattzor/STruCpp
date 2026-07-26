@@ -1527,6 +1527,10 @@ export class STParser extends CstParser {
           GATE: () => this.LA(1).tokenType === tokens.__QUERYINTERFACE,
         },
         {
+          ALT: () => this.SUBRULE(this.varInfoExpression),
+          GATE: () => this.LA(1).tokenType === tokens.__VARINFO,
+        },
+        {
           ALT: () => this.SUBRULE(this.thisAccess),
           GATE: () => this.LA(1).tokenType === tokens.THIS,
         },
@@ -1704,6 +1708,17 @@ export class STParser extends CstParser {
       this.CONSUME(tokens.RParen);
     },
   );
+
+  /**
+   * __VARINFO(variable) - CODESYS variable reflection operator.
+   * The argument is a variable reference with optional field access and subscripts.
+   */
+  public varInfoExpression = this.RULE("varInfoExpression", () => {
+    this.CONSUME(tokens.__VARINFO);
+    this.CONSUME(tokens.LParen);
+    this.SUBRULE(this.variable);
+    this.CONSUME(tokens.RParen);
+  });
 
   /**
    * Variable reference (with optional array subscripts and field access)
