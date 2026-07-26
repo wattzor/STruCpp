@@ -43,7 +43,7 @@ import {
   isGenericGroupType,
 } from "./type-utils.js";
 import {
-  getSystemEnumType,
+  getSystemType,
   isSystemNamespaceName,
   isSystemTypeReference,
   resolveSystemAccess,
@@ -358,6 +358,16 @@ export class TypeChecker {
         }
       }
     }
+    // CODESYS __SYSTEM.VAR_INFO synthetic struct
+    const systemType = getSystemType(typeName);
+    if (systemType?.typeKind === "struct") {
+      const fu = fieldName.toUpperCase();
+      for (const [fname, ftype] of (systemType as StructType).fields) {
+        if (fname.toUpperCase() === fu) {
+          return typeNameUtil(ftype);
+        }
+      }
+    }
     return undefined;
   }
 
@@ -372,8 +382,8 @@ export class TypeChecker {
    */
   private resolveNamedType(name: string): IECType {
     if (isSystemTypeReference(name)) {
-      const systemEnum = getSystemEnumType(name);
-      if (systemEnum) return systemEnum;
+      const systemType = getSystemType(name);
+      if (systemType) return systemType;
     }
 
     return (
@@ -451,6 +461,15 @@ export class TypeChecker {
         if (!boolType) return undefined;
         expr.resolvedType = boolType;
         return boolType;
+      }
+      case "VarInfoExpression": {
+        // Resolve the target variable's type so codegen can emit size/type-class metadata.
+        this.inferType(expr.argument, scope);
+        const varInfoType = getSystemType("__SYSTEM.VAR_INFO");
+        if (varInfoType) {
+          expr.resolvedType = varInfoType;
+        }
+        return varInfoType;
       }
       default:
         return undefined;
