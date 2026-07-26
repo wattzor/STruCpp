@@ -16,8 +16,11 @@ import type {
   Expression,
   FunctionBlockDeclaration,
   FunctionCallExpression,
+  IECType,
   MethodDeclaration,
   MockFunctionStatement,
+  ReferenceKind,
+  ReferenceType,
   TypeDefinition,
   TypeReference,
   VarBlock,
@@ -39,8 +42,15 @@ import {
   resolveArrayElementType,
   buildEnumMemberMap,
   describeType,
+  isGenericTypeName,
   type EnumMemberEntry,
 } from "./type-utils.js";
+import {
+  getSystemType,
+  isSystemNamespaceName,
+  isSystemTypeReference,
+  resolveSystemAccess,
+} from "./system-types.js";
 import { isEnArgument, isEnoArgument, stripEnEno } from "../ast-utils.js";
 
 // =============================================================================
@@ -225,18 +235,69 @@ export class SemanticAnalyzer {
   /**
    * Resolve a type name to its registered type (preserves enum typeKind)
    * or fall back to a generic elementary type for unknown/user-defined types.
+   * When a reference kind is supplied, wrap the base type in a ReferenceType
+   * so POINTER TO / REF_TO / REFERENCE TO variables keep their pointer/reference
+   * semantics during type checking.
    */
-  private resolveVarType(typeName: string): EnumType | ElementaryType {
+  private resolveVarType(
+    typeName: string,
+    referenceKind?: ReferenceKind,
+  ): IECType {
+    if (isSystemTypeReference(typeName)) {
+      const systemType = getSystemType(typeName);
+      if (systemType) return systemType;
+    }
+
     const typeSymbol = this.symbolTables.globalScope.lookup(typeName);
-    return typeSymbol?.kind === "type" && typeSymbol.resolvedType
-      ? (typeSymbol.resolvedType as EnumType | ElementaryType)
-      : { typeKind: "elementary" as const, name: typeName, sizeBits: 0 };
+    const baseType: IECType =
+      typeSymbol?.kind === "type" && typeSymbol.resolvedType
+        ? (typeSymbol.resolvedType as EnumType | ElementaryType)
+        : { typeKind: "elementary" as const, name: typeName, sizeBits: 0 };
+    if (referenceKind && referenceKind !== "none") {
+      return {
+        typeKind: "reference",
+        referencedType: baseType,
+        isImplicitDeref: referenceKind === "reference_to",
+      } as ReferenceType;
+    }
+    return baseType;
+  }
+
+  /**
+   * Reject identifiers that clash with reserved IEC 61131-3/CODESYS keywords.
+   * THIS and SUPER are parsed as contextual keywords (so `THIS^` can appear in
+   * REF= assignments), but using them as declared names is undefined and causes
+   * codegen confusion.
+   */
+  private checkReservedName(name: string, sourceSpan: SourceSpan): void {
+    const upper = name.toUpperCase();
+    if (upper === "THIS" || upper === "SUPER") {
+      this.addError(
+        `Identifier '${name}' is reserved and cannot be used as a variable, POU, or member name`,
+        sourceSpan.startLine,
+        sourceSpan.startCol,
+        sourceSpan.file,
+      );
+    }
   }
 
   /**
    * Build symbol tables from the AST.
    */
   private buildSymbolTables(ast: CompilationUnit): void {
+    // Reject reserved names at declaration sites before registering symbols.
+    for (const func of ast.functions)
+      this.checkReservedName(func.name, func.sourceSpan);
+    for (const fb of ast.functionBlocks) {
+      this.checkReservedName(fb.name, fb.sourceSpan);
+      for (const method of fb.methods)
+        this.checkReservedName(method.name, method.sourceSpan);
+      for (const prop of fb.properties)
+        this.checkReservedName(prop.name, prop.sourceSpan);
+    }
+    for (const prog of ast.programs)
+      this.checkReservedName(prog.name, prog.sourceSpan);
+
     // Register type declarations
     for (const typeDecl of ast.types) {
       try {
@@ -313,6 +374,7 @@ export class SemanticAnalyzer {
       try {
         const returnType = this.resolveVarType(
           funcDecl.returnType.name.toUpperCase(),
+          funcDecl.returnType.referenceKind,
         );
         this.symbolTables.globalScope.defineOrReplace({
           name: funcDecl.name,
@@ -379,7 +441,10 @@ export class SemanticAnalyzer {
             );
             // Register method return variable (MethodName := value)
             if (method.returnType) {
-              const retType = this.resolveVarType(method.returnType.name);
+              const retType = this.resolveVarType(
+                method.returnType.name,
+                method.returnType.referenceKind,
+              );
               methodScope.define({
                 name: method.name,
                 kind: "variable",
@@ -427,7 +492,10 @@ export class SemanticAnalyzer {
                 fbDecl.name,
               );
               // Register implicit result/input variable (PropName := value / := PropName)
-              const propType = this.resolveVarType(prop.type.name);
+              const propType = this.resolveVarType(
+                prop.type.name,
+                prop.type.referenceKind,
+              );
               propScope.define({
                 name: prop.name,
                 kind: "variable",
@@ -525,8 +593,12 @@ export class SemanticAnalyzer {
     for (const block of ast.globalVarBlocks) {
       for (const decl of block.declarations) {
         for (const name of decl.names) {
+          this.checkReservedName(name, decl.sourceSpan);
           try {
-            const varType = this.resolveVarType(decl.type.name);
+            const varType = this.resolveVarType(
+              decl.type.name,
+              decl.type.referenceKind,
+            );
             if (block.isConstant) {
               this.symbolTables.globalScope.define({
                 name,
@@ -579,8 +651,12 @@ export class SemanticAnalyzer {
 
       for (const decl of block.declarations) {
         for (const name of decl.names) {
+          this.checkReservedName(name, decl.sourceSpan);
           try {
-            const varType = this.resolveVarType(decl.type.name);
+            const varType = this.resolveVarType(
+              decl.type.name,
+              decl.type.referenceKind,
+            );
             if (block.isConstant) {
               scope.define({
                 name,
@@ -2297,9 +2373,17 @@ export class SemanticAnalyzer {
    */
   private isKnownType(name: string): boolean {
     const upper = name.toUpperCase();
+    // IEC generic type groups (allowed only in VAR_INPUT — validated separately)
+    if (isGenericTypeName(upper)) {
+      return true;
+    }
     // Whitelist synthetic internal types
     if (upper.startsWith("__VLA_") || upper.startsWith("__INLINE_ARRAY_")) {
       return true;
+    }
+    // CODESYS __SYSTEM qualified types (enums and VAR_INFO)
+    if (isSystemTypeReference(name)) {
+      return getSystemType(name) !== undefined;
     }
     const sym = this.symbolTables.globalScope.lookup(upper);
     if (!sym) return false;
@@ -2316,12 +2400,25 @@ export class SemanticAnalyzer {
   private validateSingleTypeReference(
     typeRef: TypeReference,
     context: string,
+    allowGeneric = false,
   ): void {
     // Skip empty or VOID type names
     if (!typeRef.name || typeRef.name.toUpperCase() === "VOID") return;
 
     // For inline arrays, validate the element type instead
     const nameToCheck = typeRef.elementTypeName ?? typeRef.name;
+    const nameUpper = nameToCheck.toUpperCase();
+
+    // IEC generic type groups are only permitted as VAR_INPUT parameter types
+    if (isGenericTypeName(nameUpper) && !allowGeneric) {
+      this.addError(
+        `Generic type '${nameToCheck}' is only allowed in VAR_INPUT parameters${context ? " in " + context : ""}`,
+        typeRef.sourceSpan.startLine,
+        typeRef.sourceSpan.startCol,
+        typeRef.sourceSpan.file,
+      );
+      return;
+    }
 
     if (!this.isKnownType(nameToCheck)) {
       this.addError(
@@ -2342,8 +2439,10 @@ export class SemanticAnalyzer {
     // Helper to validate var blocks
     const validateVarBlocks = (varBlocks: VarBlock[], context: string) => {
       for (const block of varBlocks) {
+        // IEC generic type groups (ANY, ANY_BIT, ...) are only valid in VAR_INPUT
+        const allowGeneric = block.blockType === "VAR_INPUT";
         for (const decl of block.declarations) {
-          this.validateSingleTypeReference(decl.type, context);
+          this.validateSingleTypeReference(decl.type, context, allowGeneric);
         }
       }
     };
@@ -2666,6 +2765,19 @@ export class SemanticAnalyzer {
   ): void {
     switch (expr.kind) {
       case "VariableExpression":
+        // CODESYS __SYSTEM namespace: __SYSTEM.TYPE_CLASS.TYPE_BOOL
+        if (this.checkSystemAccess(expr)) {
+          if (expr.accessChain) {
+            for (const step of expr.accessChain) {
+              if (step.kind === "subscript") {
+                for (const idx of step.indices) {
+                  this.checkExpressionForUndeclaredVars(idx, scope, ctx);
+                }
+              }
+            }
+          }
+          break;
+        }
         this.checkNameDeclared(expr.name, scope, ctx, expr.sourceSpan);
         // Reject member access on a type-level symbol (FB / program / type).
         // Resolves the bug where `RED_YELLOW_GREEN.GREENTIME := …` is
@@ -2739,6 +2851,9 @@ export class SemanticAnalyzer {
           this.checkExpressionForUndeclaredVars(expr.arraySize, scope, ctx);
         }
         break;
+      case "VarInfoExpression":
+        this.checkExpressionForUndeclaredVars(expr.argument, scope, ctx);
+        break;
     }
   }
 
@@ -2788,6 +2903,45 @@ export class SemanticAnalyzer {
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,
     );
+  }
+
+  /**
+   * Validate a CODESYS __SYSTEM qualified reference. Returns true when the
+   * expression starts with __SYSTEM and the remainder is a valid enum type
+   * or enum member path. Otherwise reports an error and returns true so
+   * the caller does not fall through to the normal undeclared-variable check.
+   */
+  private checkSystemAccess(expr: VariableExpression): boolean {
+    if (!isSystemNamespaceName(expr.name)) return false;
+
+    const path =
+      expr.accessChain?.length === 2 &&
+      expr.accessChain.every((s) => s.kind === "field")
+        ? expr.accessChain.map((s) => s.name)
+        : expr.fieldAccess.length === 2
+          ? expr.fieldAccess
+          : undefined;
+
+    if (path === undefined) {
+      this.addError(
+        "Invalid __SYSTEM reference — expected __SYSTEM.<EnumType>.<Member>",
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+      return true;
+    }
+
+    const resolved = resolveSystemAccess(path);
+    if (!resolved) {
+      this.addError(
+        `Unknown __SYSTEM reference '__SYSTEM.${path.join(".")}'`,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+    }
+    return true;
   }
 
   /**

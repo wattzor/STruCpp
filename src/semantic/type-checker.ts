@@ -25,6 +25,7 @@ import type {
   CompilationUnit,
   Statement,
   VarBlock,
+  MethodDeclaration,
 } from "../frontend/ast.js";
 import type { SymbolTables, Scope } from "./symbol-table.js";
 import type { StdFunctionRegistry } from "./std-function-registry.js";
@@ -41,6 +42,12 @@ import {
   typeName as typeNameUtil,
   isGenericGroupType,
 } from "./type-utils.js";
+import {
+  getSystemType,
+  isSystemNamespaceName,
+  isSystemTypeReference,
+  resolveSystemAccess,
+} from "./system-types.js";
 import { stripEnEno } from "../ast-utils.js";
 
 // Re-export from type-utils for backward compatibility
@@ -174,6 +181,7 @@ export class TypeChecker {
           );
           this.checkVarBlocks(method.varBlocks, methodScope ?? scope);
           this.checkStatements(method.body, methodScope ?? scope);
+          this.checkReferenceReturnBound(method);
         }
 
         // Property getter/setter bodies
@@ -210,6 +218,84 @@ export class TypeChecker {
       errors: this.errors,
       warnings: this.warnings,
     };
+  }
+
+  /**
+   * Warn when a method returning REFERENCE TO a user-defined type has no
+   * `MethodName ref= ...` assignment. A missing bind leaves the reference
+   * null; codegen now guards the dereference at runtime, but the user should
+   * still be told the bind is missing.
+   */
+  private checkReferenceReturnBound(method: MethodDeclaration): void {
+    if (!method.returnType) return;
+    const ref = method.returnType;
+    if (ref.referenceKind !== "reference_to") return;
+    if (ELEMENTARY_TYPES[ref.name.toUpperCase()]) return;
+
+    const methodNameUpper = method.name.toUpperCase();
+    if (!this.statementContainsRefAssign(method.body, methodNameUpper)) {
+      this.addWarning(
+        `Method '${method.name}' returns REFERENCE TO '${ref.name}' but no '${method.name} ref= ...' assignment was found; the returned reference may be null`,
+        method.sourceSpan.startLine,
+        method.sourceSpan.startCol,
+        method.sourceSpan.file,
+      );
+    }
+  }
+
+  /** Recursively search for a RefAssignStatement that assigns the method result. */
+  private statementContainsRefAssign(
+    stmts: Statement[],
+    methodNameUpper: string,
+  ): boolean {
+    for (const stmt of stmts) {
+      if (this.refAssignsMethod(stmt, methodNameUpper)) return true;
+      if (stmt.kind === "IfStatement") {
+        if (
+          this.statementContainsRefAssign(stmt.thenStatements, methodNameUpper)
+        )
+          return true;
+        for (const clause of stmt.elsifClauses) {
+          if (
+            this.statementContainsRefAssign(clause.statements, methodNameUpper)
+          )
+            return true;
+        }
+        if (
+          stmt.elseStatements &&
+          this.statementContainsRefAssign(stmt.elseStatements, methodNameUpper)
+        )
+          return true;
+      }
+      if (
+        (stmt.kind === "WhileStatement" ||
+          stmt.kind === "RepeatStatement" ||
+          stmt.kind === "ForStatement") &&
+        this.statementContainsRefAssign(stmt.body, methodNameUpper)
+      )
+        return true;
+      if (
+        stmt.kind === "CaseStatement" &&
+        stmt.cases.some((c) =>
+          this.statementContainsRefAssign(c.statements, methodNameUpper),
+        )
+      )
+        return true;
+    }
+    return false;
+  }
+
+  private refAssignsMethod(stmt: Statement, methodNameUpper: string): boolean {
+    if (stmt.kind !== "RefAssignStatement") return false;
+    const target = stmt.target;
+    return (
+      target.kind === "VariableExpression" &&
+      target.name.toUpperCase() === methodNameUpper &&
+      !target.isDereference &&
+      target.subscripts.length === 0 &&
+      target.fieldAccess.length === 0 &&
+      (target.accessChain?.length ?? 0) === 0
+    );
   }
 
   // ===========================================================================
@@ -272,6 +358,16 @@ export class TypeChecker {
         }
       }
     }
+    // CODESYS __SYSTEM.VAR_INFO synthetic struct
+    const systemType = getSystemType(typeName);
+    if (systemType?.typeKind === "struct") {
+      const fu = fieldName.toUpperCase();
+      for (const [fname, ftype] of (systemType as StructType).fields) {
+        if (fname.toUpperCase() === fu) {
+          return typeNameUtil(ftype);
+        }
+      }
+    }
     return undefined;
   }
 
@@ -285,6 +381,11 @@ export class TypeChecker {
    * StructType against a placeholder elementary and be wrongly rejected.
    */
   private resolveNamedType(name: string): IECType {
+    if (isSystemTypeReference(name)) {
+      const systemType = getSystemType(name);
+      if (systemType) return systemType;
+    }
+
     return (
       ELEMENTARY_TYPES[name.toUpperCase()] ??
       this.symbolTables.lookupType(name)?.resolvedType ??
@@ -354,6 +455,22 @@ export class TypeChecker {
         // Array literals don't have an inherent type — they get their type from the assignment target
         return undefined;
       }
+      case "QueryInterfaceExpression": {
+        // __QUERYINTERFACE returns a BOOL and mutates its target argument
+        const boolType = ELEMENTARY_TYPES["BOOL"];
+        if (!boolType) return undefined;
+        expr.resolvedType = boolType;
+        return boolType;
+      }
+      case "VarInfoExpression": {
+        // Resolve the target variable's type so codegen can emit size/type-class metadata.
+        this.inferType(expr.argument, scope);
+        const varInfoType = getSystemType("__SYSTEM.VAR_INFO");
+        if (varInfoType) {
+          expr.resolvedType = varInfoType;
+        }
+        return varInfoType;
+      }
       default:
         return undefined;
     }
@@ -415,6 +532,24 @@ export class TypeChecker {
     expr: VariableExpression,
     scope: Scope,
   ): IECType | undefined {
+    // CODESYS __SYSTEM qualified enum access: __SYSTEM.TYPE_CLASS.TYPE_BOOL
+    if (isSystemNamespaceName(expr.name)) {
+      const path =
+        expr.accessChain?.length === 2 &&
+        expr.accessChain.every((s) => s.kind === "field")
+          ? expr.accessChain.map((s) => s.name)
+          : expr.fieldAccess.length === 2
+            ? expr.fieldAccess
+            : undefined;
+      if (path) {
+        const resolved = resolveSystemAccess(path);
+        if (resolved) {
+          return resolved.enumType;
+        }
+      }
+      return undefined;
+    }
+
     const symbol = scope.lookup(expr.name);
     if (symbol === undefined) {
       // Don't report error here — Pass 3 undeclared-variable check handles this
@@ -836,8 +971,14 @@ export class TypeChecker {
         if (stmt.target.kind === "VariableExpression") {
           const sym = scope.lookup(stmt.target.name);
           if (sym && sym.kind === "variable") {
-            const refKind = sym.declaration.type.referenceKind;
-            if (refKind !== "ref_to" && refKind !== "reference_to") {
+            const refKind = sym.declaration?.type?.referenceKind;
+            // Method/property result variables are synthetic and have no
+            // declaration; REF= to the method name is valid.
+            if (
+              refKind !== undefined &&
+              refKind !== "ref_to" &&
+              refKind !== "reference_to"
+            ) {
               this.addError(
                 `REF= requires a REF_TO or REFERENCE TO target; '${stmt.target.name}' is not a reference`,
                 stmt.target.sourceSpan.startLine,

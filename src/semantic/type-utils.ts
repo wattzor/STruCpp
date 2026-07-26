@@ -238,6 +238,13 @@ export function isGenericGroupType(type: IECType): boolean {
 }
 
 /**
+ * Whether an IEC type name (uppercase) is one of the generic type groups.
+ */
+export function isGenericTypeName(typeName: string): boolean {
+  return GENERIC_TYPE_NAMES.has(typeName.toUpperCase());
+}
+
+/**
  * Check if a type name matches a StdFunctionRegistry TypeConstraint.
  */
 export function matchesConstraint(
@@ -276,6 +283,15 @@ export function matchesConstraint(
  * and cross-category promotions (BIT→INT, INT→REAL).
  */
 export function isAssignable(target: IECType, source: IECType): boolean {
+  // IEC generic type groups (ANY, ANY_BIT, ANY_NUM, etc.) accept any concrete
+  // type that belongs to the group.
+  if (isGenericGroupType(target)) {
+    return isTypeInCategory(
+      source,
+      (target as ElementaryType).name as TypeCategory,
+    );
+  }
+
   // Same typeKind check
   if (target.typeKind !== source.typeKind) {
     // Allow elementary-to-elementary only

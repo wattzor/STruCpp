@@ -68,11 +68,36 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify g++ and cc are present
+        run: |
+          command -v g++ || (echo "g++ not found" && exit 1)
+          command -v cc || (echo "cc not found" && exit 1)
+          g++ --version
+          cc --version
+
       - name: Build
         run: npm run build
 
       - name: Run tests with coverage
-        run: npm run test:coverage -- --run
+        run: npm run test:coverage -- --run --reporter=default --reporter=json --outputFile=./vitest-results.json
+
+      - name: Verify no unexpected test skips
+        run: node -e "
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('./vitest-results.json', 'utf8'));
+          if ((data.numFailedTests || 0) > 0) {
+            console.error(data.numFailedTests + ' tests failed');
+            process.exit(1);
+          }
+          const assertions = (data.testResults || []).flatMap(s => s.assertionResults || []);
+          const skipped = assertions.filter(r => r.status === 'skipped' || r.status === 'pending' || r.status === 'todo');
+          if (skipped.length > 0) {
+            console.error(skipped.length + ' tests were skipped/pending/todo unexpectedly');
+            for (const r of skipped.slice(0, 20)) console.error('  - ' + r.fullName);
+            process.exit(1);
+          }
+          console.log('All ' + data.numPassedTests + ' tests executed (0 skipped, 0 failed)');
+        "
 
   extension:
     name: Extension Build & Test

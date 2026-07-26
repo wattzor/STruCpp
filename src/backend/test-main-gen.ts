@@ -532,12 +532,17 @@ class TestFunctionGenerator {
 
   private generateVarDeclaration(lines: string[], decl: VarDeclaration): void {
     const cppType = this.testCodegen.resolveType(decl.type);
+    const isInterface =
+      this.testCodegen.isInterfaceType(decl.type.name) ||
+      (!!decl.type.elementTypeName &&
+        this.testCodegen.isInterfaceType(decl.type.elementTypeName));
 
     for (const name of decl.names) {
       if (decl.initialValue) {
-        lines.push(
-          `${this.indent}${cppType} ${name} = ${this.testCodegen.emitExpression(decl.initialValue)};`,
-        );
+        const initExpr = isInterface
+          ? this.testCodegen.emitPointerExpression(decl.initialValue)
+          : this.testCodegen.emitExpression(decl.initialValue);
+        lines.push(`${this.indent}${cppType} ${name} = ${initExpr};`);
       } else {
         lines.push(`${this.indent}${cppType} ${name};`);
       }

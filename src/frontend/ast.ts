@@ -242,6 +242,8 @@ export interface VarDeclaration extends ASTNode {
   type: TypeReference;
   initialValue?: Expression;
   address?: string;
+  /** Declaration comment, bound by the trailing-or-preceding-line rule. */
+  comment?: string;
 }
 
 // =============================================================================
@@ -344,6 +346,7 @@ export interface TypeReference extends ASTNode {
   maxLength?: number | string; // For STRING(n) / WSTRING(n) parameterized length; string for constant names
   arrayDimensions?: Array<{ start: number; end: number }>; // For __INLINE_ARRAY_* types
   elementTypeName?: string; // Element type for inline arrays (e.g. "BYTE" for ARRAY[0..7] OF BYTE)
+  elementReferenceKind?: ReferenceKind; // Element reference kind for ARRAY OF POINTER TO T etc.
 }
 
 // =============================================================================
@@ -571,6 +574,8 @@ export type Expression =
   | RefExpression
   | DrefExpression
   | NewExpression
+  | QueryInterfaceExpression
+  | VarInfoExpression
   | ArrayLiteralExpression;
 
 /**
@@ -726,6 +731,25 @@ export interface NewExpression extends TypedNode {
   kind: "NewExpression";
   allocationType: TypeReference;
   arraySize?: Expression;
+}
+
+/**
+ * __QUERYINTERFACE(source, target) expression - runtime interface cast.
+ * Returns BOOL and, on success, assigns a pointer of the target interface
+ * type to the target variable.
+ */
+export interface QueryInterfaceExpression extends TypedNode {
+  kind: "QueryInterfaceExpression";
+  source: Expression;
+  target: Expression;
+}
+
+/**
+ * __VARINFO(<variable>) expression - CODESYS runtime variable reflection.
+ */
+export interface VarInfoExpression extends TypedNode {
+  kind: "VarInfoExpression";
+  argument: VariableExpression;
 }
 
 /**

@@ -108,4 +108,98 @@ int main() {
     });
     expect(stdout).toBe("TRUE");
   });
+
+  it("calls a method through a pointer stored in an array element", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Counter
+      VAR
+        count : INT := 0;
+      END_VAR
+        METHOD PUBLIC Inc : INT
+          count := count + 1;
+          Inc := count;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        arr : ARRAY[1..2] OF POINTER TO Counter;
+        p : POINTER TO Counter;
+        c : Counter;
+        result : INT;
+      END_VAR
+        p := ADR(c);
+        arr[1] := p;
+        result := arr[1]^.Inc();
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "array_pointer_deref_method",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.RESULT) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("1");
+  });
+
+  it("calls a method on a nested field access", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Inner
+        METHOD PUBLIC GetValue : INT
+          GetValue := 42;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Outer
+      VAR
+        inner : Inner;
+      END_VAR
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Outer2
+      VAR
+        outer : Outer;
+      END_VAR
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        o2 : Outer2;
+        result : INT;
+      END_VAR
+        result := o2.outer.inner.GetValue();
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "nested_field_method",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.RESULT) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("42");
+  });
 });

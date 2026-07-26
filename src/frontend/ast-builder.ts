@@ -44,6 +44,8 @@ import type {
   RefExpression,
   DrefExpression,
   NewExpression,
+  QueryInterfaceExpression,
+  VarInfoExpression,
   DeleteStatement,
   ArrayLiteralExpression,
   FunctionCallExpression,
@@ -89,6 +91,20 @@ function tokenToSourceSpan(token: IToken): SourceSpan {
     startCol: token.startColumn ?? 0,
     endCol: token.endColumn ?? 0,
   };
+}
+
+/**
+ * Strip ST comment delimiters and trim whitespace.
+ * Preserves nested block-comment delimiters inside the body.
+ */
+function cleanCommentText(image: string): string {
+  if (image.startsWith("//")) {
+    return image.slice(2).trim();
+  }
+  if (image.startsWith("(*") && image.endsWith("*)")) {
+    return image.slice(2, -2).trim();
+  }
+  return image.trim();
 }
 
 /**
@@ -237,6 +253,7 @@ function getIdentifierOrKeywordImage(node: CstNode): string {
     "OVERRIDE",
     "ABSTRACT",
     "FINAL",
+    "THIS",
     "AND",
     "OR",
     "XOR",
@@ -258,6 +275,29 @@ function getAllIdentifierOrKeywordImages(
   if (!items) return [];
   const nodes = items.filter((item): item is CstNode => "children" in item);
   return nodes.map(getIdentifierOrKeywordImage);
+}
+
+/**
+ * Parse a CODESYS bit/byte/word/dword access token (%X0, %B1, %W0, %D0).
+ * Returns the access kind and the numeric index as a string.
+ */
+function parseBitAccessToken(raw: string): {
+  kind: "bit" | "byte" | "word" | "dword";
+  prefix: string;
+  index: string;
+} {
+  const upper = raw.toUpperCase();
+  const match = upper.match(/^%([XBWDL])(\d+)$/);
+  const prefix = match?.[1] ?? "X";
+  const index = match?.[2] ?? "0";
+  const kindMap: Record<string, "bit" | "byte" | "word" | "dword"> = {
+    X: "bit",
+    B: "byte",
+    W: "word",
+    D: "dword",
+    L: "dword",
+  };
+  return { kind: kindMap[prefix] ?? "bit", prefix, index };
 }
 
 /**
@@ -301,9 +341,79 @@ export class ASTBuilder {
   /** Global constants that persist across POU scans (never cleared). */
   private globalConstantMap: Map<string, number> = new Map();
 
+  /** Captured comment tokens, sorted by source offset. */
+  private comments: IToken[];
+
+  /** Indices of comments already bound to a declaration. */
+  private usedCommentIndices = new Set<number>();
+
+  constructor(comments?: IToken[]) {
+    this.comments = (comments ?? [])
+      .slice()
+      .sort((a, b) => a.startOffset - b.startOffset);
+  }
+
   /** Seed a global constant for dimension resolution. */
   setGlobalConstant(name: string, value: number): void {
     this.globalConstantMap.set(name.toUpperCase(), value);
+  }
+
+  /**
+   * Bind a comment token to a variable declaration.
+   * - trailing comment on the same line as the declaration binds to it
+   * - otherwise a comment on the immediately preceding line binds to it
+   * - anything else is discarded
+   *
+   * This is intentionally independent of the order in which declarations are
+   * visited, so POU blocks can be built in any order without consuming a
+   * comment that belongs to an earlier declaration.
+   */
+  private findComment(node: CstNode): string | undefined {
+    const span = nodeToSourceSpan(node);
+
+    let bestTrailingIdx = -1;
+    let bestTrailingStartCol = Infinity;
+    let bestPrecedingIdx = -1;
+    let bestPrecedingEndCol = -1;
+
+    for (let i = 0; i < this.comments.length; i++) {
+      if (this.usedCommentIndices.has(i)) continue;
+
+      const comment = this.comments[i]!;
+      const commentStartLine = comment.startLine ?? 0;
+      const commentEndLine = comment.endLine ?? commentStartLine;
+      const commentStartColumn = comment.startColumn ?? 0;
+      const commentEndColumn = comment.endColumn ?? 0;
+
+      // Trailing: same line as declaration end, starting after the declaration.
+      // Pick the earliest such comment to avoid grabbing later unrelated comments.
+      if (
+        commentStartLine === span.endLine &&
+        commentStartColumn > span.endCol &&
+        commentStartColumn < bestTrailingStartCol
+      ) {
+        bestTrailingIdx = i;
+        bestTrailingStartCol = commentStartColumn;
+      }
+
+      // Preceding: comment ends on the line immediately before the declaration.
+      // Pick the one that ends latest (closest to the declaration).
+      if (
+        commentEndLine === span.startLine - 1 &&
+        commentEndColumn > bestPrecedingEndCol
+      ) {
+        bestPrecedingIdx = i;
+        bestPrecedingEndCol = commentEndColumn;
+      }
+    }
+
+    const bestIdx = bestTrailingIdx !== -1 ? bestTrailingIdx : bestPrecedingIdx;
+    if (bestIdx !== -1) {
+      this.usedCommentIndices.add(bestIdx);
+      return cleanCommentText(this.comments[bestIdx]!.image);
+    }
+
+    return undefined;
   }
 
   /**
@@ -1004,11 +1114,19 @@ export class ASTBuilder {
     // Get element type from nested dataType
     const elementTypeNode = getFirstNode(arrayChildren.dataType);
     let elementTypeName = "INT";
+    let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
-      const elemNameToken = getFirstToken(elemChildren.Identifier);
-      if (elemNameToken) {
-        elementTypeName = elemNameToken.image;
+      const elemNameTokens = getAllTokens(elemChildren.Identifier);
+      if (elemNameTokens.length > 0) {
+        elementTypeName = elemNameTokens.map((t) => t.image).join(".");
+      }
+      if (getAllTokens(elemChildren.POINTER).length > 0) {
+        elementReferenceKind = "pointer_to";
+      } else if (getAllTokens(elemChildren.REF_TO).length > 0) {
+        elementReferenceKind = "ref_to";
+      } else if (getAllTokens(elemChildren.REFERENCE_TO).length > 0) {
+        elementReferenceKind = "reference_to";
       }
     }
 
@@ -1037,6 +1155,7 @@ export class ASTBuilder {
     if (arrayDimensions.length > 0) {
       result.arrayDimensions = arrayDimensions;
       result.elementTypeName = elementTypeName;
+      result.elementReferenceKind = elementReferenceKind;
     }
     return result;
   }
@@ -1387,8 +1506,10 @@ export class ASTBuilder {
       }
     }
 
+    const comment = this.findComment(node);
+
     // Use conditional spreading for optional properties to comply with exactOptionalPropertyTypes
-    return {
+    const result: VarDeclaration = {
       kind: "VarDeclaration",
       sourceSpan: nodeToSourceSpan(node),
       names,
@@ -1396,6 +1517,10 @@ export class ASTBuilder {
       ...(initialValue !== undefined ? { initialValue } : {}),
       ...(address !== undefined ? { address } : {}),
     };
+    if (comment !== undefined) {
+      result.comment = comment;
+    }
+    return result;
   }
 
   /**
@@ -1404,8 +1529,24 @@ export class ASTBuilder {
   buildTypeReference(node: CstNode): TypeReference {
     const children = node.children as CstChildren;
 
-    const nameToken = getFirstToken(children.Identifier);
-    const name = nameToken?.image ?? "INT";
+    const allIdents = getAllTokens(children.Identifier);
+    const dotTokens = getAllTokens(children.Dot);
+    const hasDots = dotTokens.length > 0;
+
+    let name: string;
+    let maxLength: number | string | undefined;
+    if (hasDots) {
+      // Namespace-qualified type: __SYSTEM.TYPE_CLASS
+      name = allIdents.map((t) => t.image).join(".");
+    } else {
+      name = allIdents[0]?.image ?? "INT";
+      // Check for identifier-based length (STRING(CONSTANT_NAME))
+      // Note: children.Identifier[0] is the type name itself; [1] would be the length constant
+      if (allIdents.length > 1) {
+        maxLength = allIdents[1]!.image;
+      }
+    }
+
     const isRefTo = !!children.REF_TO;
     const isReferenceTo = !!children.REFERENCE_TO;
     const isPointerTo = !!children.POINTER;
@@ -1421,17 +1562,9 @@ export class ASTBuilder {
     }
 
     // Extract optional parameterized length: STRING(n) / WSTRING(n) / STRING(CONSTANT)
-    let maxLength: number | string | undefined;
     const lengthToken = getFirstToken(children.IntegerLiteral);
     if (lengthToken) {
       maxLength = parseInt(lengthToken.image, 10);
-    } else {
-      // Check for identifier-based length (STRING(CONSTANT_NAME))
-      // Note: children.Identifier[0] is the type name itself; [1] would be the length constant
-      const allIdents = getAllTokens(children.Identifier);
-      if (allIdents.length > 1) {
-        maxLength = allIdents[1]!.image;
-      }
     }
 
     const result: TypeReference = {
@@ -1472,11 +1605,19 @@ export class ASTBuilder {
     // Get element type from nested dataType
     const elementTypeNode = getFirstNode(arrayChildren.dataType);
     let elementTypeName = "INT";
+    let elementReferenceKind: ReferenceKind = "none";
     if (elementTypeNode) {
       const elemChildren = elementTypeNode.children as CstChildren;
-      const elemNameToken = getFirstToken(elemChildren.Identifier);
-      if (elemNameToken) {
-        elementTypeName = elemNameToken.image;
+      const elemNameTokens = getAllTokens(elemChildren.Identifier);
+      if (elemNameTokens.length > 0) {
+        elementTypeName = elemNameTokens.map((t) => t.image).join(".");
+      }
+      if (getAllTokens(elemChildren.POINTER).length > 0) {
+        elementReferenceKind = "pointer_to";
+      } else if (getAllTokens(elemChildren.REF_TO).length > 0) {
+        elementReferenceKind = "ref_to";
+      } else if (getAllTokens(elemChildren.REFERENCE_TO).length > 0) {
+        elementReferenceKind = "reference_to";
       }
     }
 
@@ -1516,6 +1657,7 @@ export class ASTBuilder {
     if (arrayDimensions) {
       result.arrayDimensions = arrayDimensions;
       result.elementTypeName = elementTypeName;
+      result.elementReferenceKind = elementReferenceKind;
     }
     return result;
   }
@@ -2320,6 +2462,20 @@ export class ASTBuilder {
       return this.buildNewExpression(getFirstNode(children.newExpression)!);
     }
 
+    // Check for __QUERYINTERFACE(source, target) expression
+    if (children.queryInterfaceExpression) {
+      return this.buildQueryInterfaceExpression(
+        getFirstNode(children.queryInterfaceExpression)!,
+      );
+    }
+
+    // Check for __VARINFO(variable) expression
+    if (children.varInfoExpression) {
+      return this.buildVarInfoExpression(
+        getFirstNode(children.varInfoExpression)!,
+      );
+    }
+
     // Check for THIS access expression
     if (children.thisAccess) {
       return this.buildThisAccessExpression(getFirstNode(children.thisAccess)!);
@@ -2442,6 +2598,44 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       allocationType,
       ...(arraySize !== undefined ? { arraySize } : {}),
+    };
+  }
+
+  /**
+   * Build a QueryInterfaceExpression from a CST node.
+   * Handles: __QUERYINTERFACE(source, target)
+   */
+  buildQueryInterfaceExpression(node: CstNode): QueryInterfaceExpression {
+    const children = node.children as CstChildren;
+
+    const sourceNode = getFirstNode(children.expression);
+    const targetNode = getAllNodes(children.expression)[1];
+    const source = sourceNode ? this.buildExpression(sourceNode) : undefined;
+    const target = targetNode ? this.buildExpression(targetNode) : undefined;
+
+    return {
+      kind: "QueryInterfaceExpression",
+      sourceSpan: nodeToSourceSpan(node),
+      source: source!,
+      target: target!,
+    };
+  }
+
+  /**
+   * Build a VarInfoExpression from a CST node.
+   * Handles: __VARINFO(variable)
+   */
+  buildVarInfoExpression(node: CstNode): VarInfoExpression {
+    const children = node.children as CstChildren;
+    const variableNode = getFirstNode(children.variable);
+    const argument = variableNode
+      ? this.buildVariableExpression(variableNode)
+      : this.createDummyVariable(node);
+
+    return {
+      kind: "VarInfoExpression",
+      sourceSpan: nodeToSourceSpan(node),
+      argument,
     };
   }
 
@@ -2719,7 +2913,9 @@ export class ASTBuilder {
 
     // Get additional field access from identifierOrKeyword nodes (index 1+)
     // Also include IntegerLiteral tokens for bit access (var.0, var.31)
+    // and CODESYS-style BitAccess tokens (var.%X0, var.%B1)
     const allIntLiterals = getAllTokens(children.IntegerLiteral);
+    const bitAccessTokens = getAllTokens(children.BitAccess);
     const fieldAccess: string[] = [];
     for (let i = 1; i < idOrKwNodes.length; i++) {
       const node = idOrKwNodes[i];
@@ -2728,6 +2924,16 @@ export class ASTBuilder {
     // Bit access indices appear as IntegerLiteral tokens after Dot
     for (const intToken of allIntLiterals) {
       fieldAccess.push(intToken.image);
+    }
+    // CODESYS bit/byte/word/dword access suffixes: %Xn, %Bn, %Wn, %Dn
+    for (const bitToken of bitAccessTokens) {
+      const parsed = parseBitAccessToken(bitToken.image);
+      if (parsed.kind === "bit") {
+        fieldAccess.push(parsed.index);
+      } else {
+        // byte/word/dword access — keep the original prefix+index as a field name
+        fieldAccess.push(`${parsed.prefix}${parsed.index}`);
+      }
     }
 
     // Extract subscript expressions from array access: arr[i], arr[i,j], etc.
@@ -2768,12 +2974,13 @@ export class ASTBuilder {
 
     const markers: Marker[] = [];
 
-    // Collect field access markers (Dot tokens followed by identifierOrKeyword or IntegerLiteral)
+    // Collect field access markers (Dot tokens followed by identifierOrKeyword, IntegerLiteral, or BitAccess)
     const dotTokens = getAllTokens(children.Dot);
     const idOrKwNodes = getAllNodes(children.identifierOrKeyword);
     const intLiteralTokens = getAllTokens(children.IntegerLiteral);
+    const bitAccessTokens = getAllTokens(children.BitAccess);
 
-    // Build a list of field targets sorted by offset: identifier and integer literal tokens after dots
+    // Build a list of field targets sorted by offset: identifier, integer literal, and bit-access tokens after dots
     const fieldTargets: Array<{ offset: number; name: string }> = [];
     for (let i = 1; i < idOrKwNodes.length; i++) {
       const n = idOrKwNodes[i]!;
@@ -2784,6 +2991,16 @@ export class ASTBuilder {
     }
     for (const t of intLiteralTokens) {
       fieldTargets.push({ offset: t.startOffset, name: t.image });
+    }
+    for (const t of bitAccessTokens) {
+      const parsed = parseBitAccessToken(t.image);
+      fieldTargets.push({
+        offset: t.startOffset,
+        name:
+          parsed.kind === "bit"
+            ? parsed.index
+            : `${parsed.prefix}${parsed.index}`,
+      });
     }
     fieldTargets.sort((a, b) => a.offset - b.offset);
 
@@ -2985,10 +3202,6 @@ export class ASTBuilder {
     const prefixNode =
       getFirstNode(children.methodCallPrefix) ??
       getFirstNode(children.variable);
-    const methodIdOrKw = getAllNodes(children.identifierOrKeyword)[0];
-    const methodName = methodIdOrKw
-      ? getIdentifierOrKeywordImage(methodIdOrKw)
-      : "";
 
     const args: Argument[] = [];
     const argListNode = getFirstNode(children.argumentList);
@@ -2999,37 +3212,47 @@ export class ASTBuilder {
       }
     }
 
+    // The variable prefix includes the method name as its last field access.
+    // Pop it off so the object expression is everything before the method name.
+    let objectExpr: VariableExpression;
+    let methodName = "";
+    if (prefixNode) {
+      const fullExpr = this.buildVariableExpression(prefixNode);
+      if (fullExpr.fieldAccess.length > 0) {
+        methodName = fullExpr.fieldAccess.pop()!;
+        if (fullExpr.accessChain && fullExpr.accessChain.length > 0) {
+          const last = fullExpr.accessChain[fullExpr.accessChain.length - 1]!;
+          if (last.kind === "field") {
+            fullExpr.accessChain.pop();
+          }
+        }
+      }
+      objectExpr = fullExpr;
+    } else {
+      objectExpr = this.createDummyVariable(node);
+    }
+
     // A plain `instance.method()` keeps the original FunctionCallExpression
     // shape for backward compatibility; complex prefixes (array element,
-    // pointer dereference) become MethodCallExpressions.
+    // pointer dereference, field access) become MethodCallExpressions.
     let result: FunctionCallExpression | MethodCallExpression;
-    if (prefixNode) {
-      const objectExpr = this.buildVariableExpression(prefixNode);
-      const hasAccessChain =
-        (objectExpr.accessChain && objectExpr.accessChain.length > 0) ||
-        objectExpr.subscripts.length > 0 ||
-        objectExpr.isDereference;
-      if (!hasAccessChain) {
-        result = {
-          kind: "FunctionCallExpression",
-          sourceSpan: nodeToSourceSpan(node),
-          functionName: `${objectExpr.name}.${methodName}`,
-          arguments: args,
-        };
-      } else {
-        result = {
-          kind: "MethodCallExpression",
-          sourceSpan: nodeToSourceSpan(node),
-          object: objectExpr,
-          methodName,
-          arguments: args,
-        };
-      }
+    const hasAccessChain =
+      (objectExpr.accessChain && objectExpr.accessChain.length > 0) ||
+      objectExpr.subscripts.length > 0 ||
+      objectExpr.isDereference ||
+      objectExpr.fieldAccess.length > 0;
+    if (!hasAccessChain) {
+      result = {
+        kind: "FunctionCallExpression",
+        sourceSpan: nodeToSourceSpan(node),
+        functionName: `${objectExpr.name}.${methodName}`,
+        arguments: args,
+      };
     } else {
       result = {
         kind: "MethodCallExpression",
         sourceSpan: nodeToSourceSpan(node),
-        object: this.createDummyVariable(node),
+        object: objectExpr,
         methodName,
         arguments: args,
       };
@@ -3705,8 +3928,9 @@ export function buildAST(
   cst: CstNode,
   fileName?: string,
   globalConstants?: Record<string, number>,
+  comments?: IToken[],
 ): CompilationUnit {
-  const builder = new ASTBuilder();
+  const builder = new ASTBuilder(comments);
   // Seed the constant map with global constants (e.g., STRING_LENGTH, LIST_LENGTH)
   // so inline array dimensions like ARRAY[0..STRING_LENGTH] resolve correctly.
   if (globalConstants) {
@@ -3730,8 +3954,9 @@ export function buildAST(
 export function buildTestAST(
   cst: CstNode,
   fileName: string,
+  comments?: IToken[],
 ): import("./ast.js").TestFile {
-  const builder = new ASTBuilder();
+  const builder = new ASTBuilder(comments);
   const testFile = builder.buildTestFile(cst);
   testFile.fileName = fileName;
   // Set file on all sourceSpan objects

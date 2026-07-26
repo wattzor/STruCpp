@@ -66,6 +66,26 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       expect(result.headerCode).toContain("virtual void TURNON();");
       expect(result.cppCode).toContain("void LIGHT::TURNON() {");
     });
+
+    it("should generate a method returning REFERENCE TO the function block", () => {
+      const result = compileAndCheck(`
+        FUNCTION_BLOCK StringBuilder
+          VAR buffer : STRING(255); END_VAR
+          METHOD PUBLIC Append : REFERENCE TO StringBuilder
+            VAR_INPUT s : STRING(20); END_VAR
+            buffer := CONCAT(buffer, s);
+            Append ref= THIS^;
+          END_METHOD
+        END_FUNCTION_BLOCK
+        PROGRAM Main END_PROGRAM
+      `);
+
+      expect(result.headerCode).toContain("virtual STRINGBUILDER& APPEND(IECStringVar<20> S);");
+      expect(result.cppCode).toContain("STRINGBUILDER& STRINGBUILDER::APPEND(IECStringVar<20> S) {");
+      expect(result.cppCode).toContain("STRINGBUILDER* APPEND_result = nullptr;");
+      expect(result.cppCode).toContain("APPEND_result = this;");
+      expect(result.cppCode).toContain("return *APPEND_result;");
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -84,8 +104,9 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
         PROGRAM Main END_PROGRAM
       `);
 
-      // Header: abstract class
-      expect(result.headerCode).toContain("class IMOVABLE {");
+      // Header: abstract class with type-tag support
+      expect(result.headerCode).toContain("class IMOVABLE : virtual public strucpp::__IInterface {");
+      expect(result.headerCode).toContain("static const char* __strucpp_interface_name() { return \"IMOVABLE\"; }");
       expect(result.headerCode).toContain("virtual ~IMOVABLE() = default;");
       expect(result.headerCode).toContain(
         "virtual void MOVE(IEC_REAL DISTANCE) = 0;",
@@ -102,7 +123,8 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
         PROGRAM Main END_PROGRAM
       `);
 
-      expect(result.headerCode).toContain("class IREADABLE {");
+      expect(result.headerCode).toContain("class IREADABLE : virtual public strucpp::__IInterface {");
+      expect(result.headerCode).toContain("static const char* __strucpp_interface_name() { return \"IREADABLE\"; }");
       expect(result.headerCode).toContain("virtual IEC_INT READ() = 0;");
     });
 
@@ -213,7 +235,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       `);
 
       expect(result.headerCode).toContain(
-        "class ROBOT : public IFIRST, public ISECOND {",
+        "class ROBOT : virtual public IFIRST, virtual public ISECOND {",
       );
     });
 
@@ -230,7 +252,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       `);
 
       expect(result.headerCode).toContain(
-        "class WORKER : public IRUNNABLE {",
+        "class WORKER : virtual public IRUNNABLE {",
       );
     });
   });
@@ -255,7 +277,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       `);
 
       expect(result.headerCode).toContain(
-        "class SMARTMOTOR : public BASE, public IMOVABLE {",
+        "class SMARTMOTOR : public BASE, virtual public IMOVABLE {",
       );
     });
 
@@ -274,7 +296,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       `);
 
       expect(result.headerCode).toContain(
-        "class CHILD : public PARENT, public IA, public IB {",
+        "class CHILD : public PARENT, virtual public IA, virtual public IB {",
       );
     });
   });
@@ -836,7 +858,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
         PROGRAM Main END_PROGRAM
       `);
 
-      expect(result.headerCode).toContain("class IDERIVED : public IBASE {");
+      expect(result.headerCode).toContain("class IDERIVED : virtual public strucpp::__IInterface, virtual public IBASE {");
     });
 
     it("should generate correct pure virtual methods for derived interface", () => {
@@ -958,7 +980,8 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       `);
 
       // Interface
-      expect(result.headerCode).toContain("class ICONTROLLABLE {");
+      expect(result.headerCode).toContain("class ICONTROLLABLE : virtual public strucpp::__IInterface {");
+      expect(result.headerCode).toContain("static const char* __strucpp_interface_name() { return \"ICONTROLLABLE\"; }");
       expect(result.headerCode).toContain("virtual void START() = 0;");
       expect(result.headerCode).toContain("virtual void STOP() = 0;");
 
@@ -967,7 +990,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
 
       // Derived FB with both extends and implements
       expect(result.headerCode).toContain(
-        "class MOTOR : public DEVICE, public ICONTROLLABLE {",
+        "class MOTOR : public DEVICE, virtual public ICONTROLLABLE {",
       );
 
       // Method implementations
@@ -1317,6 +1340,95 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       `);
       // In C++ output: "it's" (the doubled '' becomes a single ')
       expect(result.cppCode).toContain('"it\'s"');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Interface runtime support
+  // ─────────────────────────────────────────────────────────────────────
+  describe("Interface pointer representation", () => {
+    it("should emit interface-typed variables as raw C++ pointers", () => {
+      const result = compileAndCheck(`
+        INTERFACE IBase
+          METHOD GetValue : INT
+          END_METHOD
+        END_INTERFACE
+
+        PROGRAM Main
+          VAR
+            itf : IBase;
+          END_VAR
+        END_PROGRAM
+      `);
+
+      expect(result.headerCode).toContain("IBASE* ITF;");
+    });
+
+    it("should generate __QUERYINTERFACE as a runtime helper call", () => {
+      const result = compileAndCheck(`
+        INTERFACE IBase
+          METHOD GetValue : INT
+          END_METHOD
+        END_INTERFACE
+
+        FUNCTION_BLOCK Comp IMPLEMENTS IBase
+          METHOD PUBLIC GetValue : INT
+            GetValue := 1;
+          END_METHOD
+        END_FUNCTION_BLOCK
+
+        PROGRAM Main
+          VAR
+            c : Comp;
+            itf : IBase;
+            ok : BOOL;
+          END_VAR
+          ok := __QUERYINTERFACE(c, itf);
+        END_PROGRAM
+      `);
+
+      expect(result.cppCode).toContain(
+        "strucpp::query_interface<IBASE>(&C, ITF)",
+      );
+    });
+
+    it("should use -> for method calls on interface variables", () => {
+      const result = compileAndCheck(`
+        INTERFACE IBase
+          METHOD GetValue : INT
+          END_METHOD
+        END_INTERFACE
+
+        PROGRAM Main
+          VAR
+            itf : IBase;
+            got : INT;
+          END_VAR
+          got := itf.GetValue();
+        END_PROGRAM
+      `);
+
+      expect(result.cppCode).toContain("__itf->GETVALUE()");
+      expect(result.cppCode).toContain("iec_null_reference_fault");
+    });
+
+    it("should generate pointer return for interface-returning methods", () => {
+      const result = compileAndCheck(`
+        INTERFACE IBase
+        END_INTERFACE
+
+        FUNCTION_BLOCK Comp IMPLEMENTS IBase
+          METHOD PUBLIC AsBase : IBase
+            AsBase := THIS^;
+          END_METHOD
+        END_FUNCTION_BLOCK
+
+        PROGRAM Main END_PROGRAM
+      `);
+
+      expect(result.headerCode).toContain("virtual IBASE* ASBASE();");
+      expect(result.cppCode).toContain("IBASE* COMP::ASBASE()");
+      expect(result.cppCode).toContain("return this;");
     });
   });
 });
