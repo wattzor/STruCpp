@@ -76,6 +76,7 @@ import {
   resolveArrayElementType,
   typeName as typeNameUtil,
   buildEnumMemberMap,
+  isGenericTypeName,
   type EnumMemberEntry,
   ELEMENTARY_TYPES,
 } from "../semantic/type-utils.js";
@@ -516,6 +517,12 @@ export class CodeGenerator {
     typeName: string,
     maxLength?: number | string,
   ): string {
+    // CODESYS generic type groups (ANY, ANY_BIT, ANY_NUM, ...) lower to the
+    // runtime AnyType descriptor.
+    if (isGenericTypeName(typeName.toUpperCase())) {
+      return "strucpp::AnyType";
+    }
+
     // CODESYS __SYSTEM enum types: __SYSTEM.TYPE_CLASS → IEC_TYPE_CLASS
     const systemCpp = this.mapSystemTypeToCpp(typeName);
     if (systemCpp) return systemCpp;
@@ -5276,6 +5283,61 @@ export class CodeGenerator {
   }
 
   /**
+   * Build a CODESYS AnyType descriptor for a function-call argument.
+   * The type-class id is taken from the argument's resolved IEC type.
+   */
+  private buildAnyTypeDescriptor(expr: Expression, valueCode: string): string {
+    const typeClass = this.getTypeClassLiteral(expr);
+    return `strucpp::make_any_type<${typeClass}>(${valueCode})`;
+  }
+
+  /**
+   * Return the C++ __SYSTEM.TYPE_CLASS enum literal for an expression,
+   * or TYPE_NONE when the type cannot be determined.
+   */
+  private getTypeClassLiteral(expr: Expression): string {
+    let resolved = expr.resolvedType;
+    if (!resolved) {
+      const inferred = this.inferExprType(expr);
+      if (inferred) {
+        resolved = {
+          typeKind: "elementary",
+          name: inferred,
+          sizeBits: 0,
+        } as IECType;
+      }
+    }
+    const typeClassNum =
+      resolved !== undefined ? resolveTypeClass(resolved) : undefined;
+    const memberName =
+      typeClassNum !== undefined
+        ? TYPE_CLASS_NAME.get(typeClassNum)
+        : undefined;
+    if (memberName) {
+      return `strucpp::__SYSTEM::TYPE_CLASS::${memberName}`;
+    }
+    return `strucpp::__SYSTEM::TYPE_CLASS::TYPE_NONE`;
+  }
+
+  /**
+   * Wrap positional or named arguments whose formal parameter is an IEC
+   * generic type group (ANY, ANY_BIT, ...) in a runtime AnyType descriptor.
+   * Modifies `args` in place.
+   */
+  private wrapAnyTypeArgs(
+    args: string[],
+    argExprs: FunctionCallExpression["arguments"],
+    paramTypes: string[],
+  ): void {
+    for (let i = 0; i < args.length && i < paramTypes.length; i++) {
+      if (!isGenericTypeName(paramTypes[i]!.toUpperCase())) continue;
+      const argExpr = argExprs[i]?.value;
+      if (!argExpr) continue; // omitted/default argument
+      args[i] = this.buildAnyTypeDescriptor(argExpr, args[i]!);
+    }
+  }
+
+  /**
    * Extract ordered parameter types from a user-defined function declaration.
    * Returns undefined if function not found.
    */
@@ -5762,6 +5824,12 @@ export class CodeGenerator {
     const paramTypes = this.getParamTypes(nameUpper);
     if (paramTypes) {
       this.coerceUserFuncArgs(args, expr.arguments, paramTypes);
+    }
+
+    // Wrap arguments whose formal parameter is a generic ANY group in an
+    // AnyType runtime descriptor.
+    if (paramTypes) {
+      this.wrapAnyTypeArgs(args, expr.arguments, paramTypes);
     }
 
     return `${expr.functionName}(${args.join(", ")})`;
