@@ -44,6 +44,12 @@ import {
   describeType,
   type EnumMemberEntry,
 } from "./type-utils.js";
+import {
+  getSystemEnumType,
+  isSystemNamespaceName,
+  isSystemTypeReference,
+  resolveSystemAccess,
+} from "./system-types.js";
 import { isEnArgument, isEnoArgument, stripEnEno } from "../ast-utils.js";
 
 // =============================================================================
@@ -236,6 +242,11 @@ export class SemanticAnalyzer {
     typeName: string,
     referenceKind?: ReferenceKind,
   ): IECType {
+    if (isSystemTypeReference(typeName)) {
+      const systemEnum = getSystemEnumType(typeName);
+      if (systemEnum) return systemEnum;
+    }
+
     const typeSymbol = this.symbolTables.globalScope.lookup(typeName);
     const baseType: IECType =
       typeSymbol?.kind === "type" && typeSymbol.resolvedType
@@ -2365,6 +2376,10 @@ export class SemanticAnalyzer {
     if (upper.startsWith("__VLA_") || upper.startsWith("__INLINE_ARRAY_")) {
       return true;
     }
+    // CODESYS __SYSTEM qualified enum types
+    if (isSystemTypeReference(name)) {
+      return getSystemEnumType(name) !== undefined;
+    }
     const sym = this.symbolTables.globalScope.lookup(upper);
     if (!sym) return false;
     return (
@@ -2730,6 +2745,19 @@ export class SemanticAnalyzer {
   ): void {
     switch (expr.kind) {
       case "VariableExpression":
+        // CODESYS __SYSTEM namespace: __SYSTEM.TYPE_CLASS.TYPE_BOOL
+        if (this.checkSystemAccess(expr)) {
+          if (expr.accessChain) {
+            for (const step of expr.accessChain) {
+              if (step.kind === "subscript") {
+                for (const idx of step.indices) {
+                  this.checkExpressionForUndeclaredVars(idx, scope, ctx);
+                }
+              }
+            }
+          }
+          break;
+        }
         this.checkNameDeclared(expr.name, scope, ctx, expr.sourceSpan);
         // Reject member access on a type-level symbol (FB / program / type).
         // Resolves the bug where `RED_YELLOW_GREEN.GREENTIME := …` is
@@ -2852,6 +2880,45 @@ export class SemanticAnalyzer {
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,
     );
+  }
+
+  /**
+   * Validate a CODESYS __SYSTEM qualified reference. Returns true when the
+   * expression starts with __SYSTEM and the remainder is a valid enum type
+   * or enum member path. Otherwise reports an error and returns true so
+   * the caller does not fall through to the normal undeclared-variable check.
+   */
+  private checkSystemAccess(expr: VariableExpression): boolean {
+    if (!isSystemNamespaceName(expr.name)) return false;
+
+    const path =
+      expr.accessChain?.length === 2 &&
+      expr.accessChain.every((s) => s.kind === "field")
+        ? expr.accessChain.map((s) => s.name)
+        : expr.fieldAccess.length === 2
+          ? expr.fieldAccess
+          : undefined;
+
+    if (path === undefined) {
+      this.addError(
+        "Invalid __SYSTEM reference — expected __SYSTEM.<EnumType>.<Member>",
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+      return true;
+    }
+
+    const resolved = resolveSystemAccess(path);
+    if (!resolved) {
+      this.addError(
+        `Unknown __SYSTEM reference '__SYSTEM.${path.join(".")}'`,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+    }
+    return true;
   }
 
   /**

@@ -497,6 +497,10 @@ export class CodeGenerator {
     typeName: string,
     maxLength?: number | string,
   ): string {
+    // CODESYS __SYSTEM enum types: __SYSTEM.TYPE_CLASS → IEC_TYPE_CLASS
+    const systemCpp = this.mapSystemTypeToCpp(typeName);
+    if (systemCpp) return systemCpp;
+
     // Handle VLA synthetic names: __VLA_{ndims}D_{elementType}
     // Use IECVar-wrapped types to match concrete Array1D<IEC_T, ...> elements
     const vlaMatch = typeName.match(/^__VLA_(\d+)D_(.+)$/);
@@ -542,6 +546,20 @@ export class CodeGenerator {
     // wrapper isn't simply `IEC_<NAME>` (e.g. __XWORD → IEC_XWORD) resolve
     // correctly; all standard types map to `IEC_<NAME>` as before.
     return IEC_TO_CPP_VAR_TYPE[typeName.toUpperCase()] ?? `IEC_${typeName}`;
+  }
+
+  /**
+   * Map CODESYS __SYSTEM enum type names to their IEC_ENUM wrapper.
+   * Accepts both "__SYSTEM.TYPE_CLASS" and bare "TYPE_CLASS" forms.
+   */
+  private mapSystemTypeToCpp(typeName: string): string | undefined {
+    const upper = typeName.toUpperCase();
+    const suffix = upper.startsWith("__SYSTEM.")
+      ? upper.slice("__SYSTEM.".length)
+      : upper;
+    if (suffix === "TYPE_CLASS") return "IEC_TYPE_CLASS";
+    if (suffix === "MEMORY_AREA") return "IEC_MEMORY_AREA";
+    return undefined;
   }
 
   /**
@@ -1154,6 +1172,7 @@ export class CodeGenerator {
     this.emitHeader('#include "iec_located.hpp"');
     this.emitHeader('#include "iec_std_lib.hpp"');
     this.emitHeader('#include "iec_enum.hpp"');
+    this.emitHeader('#include "iec_system.hpp"');
     this.emitHeader('#include "iec_memory.hpp"');
     this.emitHeader('#include "iec_pointer.hpp"');
     this.emitHeader('#include "iec_string.hpp"');
@@ -4214,6 +4233,20 @@ export class CodeGenerator {
    */
   private generateVariableExpression(expr: VariableExpression): string {
     const nameUpper = expr.name.toUpperCase();
+
+    // CODESYS __SYSTEM qualified enum access: __SYSTEM.TYPE_CLASS.TYPE_BOOL
+    if (nameUpper === "__SYSTEM") {
+      const path =
+        expr.accessChain?.length === 2 &&
+        expr.accessChain.every((s) => s.kind === "field")
+          ? expr.accessChain.map((s) => s.name)
+          : expr.fieldAccess.length === 2
+            ? expr.fieldAccess
+            : undefined;
+      if (path) {
+        return `__SYSTEM::${path[0]}::${path[1]}`;
+      }
+    }
 
     // Composite shared global (struct / array / function-block) accessed in a
     // body: reach its canonical value directly through the GlobalVar pointer
