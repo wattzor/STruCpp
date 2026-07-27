@@ -353,6 +353,56 @@ export const IEC_BASE_TYPES: readonly IECTypeMetadata[] = [
     literalDisplay: "DT#YYYY-MM-DD-HH:MM:SS",
   },
 
+  // ── Long time and date (IEC 61131-3 v3) ──────────────────────────
+  {
+    name: "LTIME",
+    aliases: [],
+    byteSize: 8,
+    bits: 64,
+    signed: true,
+    typeClass: 37,
+    cppType: "LTIME_t",
+    wireFormat: "duration-ns-i64",
+    xml: { elementName: "LTIME", plcopenStandard: true },
+    literalDisplay: "LTIME#1d2h3m",
+  },
+  {
+    name: "LDATE",
+    aliases: [],
+    byteSize: 8,
+    bits: 64,
+    signed: true,
+    typeClass: 29,
+    cppType: "LDATE_t",
+    wireFormat: "date-ns-i64",
+    xml: { elementName: "LDATE", plcopenStandard: true },
+    literalDisplay: "LDATE#YYYY-MM-DD",
+  },
+  {
+    name: "LTOD",
+    aliases: ["LONG_TIME_OF_DAY"],
+    byteSize: 8,
+    bits: 64,
+    signed: true,
+    typeClass: 29,
+    cppType: "LTOD_t",
+    wireFormat: "tod-ns-i64",
+    xml: { elementName: "LTOD", plcopenStandard: true },
+    literalDisplay: "LTOD#HH:MM:SS",
+  },
+  {
+    name: "LDT",
+    aliases: ["LONG_DATE_AND_TIME"],
+    byteSize: 8,
+    bits: 64,
+    signed: true,
+    typeClass: 29,
+    cppType: "LDT_t",
+    wireFormat: "datetime-ns-i64",
+    xml: { elementName: "LDT", plcopenStandard: true },
+    literalDisplay: "LDT#YYYY-MM-DD-HH:MM:SS",
+  },
+
   // ── Character strings ────────────────────────────────────────────
   // byteSize 0 ⇒ variable-width on the wire (the per-declaration cap
   // or the library's STRING_LENGTH constant decides the actual width).

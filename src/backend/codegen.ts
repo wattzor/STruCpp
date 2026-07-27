@@ -4718,6 +4718,18 @@ export class CodeGenerator {
       case "DATE_AND_TIME":
         // DT: int64 nanoseconds since Unix epoch (UTC).
         return `${parseDtLiteralToNs(String(expr.value))}LL`;
+      case "LTIME":
+        // LTIME: int64 nanoseconds.
+        return `${parseTimeLiteral(String(expr.value)).nanoseconds}LL`;
+      case "LDATE":
+        // LDATE: int64 days since Unix epoch (UTC), same representation as DATE.
+        return `${parseDateLiteralToDays(String(expr.value))}LL`;
+      case "LTOD":
+        // LTOD: int64 nanoseconds since midnight, same representation as TOD.
+        return `${parseTodLiteralToNs(String(expr.value))}LL`;
+      case "LDT":
+        // LDT: int64 nanoseconds since Unix epoch (UTC), same representation as DT.
+        return `${parseDtLiteralToNs(String(expr.value))}LL`;
       case "NULL":
         return "IEC_NULL";
       default:
@@ -5425,6 +5437,24 @@ export class CodeGenerator {
             return "BOOL";
           case "STRING":
             return "STRING";
+          case "TIME":
+            return "TIME";
+          case "LTIME":
+            return "LTIME";
+          case "DATE":
+            return "DATE";
+          case "LDATE":
+            return "LDATE";
+          case "TIME_OF_DAY":
+            return "TIME_OF_DAY";
+          case "LTOD":
+            return "LTOD";
+          case "DATE_AND_TIME":
+            return "DATE_AND_TIME";
+          case "LDT":
+            return "LDT";
+          case "WSTRING":
+            return "WSTRING";
           default:
             return undefined;
         }
@@ -7184,18 +7214,24 @@ export class CodeGenerator {
       // to compile.  Lowering rule matches the literal-expression
       // path: DATE → days, TOD → ns since midnight, DT → ns since
       // epoch.  Same rule the runtime helpers consume.
-      if (upperInit.startsWith("D#") || upperInit.startsWith("DATE#")) {
+      if (
+        upperInit.startsWith("D#") ||
+        upperInit.startsWith("DATE#") ||
+        upperInit.startsWith("LDATE#")
+      ) {
         return `${parseDateLiteralToDays(initialValue)}LL`;
       }
       if (
         upperInit.startsWith("TOD#") ||
-        upperInit.startsWith("TIME_OF_DAY#")
+        upperInit.startsWith("TIME_OF_DAY#") ||
+        upperInit.startsWith("LTOD#")
       ) {
         return `${parseTodLiteralToNs(initialValue)}LL`;
       }
       if (
         upperInit.startsWith("DT#") ||
-        upperInit.startsWith("DATE_AND_TIME#")
+        upperInit.startsWith("DATE_AND_TIME#") ||
+        upperInit.startsWith("LDT#")
       ) {
         return `${parseDtLiteralToNs(initialValue)}LL`;
       }
