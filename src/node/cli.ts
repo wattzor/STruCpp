@@ -766,7 +766,10 @@ function runTestMode(options: CLIOptions): void {
           "-o",
           binaryPath,
         ],
-        { stdio: ["pipe", "pipe", "pipe"], env: getCxxEnv() },
+        {
+          stdio: ["pipe", "pipe", "pipe"],
+          env: getCxxEnv(options.gpp),
+        },
       );
     } catch (err: unknown) {
       const execErr = err as {
@@ -790,6 +793,7 @@ function runTestMode(options: CLIOptions): void {
       const output = execFileSync(binaryPath, [], {
         encoding: "utf-8",
         timeout: 30000,
+        env: getCxxEnv(options.gpp),
       });
       process.stdout.write(output);
     } catch (err: unknown) {
@@ -1194,7 +1198,7 @@ async function main(): Promise<void> {
     try {
       execFileSync(options.gpp, gppArgs, {
         stdio: "inherit",
-        env: getCxxEnv(),
+        env: getCxxEnv(options.gpp),
       });
       console.log(`Binary built: ${binaryPath}`);
       console.log(`Run it with: ${binaryPath}`);

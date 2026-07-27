@@ -17,17 +17,39 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { platform } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { extractIncludePaths } from "../cxx-flags.js";
 
 export { extractIncludePaths, splitCxxFlags } from "../cxx-flags.js";
 
 /**
- * On macOS, newer Xcode CLT versions move libc++ headers to the SDK.
- * Returns an env object with CPLUS_INCLUDE_PATH set so g++ can find them.
+ * Returns environment overrides needed to compile or run generated code.
+ *
+ * - macOS: newer Xcode CLT versions move libc++ headers to the SDK, so set
+ *   CPLUS_INCLUDE_PATH.
+ * - Windows: if the compiler path is a fully-qualified executable (or lives in
+ *   a subdirectory), prepend its directory to PATH so g++ can resolve its own
+ *   toolchain DLLs and any explicitly selected compiler wins over the shell
+ *   search path.
  */
-export function getCxxEnv(): NodeJS.ProcessEnv | undefined {
+export function getCxxEnv(
+  compilerPath?: string,
+): NodeJS.ProcessEnv | undefined {
+  if (
+    platform() === "win32" &&
+    compilerPath &&
+    (isAbsolute(compilerPath) ||
+      compilerPath.includes("\\") ||
+      compilerPath.includes("/"))
+  ) {
+    const compilerDir = dirname(resolve(compilerPath));
+    return {
+      ...process.env,
+      PATH: `${compilerDir}${delimiter}${process.env.PATH ?? ""}`,
+    };
+  }
+
   if (platform() !== "darwin") return undefined;
   try {
     const sdkPath = execFileSync("xcrun", ["--show-sdk-path"], {
