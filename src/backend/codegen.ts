@@ -5815,13 +5815,14 @@ export class CodeGenerator {
       return `${conversion.cppName}(${args.join(", ")})`;
     }
 
-    // 2. SIZEOF(typeName) - CODESYS allows SIZEOF(INT), SIZEOF(MyStruct), etc.
-    // When the argument is a bare identifier that is not a variable in scope,
-    // treat it as a type and emit a compile-time iec_sizeof constant.
+    // 2. SIZEOF(typeName) / XSIZEOF(typeName) - CODESYS allows SIZEOF(INT),
+    // SIZEOF(MyStruct), XSIZEOF(INT), XSIZEOF(MyStruct), etc. When the
+    // argument is a bare identifier that is not a variable in scope, treat it
+    // as a type and emit a compile-time iec_sizeof constant.
     const firstArg =
       expr.arguments.length === 1 ? expr.arguments[0]?.value : undefined;
     if (
-      nameUpper === "SIZEOF" &&
+      (nameUpper === "SIZEOF" || nameUpper === "XSIZEOF") &&
       firstArg &&
       firstArg.kind === "VariableExpression"
     ) {
@@ -5843,7 +5844,9 @@ export class CodeGenerator {
             argNameUpper === "WSTRING";
           if (isType) {
             const cppType = this.mapVarTypeToCpp(arg.name);
-            return `IEC_UDINT(iec_sizeof<${cppType}>::value)`;
+            return nameUpper === "SIZEOF"
+              ? `IEC_UDINT(iec_sizeof<${cppType}>::value)`
+              : `IEC_XWORD(iec_sizeof<${cppType}>::value)`;
           }
         }
       }

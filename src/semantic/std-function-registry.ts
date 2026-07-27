@@ -944,6 +944,20 @@ export class StdFunctionRegistry {
       category: "system",
     });
 
+    // XSIZEOF(variable) -> __XWORD (pointer-width unsigned; CODESYS extension).
+    // The result is ULINT on 64-bit targets and UDINT on 32-bit targets.
+    this.register({
+      name: "XSIZEOF",
+      cppName: "IEC_XSIZEOF",
+      returnConstraint: "specific",
+      returnMatchesFirstParam: false,
+      specificReturnType: "__XWORD",
+      params: [{ name: "IN", constraint: "ANY", isByRef: false }],
+      isVariadic: false,
+      isConversion: false,
+      category: "system",
+    });
+
     // __ISVALIDREF(ref) -> BOOL (CODESYS reference validity check)
     this.register({
       name: "__ISVALIDREF",
