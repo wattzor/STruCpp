@@ -499,33 +499,32 @@ export const VAR_INST = createToken({
 // Literals
 // =============================================================================
 
-// Time literal: T#1s, T#100ms, TIME#1h2m3s
+// Time literal: T#1s, T#100ms, TIME#1h2m3s, LTIME#1s
 // Note: Each numeric component must have a unit suffix (ms, us, ns, d, h, m, s)
 // Longer suffixes (ms, us, ns) must come before shorter ones (m, s) in the alternation
 export const TimeLiteral = createToken({
   name: "TimeLiteral",
-  pattern: /(?:T|TIME)#(?:[0-9_]+(?:\.[0-9_]+)?(?:ms|us|ns|d|h|m|s))+/i,
+  pattern: /(?:T|TIME|LTIME)#(?:[0-9_]+(?:\.[0-9_]+)?(?:ms|us|ns|d|h|m|s))+/i,
 });
 
-// Date literal: D#2024-01-15, D#1970-9-1 (IEC allows 1- or 2-digit month/day)
+// Date literal: D#2024-01-15, D#1970-9-1, LDATE#2024-01-15 (IEC allows 1- or 2-digit month/day)
 export const DateLiteral = createToken({
   name: "DateLiteral",
-  pattern: /(?:D|DATE)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}/i,
+  pattern: /(?:D|DATE|LDATE)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}/i,
 });
 
-// Time of day literal: TOD#12:30:00, TOD#1:2:3 (1- or 2-digit fields; seconds optional)
+// Time of day literal: TOD#12:30:00, LTOD#12:30:00 (1- or 2-digit fields; seconds optional)
 export const TimeOfDayLiteral = createToken({
   name: "TimeOfDayLiteral",
   pattern:
-    /(?:TOD|TIME_OF_DAY)#[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
+    /(?:TOD|TIME_OF_DAY|LTOD)#[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
 });
 
-// Date and time literal: DT#2024-01-15-12:30:00, DT#1970-1-1-00:00:00
-// (1- or 2-digit month/day/time fields; seconds optional)
+// Date and time literal: DT#..., LDT#... (1- or 2-digit month/day/time fields; seconds optional)
 export const DateTimeLiteral = createToken({
   name: "DateTimeLiteral",
   pattern:
-    /(?:DT|DATE_AND_TIME)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
+    /(?:DT|DATE_AND_TIME|LDT)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
 });
 
 // Typed literal: BYTE#255, DWORD#16#FF, INT#0, BOOL#1, REAL#1.5E10, etc.

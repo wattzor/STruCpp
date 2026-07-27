@@ -697,9 +697,13 @@ export type LiteralType =
   | "STRING"
   | "WSTRING"
   | "TIME"
+  | "LTIME"
   | "DATE"
+  | "LDATE"
   | "TIME_OF_DAY"
+  | "LTOD"
   | "DATE_AND_TIME"
+  | "LDT"
   | "NULL";
 
 /**

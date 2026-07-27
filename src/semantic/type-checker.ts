@@ -526,6 +526,18 @@ export class TypeChecker {
       case "DATE_AND_TIME":
         type = ELEMENTARY_TYPES["DATE_AND_TIME"];
         break;
+      case "LTIME":
+        type = ELEMENTARY_TYPES["LTIME"];
+        break;
+      case "LDATE":
+        type = ELEMENTARY_TYPES["LDATE"];
+        break;
+      case "LTOD":
+        type = ELEMENTARY_TYPES["LTOD"];
+        break;
+      case "LDT":
+        type = ELEMENTARY_TYPES["LDT"];
+        break;
       case "NULL":
         return undefined;
       default:
