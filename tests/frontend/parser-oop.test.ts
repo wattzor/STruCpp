@@ -1329,5 +1329,40 @@ describe('OOP Parser', () => {
       expect(result.errors).toHaveLength(0);
       expect(result.cst).toBeDefined();
     });
+
+    it('should parse access modifiers before FUNCTION_BLOCK name', () => {
+      const source = `
+        FUNCTION_BLOCK PUBLIC Base
+          VAR
+            v : INT;
+          END_VAR
+          v := 1;
+        END_FUNCTION_BLOCK
+
+        FUNCTION_BLOCK FINAL FinalBlock
+          VAR
+            v : INT;
+          END_VAR
+          v := 2;
+        END_FUNCTION_BLOCK
+      `;
+      const result = parseSource(source);
+      expect(result.errors).toHaveLength(0);
+      expect(result.cst).toBeDefined();
+    });
+
+    it('should parse access modifiers before PROGRAM name', () => {
+      const source = `
+        PROGRAM PUBLIC Main
+          VAR
+            v : INT;
+          END_VAR
+          v := 1;
+        END_PROGRAM
+      `;
+      const result = parseSource(source);
+      expect(result.errors).toHaveLength(0);
+      expect(result.cst).toBeDefined();
+    });
   });
 });
