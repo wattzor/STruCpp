@@ -122,6 +122,36 @@ describe("Codegen - Function Blocks", () => {
       expect(result.cppCode).toContain("SUM = ADD.RESULT;");
     });
 
+    it("should generate invocation of a global FB instance", () => {
+      const result = compileAndCheck(`
+        FUNCTION_BLOCK Adder
+          VAR_INPUT a, b : INT; END_VAR
+          VAR_OUTPUT result : INT; END_VAR
+          result := a + b;
+        END_FUNCTION_BLOCK
+
+        VAR_GLOBAL
+          myAdd : Adder;
+        END_VAR
+
+        PROGRAM Main
+          VAR
+            sum : INT;
+          END_VAR
+          myAdd(a := 5, b := 3);
+          sum := myAdd.result;
+        END_PROGRAM
+      `);
+
+      // Global FB invocation should assign inputs then call operator()
+      expect(result.cppCode).toContain("MYADD.A = 5;");
+      expect(result.cppCode).toContain("MYADD.B = 3;");
+      expect(result.cppCode).toContain("MYADD();");
+
+      // Member access should be direct property access
+      expect(result.cppCode).toContain("SUM = MYADD.RESULT;");
+    });
+
     it("should generate FB output capture with => syntax", () => {
       const result = compileAndCheck(`
         FUNCTION_BLOCK MyFB
