@@ -2446,8 +2446,13 @@ export class CodeGenerator {
         .map((e) => e.name.toUpperCase()),
     );
 
-    // Constructor with initializer list for variables with defaults
+    // Constructor. VAR_EXTERNAL pointers and pointer-style VAR_IN_OUT members
+    // are bound in the initializer list (they must be valid before FB_Init
+    // runs). User-supplied initial values are applied in the constructor body
+    // *before* FB_Init is called, matching CODESYS/Beckhoff first-download
+    // semantics (implicit variable initialization, then explicit FB_Init).
     const fbInits: string[] = [];
+    const userInitStatements: string[] = [];
     // Bind each VAR_EXTERNAL pointer to the file-scope canonical global. The
     // namespace qualifier disambiguates the global from the same-named pointer
     // member being initialized. File-scope visibility means this works no
@@ -2480,7 +2485,7 @@ export class CodeGenerator {
               cppType,
               decl.type.name,
             );
-            fbInits.push(`${memberName}(${initExpr})`);
+            userInitStatements.push(`    this->${memberName} = ${initExpr};`);
           }
         } else if (isPointerInout) {
           for (const name of decl.names) {
@@ -2508,6 +2513,9 @@ export class CodeGenerator {
       this.emit(`${fb.name}::${fb.name}() {`);
     }
     this.emit("    // Initialize variables");
+    for (const stmt of userInitStatements) {
+      this.emit(stmt);
+    }
     if (hasFBInit) {
       // First-download invocation: retain variables are initialized, not in copy code.
       this.emit("    this->FB_INIT(true, false);");

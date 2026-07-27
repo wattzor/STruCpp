@@ -326,4 +326,51 @@ int main() {
     });
     expect(stdout).toBe("10,10\n10");
   });
+
+  it("applies user initial values before FB_Init", () => {
+    const result = compile(`
+      FUNCTION_BLOCK FB
+      VAR
+        x : INT := 5;
+      END_VAR
+
+      METHOD FB_Init : BOOL
+      VAR_INPUT
+        bInitRetains : BOOL;
+        bInCopyCode : BOOL;
+      END_VAR
+        x := 100;
+        FB_Init := TRUE;
+      END_METHOD
+
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        fb : FB;
+        y : INT;
+      END_VAR
+        y := fb.x;
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "fb_init_user_init_after",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<int>(prog.Y.get()) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("100");
+  });
 });
