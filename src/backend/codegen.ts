@@ -4084,30 +4084,52 @@ export class CodeGenerator {
 
     // Resolve the argument's type from the type-checker annotation if available.
     let targetType: IECType | undefined = arg.resolvedType;
-    if (!targetType) {
-      // Fallback: treat the base variable name as an elementary type.
-      targetType = this.resolveTypeByName(arg.name);
+    if (!targetType && declaration) {
+      // The argument is a variable; resolve its declared type by name.
+      // For inline ARRAY [...] OF T declarations we fall through to the
+      // dedicated array handling below, which uses the element type name.
+      targetType = this.resolveTypeByName(declaration.type.name);
     }
 
     let typeClassName = "TYPE_NONE";
     let typeName = "TYPE_NONE";
-    let bitSize = 0;
-    let elemBitSize = 0;
+    let bitSizeExpr = "0u";
+    let elemBitSizeExpr = "0u";
     let numElements = 0;
     let baseTypeClassName = "TYPE_BOOL";
+
+    const compositeBitSize = (cppType: string): string =>
+      `static_cast<uint32_t>(strucpp::iec_sizeof<${cppType}>::value * 8u)`;
 
     if (targetType?.typeKind === "array") {
       const arr = targetType as ArrayType;
       typeClassName = "TYPE_ARRAY";
       typeName = "ARRAY";
-      bitSize = this.getTypeBitsForIECType(arr);
-      elemBitSize = this.getTypeBitsForIECType(arr.elementType);
       numElements = 1;
       for (const dim of arr.dimensions) {
         numElements *= Math.max(1, dim.end - dim.start + 1);
       }
       const baseTypeClass = resolveTypeClass(arr.elementType);
       baseTypeClassName = TYPE_CLASS_NAME.get(baseTypeClass) ?? "TYPE_NONE";
+      const elemKind = arr.elementType.typeKind;
+      const elemName = declaration?.type.elementTypeName;
+      const isCompositeElement =
+        elemKind === "struct" ||
+        elemKind === "functionBlock" ||
+        elemKind === "program" ||
+        (elemKind === "elementary" &&
+          elemName !== undefined &&
+          this.isCompositeTypeName(elemName));
+      if (elemName && isCompositeElement) {
+        // Composite array elements: SIZEOF must include padding and match the
+        // actual Array1D<...> storage layout.
+        bitSizeExpr = compositeBitSize(this.mapTypeRefToCpp(declaration.type));
+        elemBitSizeExpr = compositeBitSize(this.mapVarTypeToCpp(elemName));
+      } else {
+        const elemBits = this.getTypeBitsForIECType(arr.elementType);
+        bitSizeExpr = `${numElements * elemBits}u`;
+        elemBitSizeExpr = `${elemBits}u`;
+      }
     } else if (
       declaration?.type.arrayDimensions &&
       declaration.type.arrayDimensions.length > 0 &&
@@ -4118,23 +4140,52 @@ export class CodeGenerator {
       const elementType = this.resolveTypeByName(
         declaration.type.elementTypeName,
       );
-      elemBitSize = elementType ? this.getTypeBitsForIECType(elementType) : 0;
       numElements = 1;
       for (const dim of declaration.type.arrayDimensions) {
         numElements *= Math.max(1, dim.end - dim.start + 1);
       }
-      bitSize = numElements * elemBitSize;
       typeClassName = "TYPE_ARRAY";
       typeName = "ARRAY";
       const baseTypeClass = elementType
         ? resolveTypeClass(elementType)
         : TYPE_CLASS.TYPE_NONE;
       baseTypeClassName = TYPE_CLASS_NAME.get(baseTypeClass) ?? "TYPE_NONE";
+      const elemKind = elementType?.typeKind;
+      const elemName = declaration.type.elementTypeName;
+      const isCompositeElement =
+        elemKind === "struct" ||
+        elemKind === "functionBlock" ||
+        elemKind === "program" ||
+        (elemKind === "elementary" && this.isCompositeTypeName(elemName));
+      if (elementType && isCompositeElement) {
+        bitSizeExpr = compositeBitSize(this.mapTypeRefToCpp(declaration.type));
+        elemBitSizeExpr = compositeBitSize(this.mapVarTypeToCpp(elemName));
+      } else {
+        const elemBits = elementType
+          ? this.getTypeBitsForIECType(elementType)
+          : 0;
+        bitSizeExpr = `${numElements * elemBits}u`;
+        elemBitSizeExpr = `${elemBits}u`;
+      }
     } else if (targetType) {
       const typeClass = resolveTypeClass(targetType);
       typeClassName = TYPE_CLASS_NAME.get(typeClass) ?? "TYPE_NONE";
       typeName = typeNameUtil(targetType);
-      bitSize = this.getTypeBitsForIECType(targetType);
+      const isComposite =
+        targetType.typeKind === "struct" ||
+        targetType.typeKind === "functionBlock" ||
+        targetType.typeKind === "program" ||
+        (targetType.typeKind === "elementary" &&
+          declaration !== undefined &&
+          this.isCompositeTypeName(declaration.type.name));
+      if (isComposite) {
+        const cppType = declaration
+          ? this.mapTypeRefToCpp(declaration.type)
+          : typeNameUtil(targetType);
+        bitSizeExpr = compositeBitSize(cppType);
+      } else {
+        bitSizeExpr = `${this.getTypeBitsForIECType(targetType)}u`;
+      }
     }
 
     const comment = declaration?.comment ?? "";
@@ -4150,13 +4201,13 @@ export class CodeGenerator {
       `/*BYTEOFFSET=*/ IEC_DINT(${byteOffset})`,
       `/*AREA=*/ IEC_INT(${area})`,
       `/*BITNR=*/ IEC_INT(${bitNr})`,
-      `/*BITSIZE=*/ IEC_UDINT(${bitSize}u)`,
+      `/*BITSIZE=*/ IEC_UDINT(${bitSizeExpr})`,
       `/*BITADDRESS=*/ IEC_UDINT(${bitAddress}u)`,
       `/*TYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${typeClassName})`,
       `/*TYPENAME=*/ strucpp::IECString<79>("${this.escapeCString(typeName)}")`,
       `/*NUMELEMENTS=*/ IEC_UDINT(${numElements}u)`,
       `/*BASETYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${baseTypeClassName})`,
-      `/*ELEMBITSIZE=*/ IEC_UDINT(${elemBitSize}u)`,
+      `/*ELEMBITSIZE=*/ IEC_UDINT(${elemBitSizeExpr})`,
       `/*MEMORYAREA=*/ IEC_MEMORY_AREA(strucpp::__SYSTEM::MEMORY_AREA::${memoryAreaName})`,
       `/*SYMBOL=*/ strucpp::IECString<39>("${this.escapeCString(symbolName)}")`,
       `/*COMMENT=*/ strucpp::IECString<79>("${this.escapeCString(comment)}")`,
@@ -4311,6 +4362,30 @@ export class CodeGenerator {
     const systemType = getSystemType(name);
     if (systemType) return systemType;
     return this.symbolTables.lookupType(upper)?.resolvedType ?? undefined;
+  }
+
+  /**
+   * True if `typeName` denotes a user-defined struct, function block or
+   * program — i.e. a composite whose BitSize should be derived from the
+   * generated C++ class size, not from an elementary bit width table.
+   */
+  private isCompositeTypeName(name: string): boolean {
+    const upper = name.toUpperCase();
+    if (ELEMENTARY_TYPES[upper]) return false;
+    if (getSystemType(name)) return false;
+    if (this.knownFBTypes.has(upper) || this.knownProgramTypes.has(upper)) {
+      return true;
+    }
+    const typeSymbol = this.symbolTables.lookupType(upper);
+    if (!typeSymbol) return false;
+    const defKind = (
+      typeSymbol.declaration as { definition?: { kind: string } } | undefined
+    )?.definition?.kind;
+    return (
+      defKind === "StructDefinition" ||
+      defKind === "FunctionBlockDefinition" ||
+      defKind === "ProgramDefinition"
+    );
   }
 
   /**

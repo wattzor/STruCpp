@@ -269,4 +269,88 @@ END_TEST
     expect(exitCode).toBe(0);
     expect(stdout).not.toContain("[FAIL]");
   });
+
+  it("reports the correct BitSize for a struct variable", () => {
+    const sourceST = `
+TYPE VarInfoStruct :
+STRUCT
+  b : BYTE;
+  d : DWORD;
+END_STRUCT
+END_TYPE
+
+PROGRAM VarInfoStructTest
+  VAR
+    s : VarInfoStruct;
+    info : __SYSTEM.VAR_INFO;
+  END_VAR
+  info := __VARINFO(s);
+END_PROGRAM
+`;
+
+    const testST = `
+TEST '__VARINFO struct'
+  VAR uut : VarInfoStructTest; END_VAR
+  uut();
+  ASSERT_EQ(uut.info.TypeClass, __SYSTEM.TYPE_CLASS.TYPE_USERDEF);
+  ASSERT_EQ(uut.info.TypeName, 'VARINFOSTRUCT');
+  ASSERT_EQ(uut.info.BitSize, 64);
+  ASSERT_EQ(uut.info.NumElements, 0);
+  ASSERT_EQ(uut.info.ElemBitSize, 0);
+END_TEST
+`;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "test_var_info_struct.st",
+      tempDirPrefix: "strucpp-varinfo-struct-",
+      isTestBuild: true,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("[FAIL]");
+  });
+
+  it("reports the correct BitSize for an array of struct", () => {
+    const sourceST = `
+TYPE VarInfoArrStruct :
+STRUCT
+  b : BYTE;
+  d : DWORD;
+END_STRUCT
+END_TYPE
+
+PROGRAM VarInfoArrStructTest
+  VAR
+    arr : ARRAY[0..1] OF VarInfoArrStruct;
+    info : __SYSTEM.VAR_INFO;
+  END_VAR
+  info := __VARINFO(arr);
+END_PROGRAM
+`;
+
+    const testST = `
+TEST '__VARINFO array of struct'
+  VAR uut : VarInfoArrStructTest; END_VAR
+  uut();
+  ASSERT_EQ(uut.info.TypeClass, __SYSTEM.TYPE_CLASS.TYPE_ARRAY);
+  ASSERT_EQ(uut.info.TypeName, 'ARRAY');
+  ASSERT_EQ(uut.info.BitSize, 128);
+  ASSERT_EQ(uut.info.NumElements, 2);
+  ASSERT_EQ(uut.info.ElemBitSize, 64);
+END_TEST
+`;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "test_var_info_arr_struct.st",
+      tempDirPrefix: "strucpp-varinfo-arr-struct-",
+      isTestBuild: true,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("[FAIL]");
+  });
 });
