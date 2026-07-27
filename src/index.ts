@@ -518,6 +518,7 @@ function runPipeline(
         column: err.column ?? 0,
         severity: "error",
         ...(err.file ? { file: err.file } : {}),
+        ...(err.code ? { code: err.code } : {}),
       });
     }
     for (const warn of projectModelResult.warnings) {
@@ -527,6 +528,7 @@ function runPipeline(
         column: warn.column ?? 0,
         severity: "warning",
         ...(warn.file ? { file: warn.file } : {}),
+        ...(warn.code ? { code: warn.code } : {}),
       });
     }
   } catch (e) {
@@ -637,6 +639,7 @@ function runPipeline(
         column: err.column ?? 0,
         severity: "error",
         ...(err.file ? { file: err.file } : {}),
+        ...(err.code ? { code: err.code } : {}),
       });
     }
     for (const warn of semanticResult.warnings) {
@@ -646,6 +649,7 @@ function runPipeline(
         column: warn.column ?? 0,
         severity: "warning",
         ...(warn.file ? { file: warn.file } : {}),
+        ...(warn.code ? { code: warn.code } : {}),
       });
     }
   } catch (e) {
@@ -791,6 +795,9 @@ export function compile(
     if (err.file !== undefined) {
       entry.file = err.file;
     }
+    if (err.code !== undefined) {
+      entry.code = err.code;
+    }
     pipeline.errors.push(entry);
   }
 
@@ -817,6 +824,9 @@ export function compile(
     };
     if (warn.file !== undefined) {
       entry.file = warn.file;
+    }
+    if (warn.code !== undefined) {
+      entry.code = warn.code;
     }
     pipeline.warnings.push(entry);
   }

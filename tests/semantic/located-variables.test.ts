@@ -211,6 +211,9 @@ describe('Phase 2.3 - Located Variables', () => {
           e.message.includes('Located variables can only be declared'),
         ),
       ).toBe(true);
+      expect(
+        result.errors.some((e) => e.code === 'LOCATED_VAR_IN_FB'),
+      ).toBe(true);
     });
 
     it('should allow located variable in program', () => {

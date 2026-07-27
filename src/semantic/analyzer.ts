@@ -875,6 +875,7 @@ export class SemanticAnalyzer {
           decl.sourceSpan.startLine,
           decl.sourceSpan.startCol,
           decl.sourceSpan.file,
+          "LOCATED_VAR_IN_FB",
         );
         continue;
       }
@@ -1005,6 +1006,7 @@ export class SemanticAnalyzer {
     line: number,
     column: number,
     file?: string,
+    code?: string,
   ): void {
     this.errors.push({
       message,
@@ -1012,6 +1014,7 @@ export class SemanticAnalyzer {
       column,
       severity: "error",
       ...(file ? { file } : {}),
+      ...(code ? { code } : {}),
     });
   }
 

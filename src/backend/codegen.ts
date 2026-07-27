@@ -281,6 +281,7 @@ export interface CodeGenResult {
     line?: number;
     column?: number;
     file?: string;
+    code?: string;
   }>;
 
   /** Errors emitted during code generation */
@@ -289,6 +290,7 @@ export interface CodeGenResult {
     line?: number;
     column?: number;
     file?: string;
+    code?: string;
   }>;
 }
 
@@ -361,6 +363,7 @@ export class CodeGenerator {
     line?: number;
     column?: number;
     file?: string;
+    code?: string;
   }> = [];
 
   /** Errors collected during code generation */
@@ -369,6 +372,7 @@ export class CodeGenerator {
     line?: number;
     column?: number;
     file?: string;
+    code?: string;
   }> = [];
 
   /** Counter for generating unique temporary variable names */
