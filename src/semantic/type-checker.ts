@@ -49,6 +49,7 @@ import {
   getHarmonizableRange,
   isBareLiteral,
   resolveHarmonizedCommonType,
+  stdFuncReturnsCommonType,
 } from "./type-utils.js";
 import {
   getSystemType,
@@ -795,7 +796,10 @@ export class TypeChecker {
       // the EN-input check (and bit/num operand rules) require.
       if (returnType && isGenericGroupType(returnType) && this.stdRegistry) {
         const desc = this.stdRegistry.lookup(nameUpper);
-        if (desc?.returnMatchesFirstParam) {
+        if (
+          desc &&
+          (desc.returnMatchesFirstParam || stdFuncReturnsCommonType(desc))
+        ) {
           const userArgs = stripEnEno(expr.arguments);
           const commonType = this.resolveCommonStdReturnType(desc, userArgs);
           if (commonType) returnType = commonType;
@@ -834,8 +838,10 @@ export class TypeChecker {
         }
         // Return matches the common type across value arguments.  For
         // harmonized template functions (ADD, AND, MUX, ...) this is the
-        // widened common type, not just the first argument.
-        if (desc.returnMatchesFirstParam) {
+        // widened common type, not just the first argument.  The same applies
+        // to selection functions (MUX, SEL, LIMIT) whose runtime overloads
+        // return a common wide type.
+        if (desc.returnMatchesFirstParam || stdFuncReturnsCommonType(desc)) {
           const userArgs = stripEnEno(expr.arguments);
           const commonType = this.resolveCommonStdReturnType(desc, userArgs);
           if (commonType) {
@@ -869,14 +875,23 @@ export class TypeChecker {
    * Resolve the concrete return type for a generic standard function whose
    * result is defined by its value arguments.  For harmonized template
    * functions (ADD, AND, MUX, ...) this is the widened common type, not just
-   * the first argument.
+   * the first argument.  For selection functions (MUX, SEL, LIMIT) the common
+   * type is also used because the runtime's mixed-type overloads return a wide
+   * enough result.  Falls back to the first *value* argument only for
+   * returnMatchesFirstParam functions where no common type exists.
    */
   private resolveCommonStdReturnType(
     desc: StdFunctionDescriptor,
     userArgs: Argument[],
   ): IECType | undefined {
     if (userArgs.length === 0) return undefined;
-    if (shouldHarmonizeStdFuncArgs(desc, userArgs.length)) {
+
+    const harmonizable = shouldHarmonizeStdFuncArgs(desc, userArgs.length);
+    const hasCommonReturn = harmonizable || stdFuncReturnsCommonType(desc);
+
+    // For functions whose return is the common type of multiple value arguments
+    // (ADD, AND, MUX, SEL, LIMIT, ...) compute the widened common IEC type.
+    if (hasCommonReturn && userArgs.length > 0) {
       const range = getHarmonizableRange(desc, userArgs.length);
       if (range) {
         const argTypeNames: (string | undefined)[] = userArgs.map((a) =>
@@ -892,12 +907,24 @@ export class TypeChecker {
           range.end,
         );
         if (commonName) {
-          return ELEMENTARY_TYPES[commonName];
+          const ret = ELEMENTARY_TYPES[commonName];
+          if (ret) return ret;
         }
       }
     }
-    const firstArgType = userArgs[0]!.value.resolvedType;
-    return firstArgType;
+
+    // For functions whose result matches the first value argument (NOT, MIN,
+    // MAX, etc.) fall back to that argument's resolved type when no common IEC
+    // type is chosen.  This also covers unary NOT, where harmonisation does not
+    // apply.
+    if (desc.returnMatchesFirstParam && userArgs.length > 0) {
+      const firstValueArg = userArgs[0]!;
+      if (firstValueArg.value.resolvedType) {
+        return firstValueArg.value.resolvedType;
+      }
+    }
+
+    return undefined;
   }
 
   /**

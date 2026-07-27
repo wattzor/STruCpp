@@ -1293,4 +1293,53 @@ int main() {
     });
     expect(stdout).toBe(expected);
   });
+
+  // C13: MUX must infer the common (widest) value-argument type as its result.
+  // Assigning a mixed WORD/DWORD MUX to a WORD must produce a narrowing warning,
+  // because the selector can choose the DWORD input.
+  it("C13: MUX with mixed ANY_BIT operands infers the widest common type", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        a : WORD;
+        b : WORD;
+        c : DWORD;
+      END_VAR
+        a := MUX(0, WORD#16#00FF, DWORD#16#FFFF0000);
+        b := MUX(1, WORD#16#00FF, DWORD#16#FFFF0000);
+        c := MUX(1, WORD#16#00FF, DWORD#16#FFFF0000);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+    // The common result type is DWORD, so assigning to a WORD is narrowing.
+    expect(
+      result.warnings.some((w) =>
+        w.message.includes("Implicit narrowing conversion"),
+      ),
+    ).toBe(true);
+
+    const mainCode = `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout
+      << static_cast<unsigned long>(prog.A) << '\\n'
+      << static_cast<unsigned long>(prog.B) << '\\n'
+      << static_cast<unsigned long>(prog.C) << std::endl;
+    return 0;
+}
+`;
+    const expected = ["255", "0", "4294901760"].join("\n");
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "mux_mixed_bit_common_type",
+      mainCode,
+    });
+    expect(stdout).toBe(expected);
+  });
 });
