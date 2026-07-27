@@ -82,6 +82,9 @@ import {
   isGenericTypeName,
   type EnumMemberEntry,
   ELEMENTARY_TYPES,
+  computeCommonHarmonizedType,
+  getHarmonizableRange,
+  shouldHarmonizeStdFuncArgs,
 } from "../semantic/type-utils.js";
 
 // =============================================================================
@@ -5348,8 +5351,24 @@ export class CodeGenerator {
         const std = this.stdRegistry.lookup(fnUpper);
         if (std?.specificReturnType)
           return std.specificReturnType.toUpperCase();
-        // For generic functions returning same type as first param, infer from first arg
+        // For generic functions returning a common type across value arguments
+        // (e.g. ADD, AND, MUX), infer the harmonized common type so the type
+        // system matches the C++ that will actually be emitted.
         if (std?.returnMatchesFirstParam && expr.arguments.length > 0) {
+          if (shouldHarmonizeStdFuncArgs(std, expr.arguments.length)) {
+            const range = getHarmonizableRange(std, expr.arguments.length);
+            if (range) {
+              const argTypes = expr.arguments.map((a) =>
+                this.inferExprType(a.value),
+              );
+              const common = computeCommonHarmonizedType(
+                argTypes,
+                range.start,
+                range.end,
+              );
+              if (common) return common;
+            }
+          }
           return this.inferExprType(expr.arguments[0]!.value);
         }
         return undefined;
@@ -5580,153 +5599,6 @@ export class CodeGenerator {
   }
 
   /**
-   * Determine the argument range to harmonize for variadic/mixed standard
-   * functions.  For functions with a leading selector (MUX, SEL) the selector
-   * is skipped so the value arguments can be unified independently.
-   */
-  private getHarmonizableRange(
-    stdFunc: StdFunctionDescriptor,
-    argCount: number,
-  ): { start: number; end: number } | undefined {
-    if (stdFunc.params.length === 0) return undefined;
-    const firstConstraint = stdFunc.params[0]!.constraint;
-    let start = 0;
-    if (firstConstraint === "BOOL" || firstConstraint === "specific") {
-      start = 1;
-    }
-    if (argCount <= start + 1) return undefined;
-    const restConstraint = stdFunc.params[start]!.constraint;
-    for (let i = start; i < stdFunc.params.length; i++) {
-      if (stdFunc.params[i]!.constraint !== restConstraint) return undefined;
-    }
-    return { start, end: argCount };
-  }
-
-  /**
-   * Only a subset of standard functions require a single common C++ template
-   * type across all value arguments.  Others (LIMIT, SEL, comparisons,
-   * two-argument MIN/MAX, EXPT) have mixed-type runtime overloads and must not
-   * be forced into a common type here.
-   */
-  private shouldHarmonizeStdFuncArgs(
-    stdFunc: StdFunctionDescriptor,
-    _argCount: number,
-  ): boolean {
-    const name = stdFunc.cppName.toUpperCase();
-    // MIN/MAX have runtime mixed-type overloads that handle cross-sign
-    // comparisons and selections correctly; forcing a common type here would
-    // reject valid pairs like MAX(-LINT#1, ULINT#1).  MUX does not have a
-    // mixed-type overload for same-typed leading inputs, so it is harmonised.
-    // AND/OR/XOR are variadic bitwise functions that need a single IEC bit
-    // type across all arguments to match the runtime template signatures.
-    return [
-      "ADD",
-      "MUL",
-      "SUB",
-      "DIV",
-      "MOD",
-      "MUX",
-      "AND",
-      "OR",
-      "XOR",
-    ].includes(name);
-  }
-
-  /**
-   * Compute a single IEC type that every argument in the range can be cast to
-   * without losing the sign of any value.  Mixed signed/unsigned integers are
-   * widened to a signed type large enough for both ranges.  If no such type
-   * exists (e.g. LINT + ULINT) the function returns undefined.
-   */
-  private computeCommonHarmonizedType(
-    argTypes: (string | undefined)[],
-    start: number,
-    end: number,
-  ): string | undefined {
-    const types: string[] = [];
-    for (let i = start; i < end; i++) {
-      const t = argTypes[i];
-      if (!t) return undefined;
-      types.push(t);
-    }
-
-    const first = types[0]!;
-    if (types.every((t) => t === first)) return first;
-
-    const cats = types.map((t) => getTypeCategory(t));
-    if (cats.some((c) => !c)) return undefined;
-
-    // REAL/LREAL: promote to LREAL if any operand is LREAL or a 64-bit integer.
-    const hasReal = cats.some((c) => c === "REAL");
-    if (hasReal) {
-      const hasLReal = types.some((t) => t.toUpperCase() === "LREAL");
-      const has64Int = types.some((t) => {
-        const bits = getTypeBits(t) ?? 0;
-        const cat = getTypeCategory(t);
-        return (
-          (cat === "SINT" || cat === "UINT" || cat === "BIT") && bits === 64
-        );
-      });
-      if (hasLReal || has64Int) return "LREAL";
-      return "REAL";
-    }
-
-    // All integer-like (BIT/SINT/UINT)
-    let maxSignedWidth = 0;
-    let maxUnsignedWidth = 0;
-    for (const t of types) {
-      const cat = getTypeCategory(t)!;
-      const bits = getTypeBits(t) ?? 0;
-      if (cat === "SINT") {
-        if (bits > maxSignedWidth) maxSignedWidth = bits;
-      } else if (cat === "UINT" || cat === "BIT") {
-        if (bits > maxUnsignedWidth) maxUnsignedWidth = bits;
-      }
-    }
-    const anySigned = maxSignedWidth > 0;
-    const anyUnsigned = maxUnsignedWidth > 0;
-
-    if (anySigned && anyUnsigned) {
-      const needed = Math.max(maxSignedWidth, maxUnsignedWidth + 1);
-      if (needed <= 8) return "SINT";
-      if (needed <= 16) return "INT";
-      if (needed <= 32) return "DINT";
-      if (needed <= 64) return "LINT";
-      return undefined;
-    }
-
-    if (anySigned) {
-      if (maxSignedWidth <= 8) return "SINT";
-      if (maxSignedWidth <= 16) return "INT";
-      if (maxSignedWidth <= 32) return "DINT";
-      return "LINT";
-    }
-
-    if (anyUnsigned) {
-      // Prefer UINT category names (USINT/UINT/UDINT/ULINT) when one exists at
-      // the widest width; otherwise use the BIT category name.
-      const uintAtWidth = types.find(
-        (t) =>
-          getTypeCategory(t) === "UINT" &&
-          (getTypeBits(t) ?? 0) === maxUnsignedWidth,
-      );
-      if (uintAtWidth) return uintAtWidth;
-      const bitAtWidth = types.find(
-        (t) =>
-          getTypeCategory(t) === "BIT" &&
-          (getTypeBits(t) ?? 0) === maxUnsignedWidth,
-      );
-      if (bitAtWidth) return bitAtWidth;
-      if (maxUnsignedWidth <= 8) return "USINT";
-      if (maxUnsignedWidth <= 16) return "UINT";
-      if (maxUnsignedWidth <= 32) return "UDINT";
-      return "ULINT";
-    }
-
-    return undefined;
-  }
-
-  /**
    * For std-lib template functions (LIMIT, MAX, MIN, MUX, ADD, MUL, etc.)
    * where the value parameters share a generic constraint, cast all value
    * arguments to a single common IEC type so C++ template deduction succeeds
@@ -5739,9 +5611,8 @@ export class CodeGenerator {
     argExprs: FunctionCallExpression["arguments"],
     stdFunc: StdFunctionDescriptor,
   ): void {
-    const range = this.getHarmonizableRange(stdFunc, args.length);
-    if (!range || !this.shouldHarmonizeStdFuncArgs(stdFunc, args.length))
-      return;
+    const range = getHarmonizableRange(stdFunc, args.length);
+    if (!range || !shouldHarmonizeStdFuncArgs(stdFunc, args.length)) return;
 
     const argTypes: (string | undefined)[] = [];
     for (let i = 0; i < argExprs.length && i < args.length; i++) {
@@ -5779,7 +5650,7 @@ export class CodeGenerator {
       commonType = nonBareTypes[0]!;
     } else {
       // Mixed concrete types: pick a single type that can hold every value.
-      commonType = this.computeCommonHarmonizedType(
+      commonType = computeCommonHarmonizedType(
         argTypes,
         range.start,
         range.end,

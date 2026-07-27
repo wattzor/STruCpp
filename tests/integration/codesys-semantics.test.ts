@@ -1199,4 +1199,57 @@ int main() {
       "Cannot unify argument types for ADD",
     );
   });
+
+  // C12: AND/OR/XOR with mixed ANY_BIT operands must infer the common (wider)
+  // type as their result, not the first argument's type.  This avoids silently
+  // truncating the result when a narrower variable is assigned.
+  it("C12: AND/OR/XOR with mixed ANY_BIT operands infer the widest common type", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        a : DWORD;
+        b : WORD;
+        c : DWORD;
+        d : WORD;
+      END_VAR
+        a := AND(WORD#16#FF, DWORD#16#FF00);
+        b := OR(WORD#16#00FF, DWORD#16#FF000000);
+        c := XOR(WORD#16#00FF, DWORD#16#0000FF00);
+        d := AND(DWORD#16#FFFF0000, WORD#16#FFFF);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+    // The common result type is wider than the WORD targets; the compiler
+    // should emit narrowing warnings.
+    expect(
+      result.warnings.some((w) =>
+        w.message.includes("Implicit narrowing conversion"),
+      ),
+    ).toBe(true);
+
+    const mainCode = `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout
+      << static_cast<unsigned long>(prog.A) << '\\n'
+      << static_cast<unsigned long>(prog.B) << '\\n'
+      << static_cast<unsigned long>(prog.C) << '\\n'
+      << static_cast<unsigned long>(prog.D) << std::endl;
+    return 0;
+}
+`;
+    const expected = ["0", "255", "65535", "0"].join("\n");
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "mixed_bit_common_type",
+      mainCode,
+    });
+    expect(stdout).toBe(expected);
+  });
 });
