@@ -4119,7 +4119,8 @@ export class CodeGenerator {
         elemKind === "program" ||
         (elemKind === "elementary" &&
           elemName !== undefined &&
-          this.isCompositeTypeName(elemName));
+          (this.isCompositeTypeName(elemName) ||
+            this.isRuntimeSizedElementaryTypeName(elemName)));
       if (elemName && isCompositeElement) {
         // Composite array elements: SIZEOF must include padding and match the
         // actual Array1D<...> storage layout.
@@ -4156,7 +4157,9 @@ export class CodeGenerator {
         elemKind === "struct" ||
         elemKind === "functionBlock" ||
         elemKind === "program" ||
-        (elemKind === "elementary" && this.isCompositeTypeName(elemName));
+        (elemKind === "elementary" &&
+          (this.isCompositeTypeName(elemName) ||
+            this.isRuntimeSizedElementaryTypeName(elemName)));
       if (elementType && isCompositeElement) {
         bitSizeExpr = compositeBitSize(this.mapTypeRefToCpp(declaration.type));
         elemBitSizeExpr = compositeBitSize(this.mapVarTypeToCpp(elemName));
@@ -4177,7 +4180,8 @@ export class CodeGenerator {
         targetType.typeKind === "program" ||
         (targetType.typeKind === "elementary" &&
           declaration !== undefined &&
-          this.isCompositeTypeName(declaration.type.name));
+          (this.isCompositeTypeName(declaration.type.name) ||
+            this.isRuntimeSizedElementaryTypeName(declaration.type.name)));
       if (isComposite) {
         const cppType = declaration
           ? this.mapTypeRefToCpp(declaration.type)
@@ -4386,6 +4390,16 @@ export class CodeGenerator {
       defKind === "FunctionBlockDefinition" ||
       defKind === "ProgramDefinition"
     );
+  }
+
+  /**
+   * True if `typeName` is an elementary type whose logical byte size depends
+   * on a per-declaration maximum length (STRING / WSTRING). BitSize for these
+   * must be computed from the generated IECStringVar<IECWStringVar<N>> type.
+   */
+  private isRuntimeSizedElementaryTypeName(name: string): boolean {
+    const upper = name.toUpperCase();
+    return upper === "STRING" || upper === "WSTRING";
   }
 
   /**

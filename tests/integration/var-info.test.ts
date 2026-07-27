@@ -353,4 +353,39 @@ END_TEST
     expect(exitCode).toBe(0);
     expect(stdout).not.toContain("[FAIL]");
   });
+
+  it("reports the correct BitSize for a STRING(80) variable", () => {
+    const sourceST = `
+PROGRAM VarInfoStringTest
+  VAR
+    s : STRING(80);
+    info : __SYSTEM.VAR_INFO;
+  END_VAR
+  info := __VARINFO(s);
+END_PROGRAM
+`;
+
+    const testST = `
+TEST '__VARINFO STRING(80)'
+  VAR uut : VarInfoStringTest; END_VAR
+  uut();
+  ASSERT_EQ(uut.info.TypeClass, __SYSTEM.TYPE_CLASS.TYPE_STRING);
+  ASSERT_EQ(uut.info.TypeName, 'STRING');
+  ASSERT_EQ(uut.info.BitSize, 648);
+  ASSERT_EQ(uut.info.NumElements, 0);
+  ASSERT_EQ(uut.info.ElemBitSize, 0);
+END_TEST
+`;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "test_var_info_string.st",
+      tempDirPrefix: "strucpp-varinfo-string-",
+      isTestBuild: true,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("[FAIL]");
+  });
 });
