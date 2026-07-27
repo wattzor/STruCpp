@@ -1657,9 +1657,9 @@ export class CodeGenerator {
     const inheritance = bases.length > 0 ? ` : ${bases.join(", ")}` : "";
     const finalSpec = fb.isFinal ? " final" : "";
 
-    const iecSizeMembers: string[] = [];
+    const iecStructMembers: string[] = [];
     if (fb.extends) {
-      iecSizeMembers.push(`iec_sizeof<${fb.extends}>::value`);
+      iecStructMembers.push(`${fb.extends}`);
     }
 
     this.emitHeaderLineDirective(fb.sourceSpan.startLine);
@@ -1725,7 +1725,7 @@ export class CodeGenerator {
           const memberLine = this.currentHeaderLine;
           this.emitHeader(`    ${tag}${cppType} ${memberName};`);
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
-          iecSizeMembers.push(`iec_sizeof<${tag}${cppType}>::value`);
+          iecStructMembers.push(`${tag}${cppType}`);
         }
       }
     }
@@ -1739,7 +1739,7 @@ export class CodeGenerator {
         this.emitHeader(
           `    GlobalVar<${ext.cppType}>* ${ext.name} = nullptr;`,
         );
-        iecSizeMembers.push(`iec_sizeof<GlobalVar<${ext.cppType}>*>::value`);
+        iecStructMembers.push(`GlobalVar<${ext.cppType}>*`);
       }
     }
 
@@ -1750,7 +1750,7 @@ export class CodeGenerator {
       this.emitHeader("    // Method instance variables (VAR_INST)");
       for (const m of varInstMembers) {
         this.emitHeader(`    ${m.cppType} ${m.mangledName};`);
-        iecSizeMembers.push(`iec_sizeof<${m.cppType}>::value`);
+        iecStructMembers.push(`${m.cppType}`);
       }
     }
 
@@ -1812,12 +1812,12 @@ export class CodeGenerator {
       );
     }
 
-    // Logical IEC byte size (sum of member logical sizes, for SIZEOF)
-    if (iecSizeMembers.length > 0) {
+    // Logical IEC byte size (padded sum of member logical sizes, for SIZEOF)
+    if (iecStructMembers.length > 0) {
       this.emitHeader("");
       this.emitHeader("    // Logical IEC byte size (for SIZEOF)");
       this.emitHeader(
-        `    static constexpr std::size_t iec_byte_size = ${iecSizeMembers.join(" + ")};`,
+        `    static constexpr std::size_t iec_byte_size = iec_struct_size<${iecStructMembers.join(", ")}>::value;`,
       );
     }
 
@@ -1846,7 +1846,7 @@ export class CodeGenerator {
     this.recordHeaderLineMapping(prog.sourceSpan.startLine, classLine);
 
     // Generate member variables and collect located variables
-    const iecSizeMembers: string[] = [];
+    const iecStructMembers: string[] = [];
     for (const block of prog.varBlocks) {
       for (const decl of block.declarations) {
         const cppType = this.mapTypeRefToCpp(decl.type);
@@ -1869,7 +1869,7 @@ export class CodeGenerator {
             this.emitHeader(`    ${cppType} ${memberName};`);
           }
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
-          iecSizeMembers.push(`iec_sizeof<${cppType}>::value`);
+          iecStructMembers.push(`${cppType}`);
         }
       }
     }
@@ -1889,11 +1889,11 @@ export class CodeGenerator {
     this.emitHeader("    // Run program");
     this.emitHeader("    void run() override;");
 
-    if (iecSizeMembers.length > 0) {
+    if (iecStructMembers.length > 0) {
       this.emitHeader("");
       this.emitHeader("    // Logical IEC byte size (for SIZEOF)");
       this.emitHeader(
-        `    static constexpr std::size_t iec_byte_size = ${iecSizeMembers.join(" + ")};`,
+        `    static constexpr std::size_t iec_byte_size = iec_struct_size<${iecStructMembers.join(", ")}>::value;`,
       );
     }
 
@@ -2689,7 +2689,7 @@ export class CodeGenerator {
    */
   private generateProgramHeaderFromModel(prog: ProgramDecl): void {
     const className = `Program_${prog.name}`;
-    const iecSizeMembers: string[] = [];
+    const iecStructMembers: string[] = [];
 
     // Look up AST program for source spans
     const astProg = this.ast?.programs.find(
@@ -2776,7 +2776,7 @@ export class CodeGenerator {
           this.recordHeaderLineMapping(stLine, memberLine);
         }
 
-        iecSizeMembers.push(`iec_sizeof<${constQualifier}${cppType}>::value`);
+        iecStructMembers.push(`${constQualifier}${cppType}`);
 
         // Collect retain variables (cppType — same metadata-aware lookup
         // as the member emission above, so inline arrays don't end up as
@@ -2818,7 +2818,7 @@ export class CodeGenerator {
         this.emitHeader(
           `    GlobalVar<${extTypes[i]!}>* ${ext.name} = nullptr;`,
         );
-        iecSizeMembers.push(`iec_sizeof<GlobalVar<${extTypes[i]!}>*>::value`);
+        iecStructMembers.push(`GlobalVar<${extTypes[i]!}>*`);
       }
     }
 
@@ -2884,11 +2884,11 @@ export class CodeGenerator {
       this.programRetainVars.set(prog.name, retainVars);
     }
 
-    if (iecSizeMembers.length > 0) {
+    if (iecStructMembers.length > 0) {
       this.emitHeader("");
       this.emitHeader("    // Logical IEC byte size (for SIZEOF)");
       this.emitHeader(
-        `    static constexpr std::size_t iec_byte_size = ${iecSizeMembers.join(" + ")};`,
+        `    static constexpr std::size_t iec_byte_size = iec_struct_size<${iecStructMembers.join(", ")}>::value;`,
       );
     }
 
