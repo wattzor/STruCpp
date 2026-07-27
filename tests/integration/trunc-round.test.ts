@@ -137,6 +137,42 @@ END_TEST
     expect(stdout).not.toContain("[FAIL]");
   });
 
+  it("ROUND / TRUNC accept untyped real literals without overload ambiguity", () => {
+    const sourceST = `
+PROGRAM LiteralRoundTrunc
+VAR
+  a : DINT;
+  b : DINT;
+  c : DINT;
+END_VAR
+a := ROUND(1.5);
+b := TRUNC(1.9);
+c := TRUNC_INT(1.9);
+END_PROGRAM
+`;
+
+    const testST = `
+TEST 'ROUND/TRUNC literal overload resolution'
+VAR uut : LiteralRoundTrunc; END_VAR
+uut();
+ASSERT_EQ(uut.a, 2);
+ASSERT_EQ(uut.b, 1);
+ASSERT_EQ(uut.c, 1);
+END_TEST
+`;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "test_literal_round_trunc.st",
+      tempDirPrefix: "strucpp-literal-round-trunc-",
+      isTestBuild: true,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("[FAIL]");
+  });
+
   it("TRUNC_INT returns INT toward zero", () => {
     const sourceST = `
 PROGRAM TruncIntTest

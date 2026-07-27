@@ -461,6 +461,19 @@ using WSTRING_VAR = IECWStringVar<254>;
 // For parameterized WSTRING(N), codegen emits IECWStringVar<N> directly
 using IEC_WSTRING = IECWStringVar<254>;
 
+// Standard-function name overloads so ST calls like LEN(s), LEFT(s, n), etc.
+// dispatch to the wide-string helpers when the argument is a WSTRING.
+
+template<size_t MaxLen>
+inline size_t LEN(const IECWString<MaxLen>& s) noexcept {
+    return s.length();
+}
+
+template<size_t MaxLen>
+inline size_t LEN(const IECWStringVar<MaxLen>& s) noexcept {
+    return s.length();
+}
+
 template<size_t MaxLen>
 inline size_t WLEN(const IECWString<MaxLen>& s) noexcept {
     return s.length();

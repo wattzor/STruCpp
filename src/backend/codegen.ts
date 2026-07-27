@@ -5855,8 +5855,24 @@ export class CodeGenerator {
     // 3. Check for standard function (may have different cppName)
     const stdFunc = this.stdRegistry.lookup(nameUpper);
     if (stdFunc) {
+      const isRealRoundingFunc =
+        nameUpper === "ROUND" ||
+        nameUpper === "TRUNC" ||
+        nameUpper === "TRUNC_INT";
       const args = expr.arguments.map((arg, idx) => {
         let generated = this.generateExpression(arg.value);
+        // Untyped real literals like ROUND(1.5) are C++ doubles and would be
+        // ambiguous between the IEC_REAL and IEC_LREAL overloads. Force the
+        // float IEC_REAL overload so the generated C++ compiles.
+        if (
+          isRealRoundingFunc &&
+          idx === 0 &&
+          arg.value.kind === "LiteralExpression" &&
+          arg.value.literalType === "REAL" &&
+          !arg.value.typePrefix
+        ) {
+          generated = `IEC_REAL(${generated}f)`;
+        }
         // For the bare `TO_xxx(temporal_var)` spelling, `nameUpper` is
         // a registered std function (not a `*_TO_*` form) so the source
         // type isn't in the name — infer it from the argument's IEC
