@@ -28,6 +28,13 @@ jobs:
       - name: Check formatting
         run: npm run format:check
 
+      - name: Guard std::common_type_t in comparison/selection overloads
+        run: |
+          if grep -n 'std::common_type_t' src/runtime/include/iec_var.hpp src/runtime/include/iec_std_lib.hpp; then
+            echo 'std::common_type_t is not allowed inside IEC comparison/selection helpers (it resolves signed/unsigned pairs to unsigned).'
+            exit 1
+          fi
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest

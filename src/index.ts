@@ -780,6 +780,33 @@ export function compile(
 
   const codeResult = codegen.generate(pipeline.ast);
 
+  // Collect codegen errors
+  for (const err of codeResult.errors) {
+    const entry: CompileError = {
+      message: err.message,
+      line: err.line ?? 0,
+      column: err.column ?? 0,
+      severity: "error",
+    };
+    if (err.file !== undefined) {
+      entry.file = err.file;
+    }
+    pipeline.errors.push(entry);
+  }
+
+  if (pipeline.errors.length > 0) {
+    return {
+      success: false,
+      cppFiles: [],
+      cppCode: "",
+      headerCode: "",
+      lineMap: new Map(),
+      headerLineMap: new Map(),
+      errors: pipeline.errors,
+      warnings: pipeline.warnings,
+    };
+  }
+
   // Collect codegen warnings
   for (const warn of codeResult.warnings) {
     const entry: CompileError = {
