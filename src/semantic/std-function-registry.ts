@@ -1006,4 +1006,37 @@ export class StdFunctionRegistry {
       category: "system",
     });
   }
+
+  getAllDescriptors(): StdFunctionDescriptor[] {
+    return Array.from(this.functions.values());
+  }
+
+  getAllFunctionNames(): string[] {
+    return Array.from(this.functions.keys());
+  }
+
+  getAllCppFunctionNames(): string[] {
+    return this.getAllDescriptors().map((fn) => fn.cppName);
+  }
+
+  /**
+   * Names that are already emitted into the generated `strucpp` namespace as
+   * function templates or runtime type aliases. A global variable or type alias
+   * whose name collides with one of these will cause a C++ redeclaration error
+   * instead of a clean ST diagnostic, so the analyzer rejects them early.
+   */
+  getReservedGlobalCppNames(): Set<string> {
+    const reserved = new Set<string>();
+    for (const fn of this.functions.values()) {
+      reserved.add(fn.name.toUpperCase());
+      reserved.add(fn.cppName.toUpperCase());
+    }
+    for (const typeName of ELEMENTARY_TYPE_NAMES) {
+      reserved.add(`IEC_${typeName}`.toUpperCase());
+      reserved.add(`${typeName}_T`.toUpperCase());
+    }
+    // Runtime helpers emitted in the strucpp namespace.
+    reserved.add("IEC_SIZEOF");
+    return reserved;
+  }
 }
