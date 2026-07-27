@@ -101,4 +101,43 @@ describe.skipIf(!hasGpp)("__QUERYINTERFACE runtime support", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("1 passed, 0 failed");
   });
+
+  it("queries an interface into a POINTER TO interface", () => {
+    const sourceST = `
+      INTERFACE IBase
+        METHOD GetValue : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Comp IMPLEMENTS IBase
+        METHOD PUBLIC GetValue : INT
+          GetValue := 10;
+        END_METHOD
+      END_FUNCTION_BLOCK
+    `;
+
+    const testST = `
+      TEST 'QueryInterface into POINTER TO interface'
+      VAR
+        c : Comp;
+        itfPtr : POINTER TO IBase;
+        ok : BOOL;
+        got : INT;
+      END_VAR
+      ok := __QUERYINTERFACE(c, itfPtr);
+      got := itfPtr^.GetValue();
+      ASSERT_EQ(ok, TRUE);
+      ASSERT_EQ(got, 10);
+      END_TEST
+    `;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "query_interface_ptr_test.st",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("1 passed, 0 failed");
+  });
 });

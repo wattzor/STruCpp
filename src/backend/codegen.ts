@@ -5117,9 +5117,63 @@ export class CodeGenerator {
       // Interface pointer: guard against null before dispatch so a failed
       // __QUERYINTERFACE (or an uninitialised interface variable) cannot be
       // dereferenced. The lambda evaluates the object expression exactly once.
-      return `([&](auto* __itf){ if (!__itf) strucpp::iec_null_reference_fault("Null interface pointer in call to '${resolvedName}'"); return __itf->${resolvedName}(${args}); }(${obj}))`;
+      // ST `itfPtr^.Method()` is a pointer dereference; use the pointer itself
+      // for dispatch, since the interface value lives behind it.
+      const ptrObj = this.interfacePointerObject(expr.object, objType) ?? obj;
+      return `([&](auto&& __itf){ if (!__itf) strucpp::iec_null_reference_fault("Null interface pointer in call to '${resolvedName}'"); return __itf->${resolvedName}(${args}); }(${ptrObj}))`;
     }
     return `${obj}.${resolvedName}(${args})`;
+  }
+
+  /**
+   * For an interface method call like `itfPtr^.Method()`, the object
+   * expression is a pointer dereference. The underlying pointer should be
+   * used for the null-guarded dispatch lambda. Returns the C++ expression for
+   * the pointer if the object is a dereference of a pointer/reference to the
+   * given interface type, otherwise undefined.
+   */
+  private interfacePointerObject(
+    expr: Expression,
+    interfaceType: string,
+  ): string | undefined {
+    if (expr.kind !== "VariableExpression") return undefined;
+    const nameUpper = expr.name.toUpperCase();
+    const pointedType = this.currentScopeVarTypes.get(nameUpper);
+    if (!pointedType) return undefined;
+
+    let isDeref = false;
+    if (expr.isDereference) {
+      isDeref = true;
+    } else if (
+      expr.accessChain &&
+      expr.accessChain.length > 0 &&
+      expr.accessChain[expr.accessChain.length - 1]!.kind === "dereference"
+    ) {
+      isDeref = true;
+    }
+    if (!isDeref) return undefined;
+
+    // If the base variable's type is the interface type itself, the variable
+    // is a POINTER TO / REF_TO / REFERENCE TO that interface and the ^ is a
+    // dereference. Use the pointer directly for the dispatch lambda.
+    if (pointedType.toUpperCase() !== interfaceType.toUpperCase()) {
+      return undefined;
+    }
+
+    // Generate the base pointer expression without the final dereference.
+    const baseExpr: VariableExpression = { ...expr, isDereference: false };
+    if (baseExpr.accessChain && baseExpr.accessChain.length > 0) {
+      const chain = [...baseExpr.accessChain];
+      if (chain[chain.length - 1]!.kind === "dereference") {
+        chain.pop();
+      }
+      if (chain.length === 0) {
+        delete baseExpr.accessChain;
+      } else {
+        baseExpr.accessChain = chain;
+      }
+    }
+    return this.generateExpression(baseExpr);
   }
 
   // ===========================================================================

@@ -1687,4 +1687,23 @@ inline bool query_interface(From* from, To*& to) {
     return false;
 }
 
+/**
+ * __QUERYINTERFACE target is a POINTER TO interface (IEC_Ptr<To>).
+ */
+template <typename To, typename From>
+inline bool query_interface(From* from, IEC_Ptr<To>& to) {
+    if (from == nullptr) {
+        to = nullptr;
+        return false;
+    }
+    void* ptr = nullptr;
+    bool ok = from->__strucpp_query_interface(To::__strucpp_interface_name(), ptr);
+    if (ok) {
+        to = reinterpret_cast<To*>(ptr);
+        return true;
+    }
+    to = nullptr;
+    return false;
+}
+
 } // namespace strucpp
