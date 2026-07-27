@@ -3828,18 +3828,34 @@ export class CodeGenerator {
     const end = this.generateExpression(stmt.end);
 
     const forLine = this.currentLine;
+    let needsStepBlock = false;
     if (stmt.step) {
       const stepExpr = this.generateExpression(stmt.step);
-      // Determine direction from step when it's a literal
       const stepVal = this.evaluateLiteralInt(stmt.step);
-      if (stepVal !== undefined && stepVal < 0) {
-        this.emit(
-          `${indent}for (${varName} = ${start}; ${varName} >= ${end}; ${varName} += ${stepExpr}) {`,
-        );
+      if (stepVal !== undefined) {
+        // Compile-time step direction: keep the simple form the test suite expects.
+        if (stepVal < 0) {
+          this.emit(
+            `${indent}for (${varName} = ${start}; ${varName} >= ${end}; ${varName} += ${stepExpr}) {`,
+          );
+        } else {
+          this.emit(
+            `${indent}for (${varName} = ${start}; ${varName} <= ${end}; ${varName} += ${stepExpr}) {`,
+          );
+        }
       } else {
+        // Variable step: evaluate once and pick the direction at runtime.
+        needsStepBlock = true;
+        const stepTemp = `__strucpp_for_step_${this.tempVarCounter++}`;
+        this.emit(`${indent}{`);
         this.emit(
-          `${indent}for (${varName} = ${start}; ${varName} <= ${end}; ${varName} += ${stepExpr}) {`,
+          `${indent}${this.options.indent}const auto ${stepTemp} = ${stepExpr};`,
         );
+        this.emit(
+          `${indent}for (${varName} = ${start}; (${stepTemp} >= 0 ? ${varName} <= ${end} : ${varName} >= ${end}); ${varName} += ${stepTemp}) {`,
+        );
+        // The temp variable is scoped to the surrounding block; the body
+        // and loop increment use it.  The closing block is emitted below.
       }
     } else {
       // Default step is 1, ascending
@@ -3860,6 +3876,9 @@ export class CodeGenerator {
     const closingLine = this.currentLine;
     this.emit(`${indent}}`);
     if (exitLabel.used) this.emit(`${indent}${exitLabel.name}: ;`);
+    if (needsStepBlock) {
+      this.emit(`${indent}}`);
+    }
     this.recordLineMapping(stmt.sourceSpan.endLine, closingLine);
   }
 

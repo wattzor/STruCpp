@@ -119,4 +119,45 @@ int main() {
     });
     expect(stdout).toBe("7,7");
   });
+
+  it("includes alignment padding for mixed-width struct members", () => {
+    const result = compile(`
+      TYPE Padded :
+      STRUCT
+        b : BYTE;
+        d : DWORD;
+      END_STRUCT
+      END_TYPE
+
+      PROGRAM Main
+      VAR
+        p : Padded;
+        sizeVar : UDINT;
+        sizeType : UDINT;
+      END_VAR
+      sizeVar := SIZEOF(p);
+      sizeType := SIZEOF(Padded);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "sizeof-padded",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<unsigned>(prog.SIZEVAR) << ","
+              << static_cast<unsigned>(prog.SIZETYPE) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("8,8");
+  });
 });

@@ -1623,6 +1623,40 @@ template<typename EnumType>
 struct iec_sizeof<IEC_ENUM_Var<EnumType>> { static constexpr std::size_t value = sizeof(EnumType); };
 
 /**
+ * iec_struct_size<Ts...> - Padded logical byte size of a struct with member
+ * types Ts in declaration order.  Uses iec_sizeof for each member (so it
+ * ignores IECVar forcing overhead) and alignof for padding, matching CODESYS
+ * SIZEOF(struct) behavior.
+ */
+namespace detail {
+
+template<typename... Ts>
+constexpr std::size_t compute_iec_struct_size() noexcept {
+    if constexpr (sizeof...(Ts) == 0) {
+        return 0;
+    } else {
+        std::size_t sizes[sizeof...(Ts)] = { iec_sizeof<Ts>::value ... };
+        std::size_t aligns[sizeof...(Ts)] = { alignof(Ts) ... };
+        std::size_t offset = 0;
+        std::size_t max_align = 1;
+        for (std::size_t i = 0; i < sizeof...(Ts); ++i) {
+            std::size_t a = aligns[i];
+            offset = (offset + a - 1) / a * a;
+            offset += sizes[i];
+            if (a > max_align) max_align = a;
+        }
+        return (offset + max_align - 1) / max_align * max_align;
+    }
+}
+
+} // namespace detail
+
+template<typename... Ts>
+struct iec_struct_size {
+    static constexpr std::size_t value = detail::compute_iec_struct_size<Ts...>();
+};
+
+/**
  * IEC_SIZEOF(var) - Returns the logical IEC type size in bytes.
  * For IECVar<T> types, returns sizeof(T) (the underlying type),
  * not sizeof(IECVar<T>) which includes the forcing wrapper overhead.
