@@ -49,6 +49,7 @@ import {
   getHarmonizableRange,
   isBareLiteral,
   resolveHarmonizedCommonType,
+  resolveSelectionCommonType,
   stdFuncReturnsCommonType,
 } from "./type-utils.js";
 import {
@@ -875,10 +876,10 @@ export class TypeChecker {
    * Resolve the concrete return type for a generic standard function whose
    * result is defined by its value arguments.  For harmonized template
    * functions (ADD, AND, MUX, ...) this is the widened common type, not just
-   * the first argument.  For selection functions (MUX, SEL, LIMIT) the common
-   * type is also used because the runtime's mixed-type overloads return a wide
-   * enough result.  Falls back to the first *value* argument only for
-   * returnMatchesFirstParam functions where no common type exists.
+   * the first argument.  For selection functions (MUX, SEL, LIMIT, MIN, MAX)
+   * the common type is also used because the runtime's mixed-type overloads
+   * return a wide enough result.  Falls back to the first *value* argument only
+   * for returnMatchesFirstParam functions that are not common-return functions.
    */
   private resolveCommonStdReturnType(
     desc: StdFunctionDescriptor,
@@ -890,7 +891,7 @@ export class TypeChecker {
     const hasCommonReturn = harmonizable || stdFuncReturnsCommonType(desc);
 
     // For functions whose return is the common type of multiple value arguments
-    // (ADD, AND, MUX, SEL, LIMIT, ...) compute the widened common IEC type.
+    // (ADD, AND, MUX, SEL, LIMIT, MIN, MAX, ...) compute the widened common IEC type.
     if (hasCommonReturn && userArgs.length > 0) {
       const range = getHarmonizableRange(desc, userArgs.length);
       if (range) {
@@ -900,12 +901,24 @@ export class TypeChecker {
             : undefined,
         );
         const isBare = userArgs.map((a) => isBareLiteral(a.value));
-        const commonName = resolveHarmonizedCommonType(
-          argTypeNames,
-          isBare,
-          range.start,
-          range.end,
-        );
+
+        // Selection functions (MIN/MAX/LIMIT/SEL/MUX) can fall back to the
+        // unsigned common type when no signed type can hold every value,
+        // matching the runtime's `iec_minmax_result_t`.  Arithmetic functions
+        // stop here so the cast emitter reports the error instead.
+        const commonName = stdFuncReturnsCommonType(desc)
+          ? resolveSelectionCommonType(
+              argTypeNames,
+              isBare,
+              range.start,
+              range.end,
+            )
+          : resolveHarmonizedCommonType(
+              argTypeNames,
+              isBare,
+              range.start,
+              range.end,
+            );
         if (commonName) {
           const ret = ELEMENTARY_TYPES[commonName];
           if (ret) return ret;
@@ -913,11 +926,15 @@ export class TypeChecker {
       }
     }
 
-    // For functions whose result matches the first value argument (NOT, MIN,
-    // MAX, etc.) fall back to that argument's resolved type when no common IEC
+    // For functions whose result matches the first value argument (NOT, ABS,
+    // NEG, etc.) fall back to that argument's resolved type when no common IEC
     // type is chosen.  This also covers unary NOT, where harmonisation does not
     // apply.
-    if (desc.returnMatchesFirstParam && userArgs.length > 0) {
+    if (
+      desc.returnMatchesFirstParam &&
+      !stdFuncReturnsCommonType(desc) &&
+      userArgs.length > 0
+    ) {
       const firstValueArg = userArgs[0]!;
       if (firstValueArg.value.resolvedType) {
         return firstValueArg.value.resolvedType;

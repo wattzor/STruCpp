@@ -560,13 +560,13 @@ export function shouldHarmonizeStdFuncArgs(
 /**
  * Returns true for standard functions whose result is the common IEC type of
  * their value arguments, even when the first argument is a selector (MUX, SEL)
- * or the function is not marked returnMatchesFirstParam (LIMIT).
+ * or the function is not marked returnMatchesFirstParam (LIMIT, MIN, MAX).
  */
 export function stdFuncReturnsCommonType(
   stdFunc: StdFunctionDescriptor,
 ): boolean {
   const name = stdFunc.name.toUpperCase();
-  return ["MUX", "SEL", "LIMIT"].includes(name);
+  return ["MUX", "SEL", "LIMIT", "MIN", "MAX"].includes(name);
 }
 
 /**
@@ -579,6 +579,30 @@ export function computeCommonHarmonizedType(
   argTypes: (string | undefined)[],
   start: number,
   end: number,
+): string | undefined {
+  return _computeCommonType(argTypes, start, end, false);
+}
+
+/**
+ * Compute the common IEC type for a selection function (MIN/MAX/LIMIT/SEL/MUX).
+ * Unlike harmonized arithmetic, these functions select (rather than combine)
+ * one of their operands, so when no signed type can hold every value the common
+ * type falls back to the unsigned type of the widest operand (matching the
+ * runtime's `iec_minmax_result_t` / `iec_common_result_t`).
+ */
+export function computeSelectionCommonType(
+  argTypes: (string | undefined)[],
+  start: number,
+  end: number,
+): string | undefined {
+  return _computeCommonType(argTypes, start, end, true);
+}
+
+function _computeCommonType(
+  argTypes: (string | undefined)[],
+  start: number,
+  end: number,
+  allowUnsignedFallback: boolean,
 ): string | undefined {
   const types: string[] = [];
   for (let i = start; i < end; i++) {
@@ -627,6 +651,12 @@ export function computeCommonHarmonizedType(
     if (needed <= 16) return "INT";
     if (needed <= 32) return "DINT";
     if (needed <= 64) return "LINT";
+    // No signed type can represent the full value range.  Selection functions
+    // fall back to the unsigned common type (runtime `iec_minmax_result_t`);
+    // arithmetic functions stop here and report an error.
+    if (allowUnsignedFallback) {
+      return unsignedTypeAtWidth(maxUnsignedWidth);
+    }
     return undefined;
   }
 
@@ -638,27 +668,33 @@ export function computeCommonHarmonizedType(
   }
 
   if (anyUnsigned) {
-    // Prefer UINT category names (USINT/UINT/UDINT/ULINT) when one exists at
-    // the widest width; otherwise use the BIT category name.
-    const uintAtWidth = types.find(
-      (t) =>
-        getTypeCategory(t) === "UINT" &&
-        (getTypeBits(t) ?? 0) === maxUnsignedWidth,
-    );
-    if (uintAtWidth) return uintAtWidth;
-    const bitAtWidth = types.find(
-      (t) =>
-        getTypeCategory(t) === "BIT" &&
-        (getTypeBits(t) ?? 0) === maxUnsignedWidth,
-    );
-    if (bitAtWidth) return bitAtWidth;
-    if (maxUnsignedWidth <= 8) return "USINT";
-    if (maxUnsignedWidth <= 16) return "UINT";
-    if (maxUnsignedWidth <= 32) return "UDINT";
-    return "ULINT";
+    return unsignedTypeAtWidth(maxUnsignedWidth, types);
   }
 
   return undefined;
+}
+
+function unsignedTypeAtWidth(
+  width: number,
+  types?: string[],
+): string | undefined {
+  if (types) {
+    // Prefer a UINT-category name if one exists at this width; otherwise a
+    // BIT-category name (BYTE/WORD/DWORD/LWORD).  This keeps e.g. MAX(WORD,
+    // DWORD) returning DWORD rather than UINT.
+    const uintAtWidth = types.find(
+      (t) => getTypeCategory(t) === "UINT" && (getTypeBits(t) ?? 0) === width,
+    );
+    if (uintAtWidth) return uintAtWidth;
+    const bitAtWidth = types.find(
+      (t) => getTypeCategory(t) === "BIT" && (getTypeBits(t) ?? 0) === width,
+    );
+    if (bitAtWidth) return bitAtWidth;
+  }
+  if (width <= 8) return "USINT";
+  if (width <= 16) return "UINT";
+  if (width <= 32) return "UDINT";
+  return "ULINT";
 }
 
 /**
@@ -683,6 +719,46 @@ export function resolveHarmonizedCommonType(
   start: number,
   end: number,
 ): string | undefined {
+  return resolveCommonTypeWith(
+    argTypeNames,
+    isBare,
+    start,
+    end,
+    computeCommonHarmonizedType,
+  );
+}
+
+/**
+ * Compute the common IEC type for a selection function argument range
+ * (MIN/MAX/LIMIT/SEL/MUX).  Like `resolveHarmonizedCommonType` but falls back
+ * to the unsigned common type when no signed type can hold all integer values.
+ */
+export function resolveSelectionCommonType(
+  argTypeNames: (string | undefined)[],
+  isBare: boolean[],
+  start: number,
+  end: number,
+): string | undefined {
+  return resolveCommonTypeWith(
+    argTypeNames,
+    isBare,
+    start,
+    end,
+    computeSelectionCommonType,
+  );
+}
+
+function resolveCommonTypeWith(
+  argTypeNames: (string | undefined)[],
+  isBare: boolean[],
+  start: number,
+  end: number,
+  compute: (
+    argTypes: (string | undefined)[],
+    start: number,
+    end: number,
+  ) => string | undefined,
+): string | undefined {
   const nonBareTypes: string[] = [];
   for (let i = start; i < end; i++) {
     const t = argTypeNames[i];
@@ -697,7 +773,7 @@ export function resolveHarmonizedCommonType(
     return nonBareTypes[0]!;
   }
 
-  return computeCommonHarmonizedType(argTypeNames, start, end);
+  return compute(argTypeNames, start, end);
 }
 
 // =============================================================================
