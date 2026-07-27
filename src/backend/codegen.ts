@@ -2086,6 +2086,26 @@ export class CodeGenerator {
   }
 
   /**
+   * Mangle a parameter/local name that collides with a user-defined type name
+   * or an interface method name in the current FB. This must match the
+   * member-mangling applied by enterScope so the signature matches the body.
+   */
+  private mangleParamName(name: string, typeName?: string): string {
+    const nameUpper = name.toUpperCase();
+    if (this.currentFBInterfaceMethods.has(nameUpper)) {
+      return `${name}_`;
+    }
+    if (
+      typeName &&
+      this.isUserDefinedType(typeName) &&
+      nameUpper === typeName.toUpperCase()
+    ) {
+      return `${name}_`;
+    }
+    return name;
+  }
+
+  /**
    * Generate parameter list string for a method declaration.
    * VAR_INPUT, VAR_OUTPUT (by ref), VAR_IN_OUT (by ref) become C++ params.
    */
@@ -2095,26 +2115,29 @@ export class CodeGenerator {
       if (block.blockType === "VAR_INPUT") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
-            params.push(`${this.mapTypeRefToCpp(decl.type)} ${name}`);
+            const paramName = this.mangleParamName(name, decl.type.name);
+            params.push(`${this.mapTypeRefToCpp(decl.type)} ${paramName}`);
           }
         }
       } else if (block.blockType === "VAR_IN_OUT") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
+            const paramName = this.mangleParamName(name, decl.type.name);
             // mapTypeRefToCpp preserves arrayDimensions / elementTypeName
             // (so inline ARRAY params emit Array1D<...>) while
             // toParamTypeRef strips STRING/WSTRING maxLength so any
             // string size binds to the &-reference.
             params.push(
-              `${this.mapTypeRefToCpp(this.toParamTypeRef(decl.type))}& ${name}`,
+              `${this.mapTypeRefToCpp(this.toParamTypeRef(decl.type))}& ${paramName}`,
             );
           }
         }
       } else if (block.blockType === "VAR_OUTPUT") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
+            const paramName = this.mangleParamName(name, decl.type.name);
             params.push(
-              `${this.mapTypeRefToCpp(this.toParamTypeRef(decl.type))}& ${name}`,
+              `${this.mapTypeRefToCpp(this.toParamTypeRef(decl.type))}& ${paramName}`,
             );
           }
         }
