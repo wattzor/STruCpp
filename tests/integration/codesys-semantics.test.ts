@@ -1252,4 +1252,45 @@ int main() {
     });
     expect(stdout).toBe(expected);
   });
+
+  // C12b: bare integer literals inside harmonized std functions should take the
+  // type of the other typed operands, not force a widened signed type.
+  it("C12b: bare literals adopt the typed operand type in ADD/MUL", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        u1 : UINT := 10;
+        u2 : UINT;
+        u3 : UINT;
+      END_VAR
+        u2 := ADD(u1, 5);
+        u3 := MUL(u1, 2);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+
+    const mainCode = `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout
+      << static_cast<unsigned long>(prog.U2) << '\\n'
+      << static_cast<unsigned long>(prog.U3) << std::endl;
+    return 0;
+}
+`;
+    const expected = ["15", "20"].join("\n");
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "bare_literal_harmonize",
+      mainCode,
+    });
+    expect(stdout).toBe(expected);
+  });
 });

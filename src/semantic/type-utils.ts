@@ -13,6 +13,7 @@
  */
 
 import type {
+  Expression,
   IECType,
   ElementaryType,
   ArrayType,
@@ -646,6 +647,45 @@ export function computeCommonHarmonizedType(
   }
 
   return undefined;
+}
+
+/**
+ * Returns true if an expression is a bare literal (no explicit type prefix),
+ * possibly wrapped in a unary +/-.  Bare literals should be treated as
+ * untyped placeholders that take on the type of the surrounding expression.
+ */
+export function isBareLiteral(expr: Expression): boolean {
+  const inner = expr.kind === "UnaryExpression" ? expr.operand : expr;
+  return inner.kind === "LiteralExpression" && !inner.typePrefix;
+}
+
+/**
+ * Compute the common IEC type for a harmonized std function argument range.
+ * If all non-bare (typed) operands share one type, that type wins so bare
+ * literals are cast to the typed operand's type.  Otherwise fall back to the
+ * full widened common type.  This mirrors the cast emitter in codegen.
+ */
+export function resolveHarmonizedCommonType(
+  argTypeNames: (string | undefined)[],
+  isBare: boolean[],
+  start: number,
+  end: number,
+): string | undefined {
+  const nonBareTypes: string[] = [];
+  for (let i = start; i < end; i++) {
+    const t = argTypeNames[i];
+    if (!t) return undefined;
+    if (!isBare[i]) nonBareTypes.push(t);
+  }
+
+  if (
+    nonBareTypes.length > 0 &&
+    nonBareTypes.every((t) => t === nonBareTypes[0]!)
+  ) {
+    return nonBareTypes[0]!;
+  }
+
+  return computeCommonHarmonizedType(argTypeNames, start, end);
 }
 
 // =============================================================================

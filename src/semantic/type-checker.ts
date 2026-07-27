@@ -47,7 +47,8 @@ import {
   isGenericGroupType,
   shouldHarmonizeStdFuncArgs,
   getHarmonizableRange,
-  computeCommonHarmonizedType,
+  isBareLiteral,
+  resolveHarmonizedCommonType,
 } from "./type-utils.js";
 import {
   getSystemType,
@@ -883,8 +884,10 @@ export class TypeChecker {
             ? typeNameUtil(a.value.resolvedType).toUpperCase()
             : undefined,
         );
-        const commonName = computeCommonHarmonizedType(
+        const isBare = userArgs.map((a) => isBareLiteral(a.value));
+        const commonName = resolveHarmonizedCommonType(
           argTypeNames,
+          isBare,
           range.start,
           range.end,
         );

@@ -82,9 +82,10 @@ import {
   isGenericTypeName,
   type EnumMemberEntry,
   ELEMENTARY_TYPES,
-  computeCommonHarmonizedType,
   getHarmonizableRange,
   shouldHarmonizeStdFuncArgs,
+  isBareLiteral,
+  resolveHarmonizedCommonType,
 } from "../semantic/type-utils.js";
 
 // =============================================================================
@@ -5361,8 +5362,12 @@ export class CodeGenerator {
               const argTypes = expr.arguments.map((a) =>
                 this.inferExprType(a.value),
               );
-              const common = computeCommonHarmonizedType(
+              const bareFlags = expr.arguments.map((a) =>
+                isBareLiteral(a.value),
+              );
+              const common = resolveHarmonizedCommonType(
                 argTypes,
+                bareFlags,
                 range.start,
                 range.end,
               );
@@ -5501,19 +5506,10 @@ export class CodeGenerator {
       const paramType = paramTypes[i]!;
       if (argType === paramType) continue;
       // Bare literals (no typePrefix) are untyped — always castable to param type
-      if (
-        this.isBareLiteral(expr) ||
-        this.canImplicitWiden(argType, paramType)
-      ) {
+      if (isBareLiteral(expr) || this.canImplicitWiden(argType, paramType)) {
         args[i] = `static_cast<IEC_${paramType}>(${args[i]})`;
       }
     }
-  }
-
-  /** Returns true if expr is a bare literal (no typePrefix), possibly negated */
-  private isBareLiteral(expr: Expression): boolean {
-    const inner = expr.kind === "UnaryExpression" ? expr.operand : expr;
-    return inner.kind === "LiteralExpression" && !inner.typePrefix;
   }
 
   /**
@@ -5633,29 +5629,17 @@ export class CodeGenerator {
 
     const isBare: boolean[] = [];
     for (let i = range.start; i < range.end; i++) {
-      isBare[i] = this.isBareLiteral(argExprs[i]!.value);
+      isBare[i] = isBareLiteral(argExprs[i]!.value);
     }
 
-    const nonBareTypes: string[] = [];
-    for (let i = range.start; i < range.end; i++) {
-      if (!isBare[i] && argTypes[i]) nonBareTypes.push(argTypes[i]!);
-    }
-
-    let commonType: string | undefined;
-    if (
-      nonBareTypes.length > 0 &&
-      nonBareTypes.every((t) => t === nonBareTypes[0]!)
-    ) {
-      // All non-bare arguments share one type; use it for bare-literal casts.
-      commonType = nonBareTypes[0]!;
-    } else {
-      // Mixed concrete types: pick a single type that can hold every value.
-      commonType = computeCommonHarmonizedType(
-        argTypes,
-        range.start,
-        range.end,
-      );
-    }
+    // Pick the common IEC type, treating bare literals as untyped placeholders
+    // that take on the type of the non-bare operands when those all agree.
+    const commonType = resolveHarmonizedCommonType(
+      argTypes,
+      isBare,
+      range.start,
+      range.end,
+    );
 
     if (!commonType) {
       const argTypeList = argTypes
