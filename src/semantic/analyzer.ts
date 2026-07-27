@@ -392,6 +392,23 @@ export class SemanticAnalyzer {
           "function",
           funcDecl.name,
         );
+
+        // The function name is also the return variable inside the function body.
+        // Add it to the local scope so assignments and reads of the result resolve
+        // to the declared return type (e.g. MULTI_IN := SEL(...)).
+        scope.defineOrReplace({
+          name: funcDecl.name,
+          kind: "variable",
+          declaration:
+            undefined as unknown as import("../frontend/ast.js").VarDeclaration,
+          type: returnType,
+          isInput: false,
+          isOutput: true,
+          isInOut: false,
+          isExternal: false,
+          isGlobal: false,
+          isRetain: false,
+        });
       } catch (err) {
         if (err instanceof Error) {
           this.addError(

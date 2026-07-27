@@ -86,6 +86,7 @@ import {
   shouldHarmonizeStdFuncArgs,
   isBareLiteral,
   resolveHarmonizedCommonType,
+  resolveSelectionCommonType,
   stdFuncReturnsCommonType,
 } from "../semantic/type-utils.js";
 import { isEnEnoArgument } from "../ast-utils.js";
@@ -5375,7 +5376,10 @@ export class CodeGenerator {
                 this.inferExprType(a.value),
               );
               const bareFlags = valueArgs.map((a) => isBareLiteral(a.value));
-              const common = resolveHarmonizedCommonType(
+              const computeCommon = stdFuncReturnsCommonType(std)
+                ? resolveSelectionCommonType
+                : resolveHarmonizedCommonType;
+              const common = computeCommon(
                 argTypes,
                 bareFlags,
                 range.start,
@@ -5653,12 +5657,11 @@ export class CodeGenerator {
 
     // Pick the common IEC type, treating bare literals as untyped placeholders
     // that take on the type of the non-bare operands when those all agree.
-    const commonType = resolveHarmonizedCommonType(
-      argTypes,
-      isBare,
-      range.start,
-      range.end,
-    );
+    // Selection functions (MUX) can fall back to the unsigned common type.
+    const computeCommon = stdFuncReturnsCommonType(stdFunc)
+      ? resolveSelectionCommonType
+      : resolveHarmonizedCommonType;
+    const commonType = computeCommon(argTypes, isBare, range.start, range.end);
 
     if (!commonType) {
       const argTypeList = argTypes
