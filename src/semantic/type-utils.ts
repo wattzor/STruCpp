@@ -13,6 +13,7 @@
  */
 
 import type {
+  Expression,
   IECType,
   ElementaryType,
   ArrayType,
@@ -22,7 +23,10 @@ import type {
   EnumType,
   FunctionBlockType,
 } from "../frontend/ast.js";
-import type { TypeConstraint } from "./std-function-registry.js";
+import type {
+  TypeConstraint,
+  StdFunctionDescriptor,
+} from "./std-function-registry.js";
 import { IEC_BASE_TYPES, lookupBaseType } from "./iec-types-data.js";
 
 /**
@@ -500,6 +504,188 @@ export function getCommonType(a: IECType, b: IECType): IECType | undefined {
   }
 
   return undefined;
+}
+
+// =============================================================================
+// Standard Function Argument Harmonization
+// =============================================================================
+
+/**
+ * Determine the argument range to harmonize for variadic/mixed standard
+ * functions.  For functions with a leading selector (MUX, SEL) the selector
+ * is skipped so the value arguments can be unified independently.
+ */
+export function getHarmonizableRange(
+  stdFunc: StdFunctionDescriptor,
+  argCount: number,
+): { start: number; end: number } | undefined {
+  if (stdFunc.params.length === 0) return undefined;
+  const firstConstraint = stdFunc.params[0]!.constraint;
+  let start = 0;
+  if (firstConstraint === "BOOL" || firstConstraint === "specific") {
+    start = 1;
+  }
+  if (argCount <= start + 1) return undefined;
+  const restConstraint = stdFunc.params[start]!.constraint;
+  for (let i = start; i < stdFunc.params.length; i++) {
+    if (stdFunc.params[i]!.constraint !== restConstraint) return undefined;
+  }
+  return { start, end: argCount };
+}
+
+/**
+ * Returns true for standard functions whose C++ runtime implementation is a
+ * single-type template and therefore needs all value arguments cast to a common
+ * IEC type.  LIMIT/SEL/MIN/MAX/EXPT and comparison operators have mixed-type
+ * overloads and must not be forced into a common type here.
+ */
+export function shouldHarmonizeStdFuncArgs(
+  stdFunc: StdFunctionDescriptor,
+  _argCount: number,
+): boolean {
+  const name = stdFunc.cppName.toUpperCase();
+  return [
+    "ADD",
+    "MUL",
+    "SUB",
+    "DIV",
+    "MOD",
+    "MUX",
+    "AND",
+    "OR",
+    "XOR",
+  ].includes(name);
+}
+
+/**
+ * Compute a single IEC type that every argument in the range can be cast to
+ * without losing the sign of any value.  Mixed signed/unsigned integers are
+ * widened to a signed type large enough for both ranges.  If no such type
+ * exists (e.g. LINT + ULINT) the function returns undefined.
+ */
+export function computeCommonHarmonizedType(
+  argTypes: (string | undefined)[],
+  start: number,
+  end: number,
+): string | undefined {
+  const types: string[] = [];
+  for (let i = start; i < end; i++) {
+    const t = argTypes[i];
+    if (!t) return undefined;
+    types.push(t);
+  }
+
+  const first = types[0]!;
+  if (types.every((t) => t === first)) return first;
+
+  const cats = types.map((t) => getTypeCategory(t));
+  if (cats.some((c) => !c)) return undefined;
+
+  // REAL/LREAL: promote to LREAL if any operand is LREAL or a 64-bit integer.
+  const hasReal = cats.some((c) => c === "REAL");
+  if (hasReal) {
+    const hasLReal = types.some((t) => t.toUpperCase() === "LREAL");
+    const has64Int = types.some((t) => {
+      const bits = getTypeBits(t) ?? 0;
+      const cat = getTypeCategory(t);
+      return (cat === "SINT" || cat === "UINT" || cat === "BIT") && bits === 64;
+    });
+    if (hasLReal || has64Int) return "LREAL";
+    return "REAL";
+  }
+
+  // All integer-like (BIT/SINT/UINT)
+  let maxSignedWidth = 0;
+  let maxUnsignedWidth = 0;
+  for (const t of types) {
+    const cat = getTypeCategory(t)!;
+    const bits = getTypeBits(t) ?? 0;
+    if (cat === "SINT") {
+      if (bits > maxSignedWidth) maxSignedWidth = bits;
+    } else if (cat === "UINT" || cat === "BIT") {
+      if (bits > maxUnsignedWidth) maxUnsignedWidth = bits;
+    }
+  }
+  const anySigned = maxSignedWidth > 0;
+  const anyUnsigned = maxUnsignedWidth > 0;
+
+  if (anySigned && anyUnsigned) {
+    const needed = Math.max(maxSignedWidth, maxUnsignedWidth + 1);
+    if (needed <= 8) return "SINT";
+    if (needed <= 16) return "INT";
+    if (needed <= 32) return "DINT";
+    if (needed <= 64) return "LINT";
+    return undefined;
+  }
+
+  if (anySigned) {
+    if (maxSignedWidth <= 8) return "SINT";
+    if (maxSignedWidth <= 16) return "INT";
+    if (maxSignedWidth <= 32) return "DINT";
+    return "LINT";
+  }
+
+  if (anyUnsigned) {
+    // Prefer UINT category names (USINT/UINT/UDINT/ULINT) when one exists at
+    // the widest width; otherwise use the BIT category name.
+    const uintAtWidth = types.find(
+      (t) =>
+        getTypeCategory(t) === "UINT" &&
+        (getTypeBits(t) ?? 0) === maxUnsignedWidth,
+    );
+    if (uintAtWidth) return uintAtWidth;
+    const bitAtWidth = types.find(
+      (t) =>
+        getTypeCategory(t) === "BIT" &&
+        (getTypeBits(t) ?? 0) === maxUnsignedWidth,
+    );
+    if (bitAtWidth) return bitAtWidth;
+    if (maxUnsignedWidth <= 8) return "USINT";
+    if (maxUnsignedWidth <= 16) return "UINT";
+    if (maxUnsignedWidth <= 32) return "UDINT";
+    return "ULINT";
+  }
+
+  return undefined;
+}
+
+/**
+ * Returns true if an expression is a bare literal (no explicit type prefix),
+ * possibly wrapped in a unary +/-.  Bare literals should be treated as
+ * untyped placeholders that take on the type of the surrounding expression.
+ */
+export function isBareLiteral(expr: Expression): boolean {
+  const inner = expr.kind === "UnaryExpression" ? expr.operand : expr;
+  return inner.kind === "LiteralExpression" && !inner.typePrefix;
+}
+
+/**
+ * Compute the common IEC type for a harmonized std function argument range.
+ * If all non-bare (typed) operands share one type, that type wins so bare
+ * literals are cast to the typed operand's type.  Otherwise fall back to the
+ * full widened common type.  This mirrors the cast emitter in codegen.
+ */
+export function resolveHarmonizedCommonType(
+  argTypeNames: (string | undefined)[],
+  isBare: boolean[],
+  start: number,
+  end: number,
+): string | undefined {
+  const nonBareTypes: string[] = [];
+  for (let i = start; i < end; i++) {
+    const t = argTypeNames[i];
+    if (!t) return undefined;
+    if (!isBare[i]) nonBareTypes.push(t);
+  }
+
+  if (
+    nonBareTypes.length > 0 &&
+    nonBareTypes.every((t) => t === nonBareTypes[0]!)
+  ) {
+    return nonBareTypes[0]!;
+  }
+
+  return computeCommonHarmonizedType(argTypeNames, start, end);
 }
 
 // =============================================================================

@@ -18,6 +18,7 @@ import type {
   VariableExpression,
   FunctionCallExpression,
   MethodCallExpression,
+  Argument,
   IECType,
   ElementaryType,
   ReferenceType,
@@ -28,7 +29,10 @@ import type {
   MethodDeclaration,
 } from "../frontend/ast.js";
 import type { SymbolTables, Scope } from "./symbol-table.js";
-import type { StdFunctionRegistry } from "./std-function-registry.js";
+import type {
+  StdFunctionRegistry,
+  StdFunctionDescriptor,
+} from "./std-function-registry.js";
 import type { CompileError } from "../types.js";
 import {
   ELEMENTARY_TYPES,
@@ -41,6 +45,10 @@ import {
   resolveArrayElementType,
   typeName as typeNameUtil,
   isGenericGroupType,
+  shouldHarmonizeStdFuncArgs,
+  getHarmonizableRange,
+  isBareLiteral,
+  resolveHarmonizedCommonType,
 } from "./type-utils.js";
 import {
   getSystemType,
@@ -789,8 +797,8 @@ export class TypeChecker {
         const desc = this.stdRegistry.lookup(nameUpper);
         if (desc?.returnMatchesFirstParam) {
           const userArgs = stripEnEno(expr.arguments);
-          const firstArgType = userArgs[0]?.value.resolvedType;
-          if (firstArgType) returnType = firstArgType;
+          const commonType = this.resolveCommonStdReturnType(desc, userArgs);
+          if (commonType) returnType = commonType;
         }
       }
       expr.resolvedType = returnType;
@@ -824,16 +832,15 @@ export class TypeChecker {
             return retType;
           }
         }
-        // Return matches first parameter (skipping EN/ENO — they're not part
-        // of the declared signature).
+        // Return matches the common type across value arguments.  For
+        // harmonized template functions (ADD, AND, MUX, ...) this is the
+        // widened common type, not just the first argument.
         if (desc.returnMatchesFirstParam) {
           const userArgs = stripEnEno(expr.arguments);
-          if (userArgs.length > 0) {
-            const firstArgType = userArgs[0]!.value.resolvedType;
-            if (firstArgType) {
-              expr.resolvedType = firstArgType;
-              return firstArgType;
-            }
+          const commonType = this.resolveCommonStdReturnType(desc, userArgs);
+          if (commonType) {
+            expr.resolvedType = commonType;
+            return commonType;
           }
         }
       }
@@ -856,6 +863,41 @@ export class TypeChecker {
 
     // Unknown function — don't error here, the undeclared-variable pass handles this
     return undefined;
+  }
+
+  /**
+   * Resolve the concrete return type for a generic standard function whose
+   * result is defined by its value arguments.  For harmonized template
+   * functions (ADD, AND, MUX, ...) this is the widened common type, not just
+   * the first argument.
+   */
+  private resolveCommonStdReturnType(
+    desc: StdFunctionDescriptor,
+    userArgs: Argument[],
+  ): IECType | undefined {
+    if (userArgs.length === 0) return undefined;
+    if (shouldHarmonizeStdFuncArgs(desc, userArgs.length)) {
+      const range = getHarmonizableRange(desc, userArgs.length);
+      if (range) {
+        const argTypeNames: (string | undefined)[] = userArgs.map((a) =>
+          a.value.resolvedType
+            ? typeNameUtil(a.value.resolvedType).toUpperCase()
+            : undefined,
+        );
+        const isBare = userArgs.map((a) => isBareLiteral(a.value));
+        const commonName = resolveHarmonizedCommonType(
+          argTypeNames,
+          isBare,
+          range.start,
+          range.end,
+        );
+        if (commonName) {
+          return ELEMENTARY_TYPES[commonName];
+        }
+      }
+    }
+    const firstArgType = userArgs[0]!.value.resolvedType;
+    return firstArgType;
   }
 
   /**
