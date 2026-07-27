@@ -151,6 +151,42 @@ int main() {
   // Same-width LINT/ULINT cannot be widened further, so the compare must be
   // sign-aware on the original types. Result values used here are positive and
   // fit in the unsigned common result type.
+  it("variadic MIN/MAX with LINT/ULINT returns the mathematically correct signed result", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        min_lu, max_lu : LINT;
+      END_VAR
+        min_lu := MIN(-LINT#5, ULINT#3, LINT#7);
+        max_lu := MAX(-LINT#5, ULINT#3, LINT#7);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const mainCode = `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout
+      << static_cast<long long>(prog.MIN_LU) << '\\n'
+      << static_cast<long long>(prog.MAX_LU) << std::endl;
+    return 0;
+}
+`;
+    const expected = ["-5", "7"].join("\n");
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "mixed_lint_ulint_negative",
+      mainCode,
+    });
+    expect(stdout).toBe(expected);
+  });
+
   it("MAX/MIN/LIMIT with LINT/ULINT same-width pairs are sign-aware", () => {
     const result = compile(`
       PROGRAM Main

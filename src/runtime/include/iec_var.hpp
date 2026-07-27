@@ -522,7 +522,7 @@ struct iec_minmax_result<T, U, std::enable_if_t<
     using type = typename std::conditional<
         !std::is_same<wider, void>::value,
         wider,
-        iec_arith_result_t<T, U>
+        typename detail::iec_arith_select<max_width, true, false>::type
     >::type;
 };
 
