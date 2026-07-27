@@ -90,6 +90,18 @@ export class STParser extends CstParser {
    */
   public programDeclaration = this.RULE("programDeclaration", () => {
     this.CONSUME(tokens.PROGRAM);
+    // Optional access modifiers (CODESYS compatibility)
+    this.MANY1(() => {
+      this.OR({
+        DEF: [
+          { ALT: () => this.CONSUME(tokens.PUBLIC) },
+          { ALT: () => this.CONSUME(tokens.PRIVATE) },
+          { ALT: () => this.CONSUME(tokens.PROTECTED) },
+          { ALT: () => this.CONSUME(tokens.FINAL) },
+        ],
+        IGNORE_AMBIGUITIES: true,
+      });
+    });
     this.CONSUME(tokens.Identifier);
     this.MANY(() => {
       this.SUBRULE(this.varBlock);
@@ -105,6 +117,18 @@ export class STParser extends CstParser {
    */
   public functionDeclaration = this.RULE("functionDeclaration", () => {
     this.CONSUME(tokens.FUNCTION);
+    // Optional access modifiers (CODESYS compatibility)
+    this.MANY1(() => {
+      this.OR({
+        DEF: [
+          { ALT: () => this.CONSUME(tokens.PUBLIC) },
+          { ALT: () => this.CONSUME(tokens.PRIVATE) },
+          { ALT: () => this.CONSUME(tokens.PROTECTED) },
+          { ALT: () => this.CONSUME(tokens.FINAL) },
+        ],
+        IGNORE_AMBIGUITIES: true,
+      });
+    });
     this.SUBRULE(this.identifierOrKeyword);
     this.CONSUME(tokens.Colon);
     this.SUBRULE(this.dataType);
@@ -125,12 +149,19 @@ export class STParser extends CstParser {
     "functionBlockDeclaration",
     () => {
       this.CONSUME(tokens.FUNCTION_BLOCK);
-      // Optional ABSTRACT and/or FINAL modifier (semantic analysis catches contradictions)
-      this.OPTION(() => {
-        this.CONSUME(tokens.ABSTRACT);
-      });
-      this.OPTION6(() => {
-        this.CONSUME(tokens.FINAL);
+      // Optional access / ABSTRACT / FINAL modifiers in any order before the name
+      // (CODESYS compatibility). Semantic analysis catches contradictions.
+      this.MANY1(() => {
+        this.OR({
+          DEF: [
+            { ALT: () => this.CONSUME(tokens.PUBLIC) },
+            { ALT: () => this.CONSUME(tokens.PRIVATE) },
+            { ALT: () => this.CONSUME(tokens.PROTECTED) },
+            { ALT: () => this.CONSUME(tokens.ABSTRACT) },
+            { ALT: () => this.CONSUME(tokens.FINAL) },
+          ],
+          IGNORE_AMBIGUITIES: true,
+        });
       });
       this.SUBRULE(this.identifierOrKeyword);
       // Optional EXTENDS clause
