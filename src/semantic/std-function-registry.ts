@@ -258,6 +258,19 @@ export class StdFunctionRegistry {
       });
     }
 
+    // TRUNC_INT is the V2.3 spelling of TRUNC and returns INT in CODESYS.
+    this.register({
+      name: "TRUNC_INT",
+      cppName: "TRUNC_INT",
+      returnConstraint: "specific",
+      returnMatchesFirstParam: false,
+      specificReturnType: "INT",
+      params: [{ name: "IN", constraint: "ANY_REAL", isByRef: false }],
+      isVariadic: false,
+      isConversion: false,
+      category: "numeric",
+    });
+
     // EXPT(ANY_REAL, ANY_REAL) -> ANY_REAL
     this.register({
       name: "EXPT",

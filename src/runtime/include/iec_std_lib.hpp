@@ -377,6 +377,19 @@ inline IEC_DINT ROUND(const IEC_LREAL& value) noexcept {
     return IEC_DINT(static_cast<int32_t>(std::round(iec_unwrap(value))));
 }
 
+/**
+ * TRUNC_INT - Truncate toward zero
+ * Input: ANY_REAL, Output: INT
+ * V2.3 spelling of TRUNC; returns a 16-bit INT.
+ */
+inline IEC_INT TRUNC_INT(const IEC_REAL& value) noexcept {
+    return IEC_INT(static_cast<int16_t>(std::trunc(static_cast<double>(iec_unwrap(value)))));
+}
+
+inline IEC_INT TRUNC_INT(const IEC_LREAL& value) noexcept {
+    return IEC_INT(static_cast<int16_t>(std::trunc(iec_unwrap(value))));
+}
+
 // =============================================================================
 // Selection Functions (ANY_ELEMENTARY for comparisons)
 // =============================================================================
