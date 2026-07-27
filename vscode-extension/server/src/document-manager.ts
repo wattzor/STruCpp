@@ -70,20 +70,20 @@ export class DocumentManager {
   }
 
   setWorkspaceFolders(folders: string[]): void {
-    this.workspaceFolders = new Set(folders);
+    this.workspaceFolders = new Set(folders.map((f) => f.replace(/\\/g, "/")));
     this.invalidateDiscoveryCache();
   }
 
   addWorkspaceFolders(folders: string[]): void {
     for (const f of folders) {
-      this.workspaceFolders.add(f);
+      this.workspaceFolders.add(f.replace(/\\/g, "/"));
     }
     this.invalidateDiscoveryCache();
   }
 
   removeWorkspaceFolders(folders: string[]): void {
     for (const f of folders) {
-      this.workspaceFolders.delete(f);
+      this.workspaceFolders.delete(f.replace(/\\/g, "/"));
     }
     this.invalidateDiscoveryCache();
   }

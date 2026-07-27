@@ -1104,7 +1104,7 @@ async function main(): Promise<void> {
 
   console.log("Compilation successful!");
 
-  // --build: generate main.cpp and invoke g++
+  // --build: generate repl_main.cpp and invoke g++
   if (options.build) {
     ensureCompilersAvailable(options, true);
 
@@ -1114,7 +1114,9 @@ async function main(): Promise<void> {
     }
 
     const outputDir = dirname(outputPath);
-    const mainCppPath = resolve(outputDir, "main.cpp");
+    // Use a fixed REPL harness name so a source file named main.st does not
+    // collide with the generated implementation file (main.cpp).
+    const mainCppPath = resolve(outputDir, "repl_main.cpp");
 
     // Resolve runtime include dir (auto-discovery + --cxx-flags fallback)
     const runtimeIncludeDir = findRuntimeIncludeDir(options.cxxFlags);
