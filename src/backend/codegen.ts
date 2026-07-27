@@ -750,34 +750,41 @@ export class CodeGenerator {
       typeRef.referenceKind === "ref_to" ||
       typeRef.referenceKind === "reference_to"
     ) {
-      // Pointer (IEC_Ptr<T>) and reference (IEC_REF_TO<T> / IEC_REFERENCE_TO<T>)
-      // wrappers all take the raw element type (not IECVar-wrapped); they wrap
-      // an IECVar<T> internally.
-      let elemType: string;
+      // REF_TO / REFERENCE_TO wrap a pointer to IECVar<T>, so their template
+      // argument is the raw underlying type (INT_t, MyStruct, ...).
+      // POINTER TO dereferences as T&, so for elementary types it must use the
+      // IECVar-wrapped C++ type (IEC_INT) so pointer arithmetic matches the
+      // actual Array1D<IEC_INT, ...> element size.
+      let refElemType: string;
+      let ptrElemType: string;
       if (typeRef.arrayDimensions && typeRef.elementTypeName) {
         // Array pointer/reference: baseType is already raw (Array1D<...>)
-        elemType = baseType;
+        refElemType = baseType;
+        ptrElemType = baseType;
       } else if (this.isUserDefinedType(typeRef.name)) {
         // UDT: use raw struct/FB/program name
-        elemType = this.knownProgramTypes.has(typeRef.name.toUpperCase())
+        const name = this.knownProgramTypes.has(typeRef.name.toUpperCase())
           ? `Program_${typeRef.name}`
           : typeRef.name;
+        refElemType = name;
+        ptrElemType = name;
       } else {
-        // Primitive type: use raw type mapping (BYTE_t, INT_t, etc.)
-        elemType = this.typeCodeGen.mapTypeToCpp(typeRef.name);
+        // Primitive type: raw type for references, IECVar-wrapped for POINTER TO.
+        refElemType = this.typeCodeGen.mapTypeToCpp(typeRef.name);
+        ptrElemType = this.mapVarTypeToCpp(typeRef.name);
       }
       switch (typeRef.referenceKind) {
         case "pointer_to":
           // IEC_Ptr<T> — cross-type assignment, pointer arithmetic,
           // pointer-to-integer conversion.
-          return `IEC_Ptr<${elemType}>`;
+          return `IEC_Ptr<${ptrElemType}>`;
         case "ref_to":
           // REF_TO — explicit dereference (^), nullable, rebind via
           // `:= REF(x)` / `:= ADR(x)`.
-          return `IEC_REF_TO<${elemType}>`;
+          return `IEC_REF_TO<${refElemType}>`;
         case "reference_to":
           // REFERENCE TO — implicit dereference, rebind via `REF=`.
-          return `IEC_REFERENCE_TO<${elemType}>`;
+          return `IEC_REFERENCE_TO<${refElemType}>`;
       }
     }
     // For STRING(CONSTANT_NAME), emit template with the constant name
@@ -3667,11 +3674,28 @@ export class CodeGenerator {
       this.emit(`${indent}${target} = ${sourcePtr};`);
       return;
     }
-    const source = this.generateExpression(stmt.source);
     const targetKind =
       stmt.target.kind === "VariableExpression"
         ? this.currentScopeVarRefKinds.get(stmt.target.name.toUpperCase())
         : undefined;
+    // REF= 0 / REF= NULL unbinds a reference.
+    const isNullSource =
+      stmt.source.kind === "LiteralExpression" &&
+      (stmt.source.literalType === "NULL" ||
+        (stmt.source.literalType === "INT" &&
+          (stmt.source.value === 0 ||
+            (typeof stmt.source.value === "string" &&
+              parseInt(stmt.source.value, 10) === 0))));
+    if (isNullSource) {
+      if (targetKind === "ref_to") {
+        this.emit(`${indent}${target} = IEC_NULL;`);
+      } else {
+        // REFERENCE_TO and any other reference-like target bind to NULL.
+        this.emit(`${indent}${target}.bind(IEC_NULL);`);
+      }
+      return;
+    }
+    const source = this.generateExpression(stmt.source);
     if (targetKind === "ref_to") {
       this.emit(`${indent}${target} = REF(${source});`);
     } else {
