@@ -558,6 +558,18 @@ export function shouldHarmonizeStdFuncArgs(
 }
 
 /**
+ * Returns true for standard functions whose result is the common IEC type of
+ * their value arguments, even when the first argument is a selector (MUX, SEL)
+ * or the function is not marked returnMatchesFirstParam (LIMIT).
+ */
+export function stdFuncReturnsCommonType(
+  stdFunc: StdFunctionDescriptor,
+): boolean {
+  const name = stdFunc.name.toUpperCase();
+  return ["MUX", "SEL", "LIMIT"].includes(name);
+}
+
+/**
  * Compute a single IEC type that every argument in the range can be cast to
  * without losing the sign of any value.  Mixed signed/unsigned integers are
  * widened to a signed type large enough for both ranges.  If no such type

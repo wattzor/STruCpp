@@ -86,7 +86,9 @@ import {
   shouldHarmonizeStdFuncArgs,
   isBareLiteral,
   resolveHarmonizedCommonType,
+  stdFuncReturnsCommonType,
 } from "../semantic/type-utils.js";
+import { isEnEnoArgument } from "../ast-utils.js";
 
 // =============================================================================
 // Located Variable Support
@@ -5353,18 +5355,26 @@ export class CodeGenerator {
         if (std?.specificReturnType)
           return std.specificReturnType.toUpperCase();
         // For generic functions returning a common type across value arguments
-        // (e.g. ADD, AND, MUX), infer the harmonized common type so the type
-        // system matches the C++ that will actually be emitted.
-        if (std?.returnMatchesFirstParam && expr.arguments.length > 0) {
-          if (shouldHarmonizeStdFuncArgs(std, expr.arguments.length)) {
-            const range = getHarmonizableRange(std, expr.arguments.length);
+        // (e.g. ADD, AND, MUX, SEL, LIMIT), infer the harmonized common type so
+        // the type system matches the C++ that will actually be emitted.  Strip
+        // EN/ENO implicit parameters first — they are not part of the value
+        // argument list and must not influence the common type.
+        if (
+          std &&
+          (std.returnMatchesFirstParam || stdFuncReturnsCommonType(std)) &&
+          expr.arguments.length > 0
+        ) {
+          const valueArgs = expr.arguments.filter((a) => !isEnEnoArgument(a));
+          const canComputeCommon =
+            shouldHarmonizeStdFuncArgs(std, valueArgs.length) ||
+            stdFuncReturnsCommonType(std);
+          if (canComputeCommon && valueArgs.length > 0) {
+            const range = getHarmonizableRange(std, valueArgs.length);
             if (range) {
-              const argTypes = expr.arguments.map((a) =>
+              const argTypes = valueArgs.map((a) =>
                 this.inferExprType(a.value),
               );
-              const bareFlags = expr.arguments.map((a) =>
-                isBareLiteral(a.value),
-              );
+              const bareFlags = valueArgs.map((a) => isBareLiteral(a.value));
               const common = resolveHarmonizedCommonType(
                 argTypes,
                 bareFlags,
@@ -5374,7 +5384,9 @@ export class CodeGenerator {
               if (common) return common;
             }
           }
-          return this.inferExprType(expr.arguments[0]!.value);
+          if (std.returnMatchesFirstParam && valueArgs.length > 0) {
+            return this.inferExprType(valueArgs[0]!.value);
+          }
         }
         return undefined;
       }
@@ -5607,13 +5619,20 @@ export class CodeGenerator {
     argExprs: FunctionCallExpression["arguments"],
     stdFunc: StdFunctionDescriptor,
   ): void {
-    const range = getHarmonizableRange(stdFunc, args.length);
-    if (!range || !shouldHarmonizeStdFuncArgs(stdFunc, args.length)) return;
-
-    const argTypes: (string | undefined)[] = [];
+    // EN/ENO are implicit control parameters, not value operands; they must not
+    // take part in common-type selection or be cast to a value type.
+    const valueIndices: number[] = [];
     for (let i = 0; i < argExprs.length && i < args.length; i++) {
-      argTypes[i] = this.inferExprType(argExprs[i]!.value);
+      if (!isEnEnoArgument(argExprs[i]!)) valueIndices.push(i);
     }
+
+    const valueCount = valueIndices.length;
+    const range = getHarmonizableRange(stdFunc, valueCount);
+    if (!range || !shouldHarmonizeStdFuncArgs(stdFunc, valueCount)) return;
+
+    const argTypes: (string | undefined)[] = valueIndices.map((idx) =>
+      this.inferExprType(argExprs[idx]!.value),
+    );
 
     // If we cannot infer a type for any value argument, leave the call as-is
     // and let the C++ compiler handle it.  This avoids false positives when
@@ -5629,7 +5648,7 @@ export class CodeGenerator {
 
     const isBare: boolean[] = [];
     for (let i = range.start; i < range.end; i++) {
-      isBare[i] = isBareLiteral(argExprs[i]!.value);
+      isBare[i] = isBareLiteral(argExprs[valueIndices[i]!]!.value);
     }
 
     // Pick the common IEC type, treating bare literals as untyped placeholders
@@ -5648,7 +5667,7 @@ export class CodeGenerator {
         .join(", ");
       this.addCodegenError(
         `Cannot unify argument types for ${stdFunc.cppName}(${argTypeList}) — no common IEC type can represent all values without loss`,
-        argExprs[range.start]?.value,
+        argExprs[valueIndices[range.start]!]?.value,
       );
       return;
     }
@@ -5667,7 +5686,8 @@ export class CodeGenerator {
         continue;
       }
 
-      args[i] = `static_cast<IEC_${commonType}>(${args[i]})`;
+      const rawIdx = valueIndices[i]!;
+      args[rawIdx] = `static_cast<IEC_${commonType}>(${args[rawIdx]})`;
     }
   }
 
