@@ -1214,7 +1214,7 @@ export class STParser extends CstParser {
   public refAssignStatement = this.RULE("refAssignStatement", () => {
     this.SUBRULE(this.variable);
     this.CONSUME(tokens.RefAssign);
-    this.SUBRULE2(this.variable);
+    this.SUBRULE2(this.expression);
     this.CONSUME(tokens.Semicolon);
   });
 
@@ -1637,24 +1637,36 @@ export class STParser extends CstParser {
     this.CONSUME(tokens.THIS);
     this.OR([
       {
-        // THIS^ (dereference - return self)
+        // THIS^ (dereference - return self) or THIS^.member / THIS^.method(args)
         GATE: () => this.LA(1).tokenType === tokens.Caret,
         ALT: () => {
           this.CONSUME(tokens.Caret);
+          // Optional member/method access after dereference: (*this).x
+          this.OPTION(() => {
+            this.CONSUME(tokens.Dot);
+            this.SUBRULE(this.identifierOrKeyword);
+            this.OPTION2(() => {
+              this.CONSUME(tokens.LParen);
+              this.OPTION3(() => {
+                this.SUBRULE2(this.argumentList);
+              });
+              this.CONSUME2(tokens.RParen);
+            });
+          });
         },
       },
       {
         // THIS.member or THIS.method(args)
         ALT: () => {
-          this.CONSUME(tokens.Dot);
-          this.SUBRULE(this.identifierOrKeyword);
+          this.CONSUME2(tokens.Dot);
+          this.SUBRULE3(this.identifierOrKeyword);
           // Optional function call: THIS.Method(args)
-          this.OPTION(() => {
-            this.CONSUME(tokens.LParen);
-            this.OPTION2(() => {
-              this.SUBRULE(this.argumentList);
+          this.OPTION4(() => {
+            this.CONSUME3(tokens.LParen);
+            this.OPTION5(() => {
+              this.SUBRULE4(this.argumentList);
             });
-            this.CONSUME(tokens.RParen);
+            this.CONSUME4(tokens.RParen);
           });
         },
       },

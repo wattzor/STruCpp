@@ -61,4 +61,41 @@ int main() {
     });
     expect(stdout).toBe("110");
   });
+
+  it("returns TRUE for bound POINTER TO and FALSE for NULL", () => {
+    const result = compile(`
+      PROGRAM Main
+      VAR
+        arr : ARRAY[0..3] OF INT;
+        p : POINTER TO INT;
+        b1, b2 : BOOL;
+      END_VAR
+      arr[0] := 7;
+      p := ADR(arr);
+      b1 := __ISVALIDREF(p);
+      p := NULL;
+      b2 := __ISVALIDREF(p);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "isvalidref_ptr",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << (prog.B1 ? "1" : "0")
+              << (prog.B2 ? "1" : "0") << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("10");
+  });
 });

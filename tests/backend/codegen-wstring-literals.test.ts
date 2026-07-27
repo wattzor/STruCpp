@@ -154,6 +154,20 @@ describe("WSTRING literal handling", () => {
       expect(result.cppCode).toMatch(/TO_STRING\(/);
     });
 
+    it("LEN accepts a WSTRING variable and compiles", () => {
+      const result = compile(`
+        PROGRAM Main
+          VAR
+            w : WSTRING := "hello";
+            l : INT;
+          END_VAR
+          l := LEN(w);
+        END_PROGRAM
+      `);
+      expect(result.success).toBe(true);
+      expect(result.cppCode).toMatch(/LEN\s*\(/);
+    });
+
     it("emits u\"…\" for a WSTRING literal in a struct field initialiser", () => {
       // Struct fields go through type-codegen.ts, a separate code
       // path from program variables. The literal still has to land

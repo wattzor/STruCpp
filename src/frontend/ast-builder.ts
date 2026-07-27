@@ -1742,13 +1742,19 @@ export class ASTBuilder {
   buildRefAssignStatement(node: CstNode): RefAssignStatement {
     const children = node.children as CstChildren;
     const variableNodes = getAllNodes(children.variable);
+    const exprNode = getFirstNode(children.expression);
 
-    const target = variableNodes[0]
-      ? this.buildVariableExpression(variableNodes[0])
-      : this.createDummyVariable(node);
-    const source = variableNodes[1]
-      ? this.buildVariableExpression(variableNodes[1])
-      : this.createDummyVariable(node);
+    const target =
+      (variableNodes[0]
+        ? this.buildVariableExpression(variableNodes[0])
+        : undefined) ?? this.createDummyVariable(node);
+    let source: Expression | undefined;
+    if (exprNode) {
+      source = this.buildExpression(exprNode);
+    } else if (variableNodes[1]) {
+      source = this.buildVariableExpression(variableNodes[1]);
+    }
+    source ??= this.createDummyVariable(node);
 
     return {
       kind: "RefAssignStatement",
@@ -3107,9 +3113,16 @@ export class ASTBuilder {
    */
   buildThisAccessExpression(node: CstNode): Expression {
     const children = node.children as CstChildren;
+    const hasCaret = children.Caret !== undefined;
 
-    // THIS^ (dereference - return self)
-    if (children.Caret) {
+    const idOrKwNodes = getAllNodes(children.identifierOrKeyword);
+    const memberName =
+      idOrKwNodes.length > 0
+        ? getIdentifierOrKeywordImage(idOrKwNodes[0]!)
+        : "";
+
+    // THIS^ with no member -> (*this)
+    if (hasCaret && memberName === "") {
       return {
         kind: "VariableExpression",
         sourceSpan: nodeToSourceSpan(node),
@@ -3120,13 +3133,7 @@ export class ASTBuilder {
       };
     }
 
-    const idOrKwNodes = getAllNodes(children.identifierOrKeyword);
-    const memberName =
-      idOrKwNodes.length > 0
-        ? getIdentifierOrKeywordImage(idOrKwNodes[0]!)
-        : "";
-
-    // If there's a LParen, it's a method call
+    // If there's a LParen, it's a method call: THIS.method(args) or THIS^.method(args)
     if (children.LParen) {
       const args: Argument[] = [];
       const argListNode = getFirstNode(children.argumentList);
@@ -3144,14 +3151,14 @@ export class ASTBuilder {
       };
     }
 
-    // Otherwise it's member access
+    // Otherwise it's member access: THIS.member or THIS^.member
     return {
       kind: "VariableExpression",
       sourceSpan: nodeToSourceSpan(node),
       name: "THIS",
       subscripts: [],
-      fieldAccess: [memberName],
-      isDereference: false,
+      fieldAccess: memberName === "" ? [] : [memberName],
+      isDereference: hasCaret,
     };
   }
 

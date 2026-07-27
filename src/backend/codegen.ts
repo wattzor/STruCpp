@@ -750,34 +750,41 @@ export class CodeGenerator {
       typeRef.referenceKind === "ref_to" ||
       typeRef.referenceKind === "reference_to"
     ) {
-      // Pointer (IEC_Ptr<T>) and reference (IEC_REF_TO<T> / IEC_REFERENCE_TO<T>)
-      // wrappers all take the raw element type (not IECVar-wrapped); they wrap
-      // an IECVar<T> internally.
-      let elemType: string;
+      // REF_TO / REFERENCE_TO wrap a pointer to IECVar<T>, so their template
+      // argument is the raw underlying type (INT_t, MyStruct, ...).
+      // POINTER TO dereferences as T&, so for elementary types it must use the
+      // IECVar-wrapped C++ type (IEC_INT) so pointer arithmetic matches the
+      // actual Array1D<IEC_INT, ...> element size.
+      let refElemType: string;
+      let ptrElemType: string;
       if (typeRef.arrayDimensions && typeRef.elementTypeName) {
         // Array pointer/reference: baseType is already raw (Array1D<...>)
-        elemType = baseType;
+        refElemType = baseType;
+        ptrElemType = baseType;
       } else if (this.isUserDefinedType(typeRef.name)) {
         // UDT: use raw struct/FB/program name
-        elemType = this.knownProgramTypes.has(typeRef.name.toUpperCase())
+        const name = this.knownProgramTypes.has(typeRef.name.toUpperCase())
           ? `Program_${typeRef.name}`
           : typeRef.name;
+        refElemType = name;
+        ptrElemType = name;
       } else {
-        // Primitive type: use raw type mapping (BYTE_t, INT_t, etc.)
-        elemType = this.typeCodeGen.mapTypeToCpp(typeRef.name);
+        // Primitive type: raw type for references, IECVar-wrapped for POINTER TO.
+        refElemType = this.typeCodeGen.mapTypeToCpp(typeRef.name);
+        ptrElemType = this.mapVarTypeToCpp(typeRef.name);
       }
       switch (typeRef.referenceKind) {
         case "pointer_to":
           // IEC_Ptr<T> — cross-type assignment, pointer arithmetic,
           // pointer-to-integer conversion.
-          return `IEC_Ptr<${elemType}>`;
+          return `IEC_Ptr<${ptrElemType}>`;
         case "ref_to":
           // REF_TO — explicit dereference (^), nullable, rebind via
           // `:= REF(x)` / `:= ADR(x)`.
-          return `IEC_REF_TO<${elemType}>`;
+          return `IEC_REF_TO<${refElemType}>`;
         case "reference_to":
           // REFERENCE TO — implicit dereference, rebind via `REF=`.
-          return `IEC_REFERENCE_TO<${elemType}>`;
+          return `IEC_REFERENCE_TO<${refElemType}>`;
       }
     }
     // For STRING(CONSTANT_NAME), emit template with the constant name
@@ -3667,11 +3674,28 @@ export class CodeGenerator {
       this.emit(`${indent}${target} = ${sourcePtr};`);
       return;
     }
-    const source = this.generateExpression(stmt.source);
     const targetKind =
       stmt.target.kind === "VariableExpression"
         ? this.currentScopeVarRefKinds.get(stmt.target.name.toUpperCase())
         : undefined;
+    // REF= 0 / REF= NULL unbinds a reference.
+    const isNullSource =
+      stmt.source.kind === "LiteralExpression" &&
+      (stmt.source.literalType === "NULL" ||
+        (stmt.source.literalType === "INT" &&
+          (stmt.source.value === 0 ||
+            (typeof stmt.source.value === "string" &&
+              parseInt(stmt.source.value, 10) === 0))));
+    if (isNullSource) {
+      if (targetKind === "ref_to") {
+        this.emit(`${indent}${target} = IEC_NULL;`);
+      } else {
+        // REFERENCE_TO and any other reference-like target bind to NULL.
+        this.emit(`${indent}${target}.bind(IEC_NULL);`);
+      }
+      return;
+    }
+    const source = this.generateExpression(stmt.source);
     if (targetKind === "ref_to") {
       this.emit(`${indent}${target} = REF(${source});`);
     } else {
@@ -3828,18 +3852,34 @@ export class CodeGenerator {
     const end = this.generateExpression(stmt.end);
 
     const forLine = this.currentLine;
+    let needsStepBlock = false;
     if (stmt.step) {
       const stepExpr = this.generateExpression(stmt.step);
-      // Determine direction from step when it's a literal
       const stepVal = this.evaluateLiteralInt(stmt.step);
-      if (stepVal !== undefined && stepVal < 0) {
-        this.emit(
-          `${indent}for (${varName} = ${start}; ${varName} >= ${end}; ${varName} += ${stepExpr}) {`,
-        );
+      if (stepVal !== undefined) {
+        // Compile-time step direction: keep the simple form the test suite expects.
+        if (stepVal < 0) {
+          this.emit(
+            `${indent}for (${varName} = ${start}; ${varName} >= ${end}; ${varName} += ${stepExpr}) {`,
+          );
+        } else {
+          this.emit(
+            `${indent}for (${varName} = ${start}; ${varName} <= ${end}; ${varName} += ${stepExpr}) {`,
+          );
+        }
       } else {
+        // Variable step: evaluate once and pick the direction at runtime.
+        needsStepBlock = true;
+        const stepTemp = `__strucpp_for_step_${this.tempVarCounter++}`;
+        this.emit(`${indent}{`);
         this.emit(
-          `${indent}for (${varName} = ${start}; ${varName} <= ${end}; ${varName} += ${stepExpr}) {`,
+          `${indent}${this.options.indent}const auto ${stepTemp} = ${stepExpr};`,
         );
+        this.emit(
+          `${indent}for (${varName} = ${start}; (${stepTemp} >= 0 ? ${varName} <= ${end} : ${varName} >= ${end}); ${varName} += ${stepTemp}) {`,
+        );
+        // The temp variable is scoped to the surrounding block; the body
+        // and loop increment use it.  The closing block is emitted below.
       }
     } else {
       // Default step is 1, ascending
@@ -3860,6 +3900,9 @@ export class CodeGenerator {
     const closingLine = this.currentLine;
     this.emit(`${indent}}`);
     if (exitLabel.used) this.emit(`${indent}${exitLabel.name}: ;`);
+    if (needsStepBlock) {
+      this.emit(`${indent}}`);
+    }
     this.recordLineMapping(stmt.sourceSpan.endLine, closingLine);
   }
 
@@ -4041,30 +4084,52 @@ export class CodeGenerator {
 
     // Resolve the argument's type from the type-checker annotation if available.
     let targetType: IECType | undefined = arg.resolvedType;
-    if (!targetType) {
-      // Fallback: treat the base variable name as an elementary type.
-      targetType = this.resolveTypeByName(arg.name);
+    if (!targetType && declaration) {
+      // The argument is a variable; resolve its declared type by name.
+      // For inline ARRAY [...] OF T declarations we fall through to the
+      // dedicated array handling below, which uses the element type name.
+      targetType = this.resolveTypeByName(declaration.type.name);
     }
 
     let typeClassName = "TYPE_NONE";
     let typeName = "TYPE_NONE";
-    let bitSize = 0;
-    let elemBitSize = 0;
+    let bitSizeExpr = "0u";
+    let elemBitSizeExpr = "0u";
     let numElements = 0;
     let baseTypeClassName = "TYPE_BOOL";
+
+    const compositeBitSize = (cppType: string): string =>
+      `static_cast<uint32_t>(strucpp::iec_sizeof<${cppType}>::value * 8u)`;
 
     if (targetType?.typeKind === "array") {
       const arr = targetType as ArrayType;
       typeClassName = "TYPE_ARRAY";
       typeName = "ARRAY";
-      bitSize = this.getTypeBitsForIECType(arr);
-      elemBitSize = this.getTypeBitsForIECType(arr.elementType);
       numElements = 1;
       for (const dim of arr.dimensions) {
         numElements *= Math.max(1, dim.end - dim.start + 1);
       }
       const baseTypeClass = resolveTypeClass(arr.elementType);
       baseTypeClassName = TYPE_CLASS_NAME.get(baseTypeClass) ?? "TYPE_NONE";
+      const elemKind = arr.elementType.typeKind;
+      const elemName = declaration?.type.elementTypeName;
+      const isCompositeElement =
+        elemKind === "struct" ||
+        elemKind === "functionBlock" ||
+        elemKind === "program" ||
+        (elemKind === "elementary" &&
+          elemName !== undefined &&
+          this.isCompositeTypeName(elemName));
+      if (elemName && isCompositeElement) {
+        // Composite array elements: SIZEOF must include padding and match the
+        // actual Array1D<...> storage layout.
+        bitSizeExpr = compositeBitSize(this.mapTypeRefToCpp(declaration.type));
+        elemBitSizeExpr = compositeBitSize(this.mapVarTypeToCpp(elemName));
+      } else {
+        const elemBits = this.getTypeBitsForIECType(arr.elementType);
+        bitSizeExpr = `${numElements * elemBits}u`;
+        elemBitSizeExpr = `${elemBits}u`;
+      }
     } else if (
       declaration?.type.arrayDimensions &&
       declaration.type.arrayDimensions.length > 0 &&
@@ -4075,23 +4140,52 @@ export class CodeGenerator {
       const elementType = this.resolveTypeByName(
         declaration.type.elementTypeName,
       );
-      elemBitSize = elementType ? this.getTypeBitsForIECType(elementType) : 0;
       numElements = 1;
       for (const dim of declaration.type.arrayDimensions) {
         numElements *= Math.max(1, dim.end - dim.start + 1);
       }
-      bitSize = numElements * elemBitSize;
       typeClassName = "TYPE_ARRAY";
       typeName = "ARRAY";
       const baseTypeClass = elementType
         ? resolveTypeClass(elementType)
         : TYPE_CLASS.TYPE_NONE;
       baseTypeClassName = TYPE_CLASS_NAME.get(baseTypeClass) ?? "TYPE_NONE";
+      const elemKind = elementType?.typeKind;
+      const elemName = declaration.type.elementTypeName;
+      const isCompositeElement =
+        elemKind === "struct" ||
+        elemKind === "functionBlock" ||
+        elemKind === "program" ||
+        (elemKind === "elementary" && this.isCompositeTypeName(elemName));
+      if (elementType && isCompositeElement) {
+        bitSizeExpr = compositeBitSize(this.mapTypeRefToCpp(declaration.type));
+        elemBitSizeExpr = compositeBitSize(this.mapVarTypeToCpp(elemName));
+      } else {
+        const elemBits = elementType
+          ? this.getTypeBitsForIECType(elementType)
+          : 0;
+        bitSizeExpr = `${numElements * elemBits}u`;
+        elemBitSizeExpr = `${elemBits}u`;
+      }
     } else if (targetType) {
       const typeClass = resolveTypeClass(targetType);
       typeClassName = TYPE_CLASS_NAME.get(typeClass) ?? "TYPE_NONE";
       typeName = typeNameUtil(targetType);
-      bitSize = this.getTypeBitsForIECType(targetType);
+      const isComposite =
+        targetType.typeKind === "struct" ||
+        targetType.typeKind === "functionBlock" ||
+        targetType.typeKind === "program" ||
+        (targetType.typeKind === "elementary" &&
+          declaration !== undefined &&
+          this.isCompositeTypeName(declaration.type.name));
+      if (isComposite) {
+        const cppType = declaration
+          ? this.mapTypeRefToCpp(declaration.type)
+          : typeNameUtil(targetType);
+        bitSizeExpr = compositeBitSize(cppType);
+      } else {
+        bitSizeExpr = `${this.getTypeBitsForIECType(targetType)}u`;
+      }
     }
 
     const comment = declaration?.comment ?? "";
@@ -4107,13 +4201,13 @@ export class CodeGenerator {
       `/*BYTEOFFSET=*/ IEC_DINT(${byteOffset})`,
       `/*AREA=*/ IEC_INT(${area})`,
       `/*BITNR=*/ IEC_INT(${bitNr})`,
-      `/*BITSIZE=*/ IEC_UDINT(${bitSize}u)`,
+      `/*BITSIZE=*/ IEC_UDINT(${bitSizeExpr})`,
       `/*BITADDRESS=*/ IEC_UDINT(${bitAddress}u)`,
       `/*TYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${typeClassName})`,
       `/*TYPENAME=*/ strucpp::IECString<79>("${this.escapeCString(typeName)}")`,
       `/*NUMELEMENTS=*/ IEC_UDINT(${numElements}u)`,
       `/*BASETYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${baseTypeClassName})`,
-      `/*ELEMBITSIZE=*/ IEC_UDINT(${elemBitSize}u)`,
+      `/*ELEMBITSIZE=*/ IEC_UDINT(${elemBitSizeExpr})`,
       `/*MEMORYAREA=*/ IEC_MEMORY_AREA(strucpp::__SYSTEM::MEMORY_AREA::${memoryAreaName})`,
       `/*SYMBOL=*/ strucpp::IECString<39>("${this.escapeCString(symbolName)}")`,
       `/*COMMENT=*/ strucpp::IECString<79>("${this.escapeCString(comment)}")`,
@@ -4268,6 +4362,30 @@ export class CodeGenerator {
     const systemType = getSystemType(name);
     if (systemType) return systemType;
     return this.symbolTables.lookupType(upper)?.resolvedType ?? undefined;
+  }
+
+  /**
+   * True if `typeName` denotes a user-defined struct, function block or
+   * program — i.e. a composite whose BitSize should be derived from the
+   * generated C++ class size, not from an elementary bit width table.
+   */
+  private isCompositeTypeName(name: string): boolean {
+    const upper = name.toUpperCase();
+    if (ELEMENTARY_TYPES[upper]) return false;
+    if (getSystemType(name)) return false;
+    if (this.knownFBTypes.has(upper) || this.knownProgramTypes.has(upper)) {
+      return true;
+    }
+    const typeSymbol = this.symbolTables.lookupType(upper);
+    if (!typeSymbol) return false;
+    const defKind = (
+      typeSymbol.declaration as { definition?: { kind: string } } | undefined
+    )?.definition?.kind;
+    return (
+      defKind === "StructDefinition" ||
+      defKind === "FunctionBlockDefinition" ||
+      defKind === "ProgramDefinition"
+    );
   }
 
   /**
@@ -5855,8 +5973,24 @@ export class CodeGenerator {
     // 3. Check for standard function (may have different cppName)
     const stdFunc = this.stdRegistry.lookup(nameUpper);
     if (stdFunc) {
+      const isRealRoundingFunc =
+        nameUpper === "ROUND" ||
+        nameUpper === "TRUNC" ||
+        nameUpper === "TRUNC_INT";
       const args = expr.arguments.map((arg, idx) => {
         let generated = this.generateExpression(arg.value);
+        // Untyped real literals like ROUND(1.5) are C++ doubles and would be
+        // ambiguous between the IEC_REAL and IEC_LREAL overloads. Force the
+        // float IEC_REAL overload so the generated C++ compiles.
+        if (
+          isRealRoundingFunc &&
+          idx === 0 &&
+          arg.value.kind === "LiteralExpression" &&
+          arg.value.literalType === "REAL" &&
+          !arg.value.typePrefix
+        ) {
+          generated = `IEC_REAL(${generated}f)`;
+        }
         // For the bare `TO_xxx(temporal_var)` spelling, `nameUpper` is
         // a registered std function (not a `*_TO_*` form) so the source
         // type isn't in the name — infer it from the argument's IEC

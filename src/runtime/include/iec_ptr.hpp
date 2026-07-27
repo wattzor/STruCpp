@@ -125,6 +125,9 @@ public:
     T* get() const noexcept { return static_cast<T*>(ptr_); }
     void* get_void() const noexcept { return ptr_; }
 
+    // Null check for __ISVALIDREF and similar operators
+    bool is_null() const noexcept { return ptr_ == nullptr; }
+
     // Pointer arithmetic (in units of sizeof(T))
     // Use templates to directly match any arithmetic type, avoiding
     // ambiguity with the integral conversion operator.

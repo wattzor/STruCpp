@@ -365,6 +365,12 @@ public:
     void bind(IECVar<T>& var) noexcept { ptr_ = &var; }
 
     /**
+     * Bind to NULL (REF= 0) — accessing afterwards is undefined, but the
+     * construct is syntactically valid in CODESYS and needed for __ISVALIDREF.
+     */
+    void bind(std::nullptr_t) noexcept { ptr_ = nullptr; }
+
+    /**
      * Check if reference is bound to a variable (__ISVALIDREF)
      */
     bool is_bound() const noexcept { return ptr_ != nullptr; }
@@ -488,6 +494,11 @@ inline IEC_BOOL __ISVALIDREF(const IEC_REF_TO<T>& ref) noexcept {
 template<typename T>
 inline IEC_BOOL __ISVALIDREF(const IEC_REFERENCE_TO<T>& ref) noexcept {
     return IEC_BOOL(ref.is_bound());
+}
+
+template<typename T>
+inline IEC_BOOL __ISVALIDREF(const IEC_Ptr<T>& ptr) noexcept {
+    return IEC_BOOL(!ptr.is_null());
 }
 
 /*
