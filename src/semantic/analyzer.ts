@@ -178,6 +178,7 @@ export class SemanticAnalyzer {
   private symbolTables: SymbolTables;
   private typeChecker: TypeChecker;
   private stdRegistry = new StdFunctionRegistry();
+  private reservedCppNames: Set<string>;
   private enumMemberMap: Map<string, EnumMemberEntry> = new Map();
   private errors: CompileError[] = [];
   private warnings: CompileError[] = [];
@@ -188,6 +189,7 @@ export class SemanticAnalyzer {
   constructor() {
     this.symbolTables = new SymbolTables();
     this.typeChecker = new TypeChecker(this.symbolTables, this.stdRegistry);
+    this.reservedCppNames = this.stdRegistry.getReservedGlobalCppNames();
   }
 
   /**
@@ -281,6 +283,19 @@ export class SemanticAnalyzer {
     }
   }
 
+  private checkReservedCppName(name: string, sourceSpan: SourceSpan): void {
+    const upper = name.toUpperCase();
+    if (this.reservedCppNames.has(upper)) {
+      this.addError(
+        `Identifier '${name}' is reserved by the C++ runtime and cannot be used for a global variable or type alias`,
+        sourceSpan.startLine,
+        sourceSpan.startCol,
+        sourceSpan.file,
+        "RESERVED_CPP_NAME",
+      );
+    }
+  }
+
   /**
    * Build symbol tables from the AST.
    */
@@ -300,6 +315,13 @@ export class SemanticAnalyzer {
 
     // Register type declarations
     for (const typeDecl of ast.types) {
+      if (
+        typeDecl.definition.kind === "TypeReference" ||
+        typeDecl.definition.kind === "SubrangeDefinition" ||
+        typeDecl.definition.kind === "ArrayDefinition"
+      ) {
+        this.checkReservedCppName(typeDecl.name, typeDecl.sourceSpan);
+      }
       try {
         // Use enum typeKind for EnumDefinition so CASE and type checks work correctly
         const resolvedType: EnumType | ElementaryType =
@@ -611,6 +633,7 @@ export class SemanticAnalyzer {
       for (const decl of block.declarations) {
         for (const name of decl.names) {
           this.checkReservedName(name, decl.sourceSpan);
+          this.checkReservedCppName(name, decl.sourceSpan);
           try {
             const varType = this.resolveVarType(
               decl.type.name,
