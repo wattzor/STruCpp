@@ -1636,6 +1636,19 @@ inline IEC_UDINT IEC_SIZEOF(const T&) noexcept {
 }
 
 /**
+ * IEC_XSIZEOF(var) - CODESYS extension that returns the logical IEC byte size
+ * as a pointer-width unsigned integer (__XWORD). Equivalent to SIZEOF but the
+ * result type matches ULINT on 64-bit targets and UDINT on 32-bit targets,
+ * matching CODESYS's documented XSIZEOF semantics.
+ */
+template<typename T>
+inline IEC_XWORD IEC_XSIZEOF(const T&) noexcept {
+    using NoRef = typename std::remove_reference<T>::type;
+    using NoCV = typename std::remove_cv<NoRef>::type;
+    return static_cast<IEC_XWORD>(static_cast<XWORD_t>(iec_sizeof<NoCV>::value));
+}
+
+/**
  * MEMCPY(dest, src, n) - Copies n bytes from src to dest.
  * CODESYS extension. Accepts uintptr_t addresses from ADR() for
  * pointer arithmetic compatibility.

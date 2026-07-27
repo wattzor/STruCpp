@@ -77,4 +77,46 @@ int main() {
     });
     expect(stdout).toBe("20,4,81,2,2,4");
   });
+
+  it("returns logical IEC byte size for a function block instance and its type name", () => {
+    const result = compile(`
+      FUNCTION_BLOCK MyFB
+      VAR
+        a : INT;
+        b : BOOL;
+        c : DINT;
+      END_VAR
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR
+        fb : MyFB;
+        sizeFb : UDINT;
+        sizeFbType : UDINT;
+      END_VAR
+      sizeFb := SIZEOF(fb);
+      sizeFbType := SIZEOF(MyFB);
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "sizeof-fb",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << static_cast<unsigned>(prog.SIZEFB) << ","
+              << static_cast<unsigned>(prog.SIZEFBTYPE) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("7,7");
+  });
 });
