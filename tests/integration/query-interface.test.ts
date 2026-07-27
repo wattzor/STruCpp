@@ -140,4 +140,56 @@ describe.skipIf(!hasGpp)("__QUERYINTERFACE runtime support", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("1 passed, 0 failed");
   });
+
+  it("queries an interface into a POINTER TO interface field and calls through it", () => {
+    const sourceST = `
+      INTERFACE IBase
+        METHOD GetValue : INT
+        END_METHOD
+      END_INTERFACE
+
+      FUNCTION_BLOCK Inner IMPLEMENTS IBase
+        METHOD PUBLIC GetValue : INT
+          GetValue := 42;
+        END_METHOD
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Container
+        VAR
+          inner : Inner;
+          itfPtr : POINTER TO IBase;
+        END_VAR
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Comp IMPLEMENTS IBase
+        METHOD PUBLIC GetValue : INT
+          GetValue := 10;
+        END_METHOD
+      END_FUNCTION_BLOCK
+    `;
+
+    const testST = `
+      TEST 'QueryInterface into nested POINTER TO interface field'
+      VAR
+        c : Comp;
+        cont : Container;
+        ok : BOOL;
+        got : INT;
+      END_VAR
+      ok := __QUERYINTERFACE(c, cont.itfPtr);
+      got := cont.itfPtr^.GetValue();
+      ASSERT_EQ(ok, TRUE);
+      ASSERT_EQ(got, 10);
+      END_TEST
+    `;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "query_interface_nested_ptr_test.st",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("1 passed, 0 failed");
+  });
 });

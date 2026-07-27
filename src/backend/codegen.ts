@@ -5157,45 +5157,41 @@ export class CodeGenerator {
    */
   private interfacePointerObject(
     expr: Expression,
-    interfaceType: string,
+    _interfaceType: string,
   ): string | undefined {
+    // Explicit DREF(ptr).Method() — the operand is already the pointer.
+    if (expr.kind === "DrefExpression") {
+      return this.generateExpression(expr.operand);
+    }
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.interfacePointerObject(expr.expression, _interfaceType);
+    }
     if (expr.kind !== "VariableExpression") return undefined;
-    const nameUpper = expr.name.toUpperCase();
-    const pointedType = this.currentScopeVarTypes.get(nameUpper);
-    if (!pointedType) return undefined;
 
     let isDeref = false;
+    const baseExpr: VariableExpression = { ...expr, isDereference: false };
     if (expr.isDereference) {
       isDeref = true;
-    } else if (
+    }
+    if (
       expr.accessChain &&
       expr.accessChain.length > 0 &&
       expr.accessChain[expr.accessChain.length - 1]!.kind === "dereference"
     ) {
       isDeref = true;
-    }
-    if (!isDeref) return undefined;
-
-    // If the base variable's type is the interface type itself, the variable
-    // is a POINTER TO / REF_TO / REFERENCE TO that interface and the ^ is a
-    // dereference. Use the pointer directly for the dispatch lambda.
-    if (pointedType.toUpperCase() !== interfaceType.toUpperCase()) {
-      return undefined;
-    }
-
-    // Generate the base pointer expression without the final dereference.
-    const baseExpr: VariableExpression = { ...expr, isDereference: false };
-    if (baseExpr.accessChain && baseExpr.accessChain.length > 0) {
-      const chain = [...baseExpr.accessChain];
-      if (chain[chain.length - 1]!.kind === "dereference") {
-        chain.pop();
-      }
+      const chain = [...expr.accessChain];
+      chain.pop();
       if (chain.length === 0) {
         delete baseExpr.accessChain;
       } else {
         baseExpr.accessChain = chain;
       }
     }
+    if (!isDeref) return undefined;
+
+    // Generate the pointer expression without the final ^ dereference.
+    // The caller already verified the object expression resolves to an
+    // interface type, so the base must be a pointer/reference to it.
     return this.generateExpression(baseExpr);
   }
 
