@@ -147,7 +147,7 @@ CODESYS source**. Every one needs either a documentation link or an oracle run.
 | C4 | `TO_INT` rounds to nearest | Implemented. **Partial source:** CODESYS conversion operators page notes rounding for borderline cases depends on the target FPU, so the tie rule is not universally fixed. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html |
 | C5 | The `.5` tie rule is half-away-from-zero | **Target-dependent per CODESYS docs.** `ROUND` borderline cases depend on the target FPU; CODESYS gives `-1.5` as an example of target-specific behavior. STruCpp uses `std::round` (half-away-from-zero on Linux/x86_64); snapshot is `@oracle: host-x86_64-fpu`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_conversion_operators.html |
 | C6 | `TRUNC`/`ROUND` return `DINT` | **Verified and implemented.** CODESYS V3: `TRUNC` converts `REAL` → `DINT`; `ROUND` returns the nearest `DINT`. STruCpp now returns `IEC_DINT` for both. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_trunc.html |
-| C7 | `TRUNC_INT` exists and returns `INT` | Sourced. CODESYS V3: `TRUNC_INT` converts `REAL` to `INT`; it is the V2.3 spelling of `TRUNC`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_trunc_int.html |
+| C7 | `TRUNC_INT` exists and returns `INT` | **Verified and implemented.** CODESYS V3: `TRUNC_INT` converts `REAL` to `INT`; it is the V2.3 spelling of `TRUNC`. STruCpp now returns `IEC_INT` for `TRUNC_INT` and `IEC_DINT` for `TRUNC`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_trunc_int.html |
 
 ### Boolean evaluation
 | # | Claim | Status |

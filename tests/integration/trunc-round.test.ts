@@ -136,4 +136,43 @@ END_TEST
     expect(exitCode).toBe(0);
     expect(stdout).not.toContain("[FAIL]");
   });
+
+  it("TRUNC_INT returns INT toward zero", () => {
+    const sourceST = `
+PROGRAM TruncIntTest
+VAR
+  r1 : REAL := 1.9;
+  r2 : REAL := -1.4;
+  lr : LREAL := 2.7;
+  i1 : INT;
+  i2 : INT;
+  i3 : INT;
+END_VAR
+i1 := TRUNC_INT(r1);
+i2 := TRUNC_INT(r2);
+i3 := TRUNC_INT(lr);
+END_PROGRAM
+`;
+
+    const testST = `
+TEST 'TRUNC_INT returns INT'
+VAR uut : TruncIntTest; END_VAR
+uut();
+ASSERT_EQ(uut.i1, 1);
+ASSERT_EQ(uut.i2, -1);
+ASSERT_EQ(uut.i3, 2);
+END_TEST
+`;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "test_trunc_int.st",
+      tempDirPrefix: "strucpp-trunc-int-",
+      isTestBuild: true,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("[FAIL]");
+  });
 });
