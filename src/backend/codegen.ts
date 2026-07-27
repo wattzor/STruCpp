@@ -5621,7 +5621,19 @@ export class CodeGenerator {
     // comparisons and selections correctly; forcing a common type here would
     // reject valid pairs like MAX(-LINT#1, ULINT#1).  MUX does not have a
     // mixed-type overload for same-typed leading inputs, so it is harmonised.
-    return ["ADD", "MUL", "SUB", "DIV", "MOD", "MUX"].includes(name);
+    // AND/OR/XOR are variadic bitwise functions that need a single IEC bit
+    // type across all arguments to match the runtime template signatures.
+    return [
+      "ADD",
+      "MUL",
+      "SUB",
+      "DIV",
+      "MOD",
+      "MUX",
+      "AND",
+      "OR",
+      "XOR",
+    ].includes(name);
   }
 
   /**
