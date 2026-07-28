@@ -1548,6 +1548,40 @@ int main() {
     expect(runResult.output).toContain('pos=0');
     expect(runResult.output).toContain('neg=1');
   });
+
+  it('initializes program-level arrays from aggregate literals at runtime', () => {
+    const source = `
+      PROGRAM Main
+        VAR
+          arr : ARRAY[0..3] OF INT := [10, 20, 30, 40];
+          x : INT;
+        END_VAR
+        x := arr[1];
+      END_PROGRAM
+    `;
+    const result = compile(source);
+    expect(result.success).toBe(true);
+
+    // Constructor must emit a brace initializer from the aggregate literal.
+    expect(result.cppCode).toContain('ARR({10, 20, 30, 40})');
+
+    const mainCode = `
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << "x=" << prog.X.get() << std::endl;
+    return 0;
+}
+`;
+    const runResult = compileAndRun(
+      result.headerCode,
+      result.cppCode,
+      mainCode,
+      'program_array_init',
+    );
+    expect(runResult.success).toBe(true);
+    expect(runResult.output).toContain('x=20');
+  });
 });
 
 /**
@@ -1915,4 +1949,5 @@ describe('Multi-file codegen output', () => {
     const pouFile = result.cppFiles.find((f) => f.name.startsWith('pou_'))!;
     expect(pouFile.content).not.toContain('c_blocks.h');
   });
+
 });

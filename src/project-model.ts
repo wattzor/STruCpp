@@ -919,6 +919,13 @@ export class ProjectModelBuilder {
       }
       return expr.name;
     }
+    if (expr.kind === "ArrayLiteralExpression") {
+      const elements = expr.elements
+        .map((e) => this.expressionToString(e))
+        .filter((s) => s !== "")
+        .join(", ");
+      return `[${elements}]`;
+    }
     return "";
   }
 
