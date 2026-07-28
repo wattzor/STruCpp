@@ -1250,6 +1250,9 @@ export class CodeGenerator {
     this.emitHeader('#include "iec_pointer.hpp"');
     this.emitHeader('#include "iec_string.hpp"');
     this.emitHeader('#include "iec_wstring.hpp"');
+    this.emitHeader("#ifdef STRUCPP_TEST");
+    this.emitHeader('  #include "iec_test.hpp"');
+    this.emitHeader("#endif");
     this.emitHeader("#include <array>");
     this.emitHeader("#include <cstddef>");
     this.emitHeader("#include <string>");

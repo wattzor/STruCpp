@@ -283,6 +283,7 @@ export class TypeCodeGenerator {
 
     // Collect member C++ types so iec_byte_size can be computed with padding.
     const memberTypes: string[] = [];
+    const memberNames: string[] = [];
     for (const field of def.fields) {
       let cppType: string;
       if (field.type.arrayDimensions && field.type.elementTypeName) {
@@ -311,6 +312,7 @@ export class TypeCodeGenerator {
             ? `${fieldName}_`
             : fieldName;
         memberTypes.push(cppType);
+        memberNames.push(emitName);
         if (field.initialValue) {
           const initVal = this.expressionToCpp(field.initialValue);
           // Array types can't be initialized with = 0; use {} instead
@@ -339,6 +341,29 @@ export class TypeCodeGenerator {
         `${this.options.indent}static constexpr std::size_t iec_byte_size = iec_struct_size<${memberTypes.join(", ")}>::value;`,
       );
     }
+
+    // Equality and test-only stream output helpers for ASSERT_EQ on structs.
+    if (memberNames.length > 0) {
+      const eqExpr = memberNames.map((n) => `${n} == other.${n}`).join(" && ");
+      this.emit(
+        `${this.options.indent}bool operator==(const ${name}& other) const noexcept { return ${eqExpr}; }`,
+      );
+      this.emit(
+        `${this.options.indent}bool operator!=(const ${name}& other) const noexcept { return !(*this == other); }`,
+      );
+      this.emit(`${this.options.indent}#ifdef STRUCPP_TEST`);
+      const streamExpr = memberNames
+        .map(
+          (n, i) =>
+            `os << "${i === 0 ? "" : ", "}${n}=" << to_display_string(s.${n})`,
+        )
+        .join("; ");
+      this.emit(
+        `${this.options.indent}friend std::ostream& operator<<(std::ostream& os, const ${name}& s) { os << "{"; ${streamExpr}; os << "}"; return os; }`,
+      );
+      this.emit(`${this.options.indent}#endif`);
+    }
+
     this.emit("};");
     this.emit("");
   }
