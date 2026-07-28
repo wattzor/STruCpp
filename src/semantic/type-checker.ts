@@ -496,6 +496,7 @@ export class TypeChecker {
       const prefixType = ELEMENTARY_TYPES[expr.typePrefix.toUpperCase()];
       if (prefixType) {
         expr.resolvedType = prefixType;
+        this.checkTypedLiteralRange(expr, prefixType.name);
         return prefixType;
       }
     }
@@ -1324,6 +1325,88 @@ export class TypeChecker {
         value.sourceSpan.file,
       );
       return;
+    }
+  }
+
+  /**
+   * Check whether a typed numeric literal fits its own declared prefix type.
+   * Typed literals like `BYTE#300` or `SINT#128` are invalid regardless of
+   * the assignment target because the prefix constrains the value range.
+   */
+  private checkTypedLiteralRange(
+    expr: LiteralExpression,
+    typeName: string,
+  ): void {
+    const range = getTypeNumericRange(typeName);
+    if (!range) return;
+
+    const hashIdx = expr.rawValue.indexOf("#");
+    const valuePart =
+      hashIdx !== -1 ? expr.rawValue.slice(hashIdx + 1) : expr.rawValue;
+
+    if (valuePart.length === 0) return;
+
+    if (expr.literalType === "INT") {
+      const bigValue = parseIntegerLiteral(valuePart);
+      if (bigValue === undefined) return;
+      if (range.isInteger) {
+        if (bigValue < range.min || bigValue > range.max) {
+          this.addError(
+            `Literal value ${bigValue} is out of range for ${typeName}`,
+            expr.sourceSpan.startLine,
+            expr.sourceSpan.startCol,
+            expr.sourceSpan.file,
+          );
+        }
+      } else {
+        const num = Number(bigValue);
+        if (Math.abs(num) > range.max) {
+          this.addError(
+            `Literal value ${bigValue} overflows ${typeName}`,
+            expr.sourceSpan.startLine,
+            expr.sourceSpan.startCol,
+            expr.sourceSpan.file,
+          );
+        }
+      }
+    } else if (expr.literalType === "REAL") {
+      const num = Number(valuePart);
+      if (!Number.isFinite(num)) {
+        this.addError(
+          `Literal value ${expr.rawValue} is not finite`,
+          expr.sourceSpan.startLine,
+          expr.sourceSpan.startCol,
+          expr.sourceSpan.file,
+        );
+        return;
+      }
+      if (Math.abs(num) > range.max) {
+        this.addError(
+          `Literal value ${expr.rawValue} overflows ${typeName}`,
+          expr.sourceSpan.startLine,
+          expr.sourceSpan.startCol,
+          expr.sourceSpan.file,
+        );
+      }
+    } else if (expr.literalType === "BOOL") {
+      const upper = valuePart.trim().toUpperCase();
+      if (
+        upper !== "TRUE" &&
+        upper !== "FALSE" &&
+        upper !== "1" &&
+        upper !== "0"
+      ) {
+        return;
+      }
+      const intValue = upper === "TRUE" || upper === "1" ? 1n : 0n;
+      if (intValue < range.min || intValue > range.max) {
+        this.addError(
+          `Boolean literal ${expr.rawValue} does not fit in ${typeName}`,
+          expr.sourceSpan.startLine,
+          expr.sourceSpan.startCol,
+          expr.sourceSpan.file,
+        );
+      }
     }
   }
 
