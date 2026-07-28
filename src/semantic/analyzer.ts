@@ -10,6 +10,7 @@
 import type {
   Argument,
   AssertCall,
+  CaseLabel,
   CompilationUnit,
   ElementaryType,
   EnumType,
@@ -21,14 +22,14 @@ import type {
   MockFunctionStatement,
   ReferenceKind,
   ReferenceType,
+  Statement,
+  TestFile,
+  TestStatement,
   TypeDefinition,
   TypeReference,
   VarBlock,
   VarDeclaration,
   VariableExpression,
-  Statement,
-  TestFile,
-  TestStatement,
   Visibility,
 } from "../frontend/ast.js";
 import type { CompileError, SourceSpan } from "../types.js";
@@ -788,12 +789,14 @@ export class SemanticAnalyzer {
     // Validate access modifier enforcement
     this.validateAccessModifiers(ast);
 
+    // Validate CASE label constants and duplicates
+    this.validateCaseLabels(ast);
+
     // Validate bit access bounds and ADR l-value targets
     this.validateExpressions(ast);
 
     // TODO: Implement additional semantic validation
     // - Validate array bounds
-    // - Check CASE statement coverage
     // - Validate reference operations
     // - Check for unreachable code
   }
@@ -1611,6 +1614,248 @@ export class SemanticAnalyzer {
         propertyInfo,
       );
     }
+  }
+
+  // =============================================================================
+  // CASE Label Validation
+  // =============================================================================
+
+  /**
+   * Validate that CASE labels are constant integer expressions and that no
+   * value is used more than once (including overlapping ranges).
+   */
+  private validateCaseLabels(ast: CompilationUnit): void {
+    // Build a map of enum member values so CASE labels like
+    // TrafficState.RED or bare RED can be evaluated.
+    const enumValues = new Map<string, number>();
+    const enumTypeNames = new Set<string>();
+    for (const typeDecl of ast.types) {
+      if (typeDecl.definition.kind === "EnumDefinition") {
+        const typeNameUpper = typeDecl.name.toUpperCase();
+        enumTypeNames.add(typeNameUpper);
+        let nextValue = 0;
+        for (const member of typeDecl.definition.members) {
+          let value = nextValue;
+          if (member.value) {
+            const explicit = this.evaluateCaseConstant(
+              member.value,
+              new Map(),
+              enumTypeNames,
+              enumValues,
+            );
+            if (explicit !== undefined) value = explicit;
+          }
+          enumValues.set(
+            `${typeNameUpper}.${member.name.toUpperCase()}`,
+            value,
+          );
+          nextValue = value + 1;
+        }
+      }
+    }
+
+    const checkCaseLabels = (
+      stmts: Statement[],
+      varTypeMap: Map<string, string>,
+    ): void => {
+      const visit = (body: Statement[]): void => {
+        for (const stmt of body) {
+          if (stmt.kind === "CaseStatement") {
+            const seen = new Map<
+              number,
+              { line: number; col: number; label: string }
+            >();
+
+            for (const caseElement of stmt.cases) {
+              for (const caseLabel of caseElement.labels) {
+                const values = this.evaluateCaseLabelValues(
+                  caseLabel,
+                  varTypeMap,
+                  enumTypeNames,
+                  enumValues,
+                );
+                if (values === undefined) {
+                  this.addError(
+                    "CASE label must be a constant integer expression",
+                    caseLabel.sourceSpan.startLine,
+                    caseLabel.sourceSpan.startCol,
+                    undefined,
+                    "CASE_LABEL_NOT_CONSTANT",
+                  );
+                  continue;
+                }
+                for (const value of values) {
+                  if (seen.has(value)) {
+                    this.addError(
+                      `Duplicate CASE label value ${value}`,
+                      caseElement.sourceSpan.startLine,
+                      caseElement.sourceSpan.startCol,
+                      undefined,
+                      "DUPLICATE_CASE_LABEL",
+                    );
+                  } else {
+                    seen.set(value, {
+                      line: caseElement.sourceSpan.startLine,
+                      col: caseElement.sourceSpan.startCol,
+                      label: String(value),
+                    });
+                  }
+                }
+              }
+            }
+
+            for (const caseElement of stmt.cases) {
+              visit(caseElement.statements);
+            }
+            visit(stmt.elseStatements);
+          } else if (stmt.kind === "IfStatement") {
+            visit(stmt.thenStatements);
+            for (const clause of stmt.elsifClauses) {
+              visit(clause.statements);
+            }
+            visit(stmt.elseStatements);
+          } else if (stmt.kind === "ForStatement") {
+            visit(stmt.body);
+          } else if (
+            stmt.kind === "WhileStatement" ||
+            stmt.kind === "RepeatStatement"
+          ) {
+            visit(stmt.body);
+          }
+        }
+      };
+
+      visit(stmts);
+    };
+
+    for (const prog of ast.programs) {
+      checkCaseLabels(prog.body, this.buildVarTypeMap(prog.varBlocks));
+    }
+    for (const fb of ast.functionBlocks) {
+      const fbVarMap = this.buildVarTypeMap(fb.varBlocks);
+      checkCaseLabels(fb.body, fbVarMap);
+      for (const method of fb.methods) {
+        const methodVarMap = new Map(fbVarMap);
+        for (const [k, v] of this.buildVarTypeMap(method.varBlocks)) {
+          methodVarMap.set(k, v);
+        }
+        checkCaseLabels(method.body, methodVarMap);
+      }
+    }
+    for (const func of ast.functions) {
+      checkCaseLabels(func.body, this.buildVarTypeMap(func.varBlocks));
+    }
+  }
+
+  /**
+   * Evaluate a CASE label to the list of integer values it covers.
+   * Returns undefined if the label is not a constant integer expression.
+   */
+  private evaluateCaseLabelValues(
+    label: CaseLabel,
+    varTypeMap: Map<string, string>,
+    enumTypeNames: Set<string>,
+    enumValues: Map<string, number>,
+  ): number[] | undefined {
+    const start = this.evaluateCaseConstant(
+      label.start,
+      varTypeMap,
+      enumTypeNames,
+      enumValues,
+    );
+    if (start === undefined) return undefined;
+    if (label.end) {
+      const end = this.evaluateCaseConstant(
+        label.end,
+        varTypeMap,
+        enumTypeNames,
+        enumValues,
+      );
+      if (end === undefined) return undefined;
+      const values: number[] = [];
+      for (let i = start; i <= end; i++) {
+        values.push(i);
+      }
+      return values;
+    }
+    return [start];
+  }
+
+  /**
+   * Evaluate an expression to a constant integer if possible.
+   */
+  private evaluateCaseConstant(
+    expr: Expression,
+    varTypeMap: Map<string, string>,
+    enumTypeNames: Set<string>,
+    enumValues: Map<string, number>,
+  ): number | undefined {
+    if (expr.kind === "LiteralExpression" && expr.literalType === "INT") {
+      if (typeof expr.value === "number") return expr.value;
+      if (typeof expr.value === "string") {
+        const s = expr.value.toUpperCase().replace(/_/g, "");
+        if (s.startsWith("16#")) return parseInt(s.slice(3), 16);
+        if (s.startsWith("8#")) return parseInt(s.slice(2), 8);
+        if (s.startsWith("2#")) return parseInt(s.slice(2), 2);
+        const n = parseInt(s, 10);
+        return Number.isNaN(n) ? undefined : n;
+      }
+      return undefined;
+    }
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.evaluateCaseConstant(
+        expr.expression,
+        varTypeMap,
+        enumTypeNames,
+        enumValues,
+      );
+    }
+    if (
+      expr.kind === "UnaryExpression" &&
+      (expr.operator === "-" || expr.operator === "+")
+    ) {
+      const v = this.evaluateCaseConstant(
+        expr.operand,
+        varTypeMap,
+        enumTypeNames,
+        enumValues,
+      );
+      if (v === undefined) return undefined;
+      return expr.operator === "-" ? -v : v;
+    }
+    if (expr.kind === "VariableExpression") {
+      const nameUpper = expr.name.toUpperCase();
+      const fieldName =
+        expr.accessChain &&
+        expr.accessChain.length === 1 &&
+        expr.accessChain[0]!.kind === "field"
+          ? expr.accessChain[0]!.name
+          : expr.fieldAccess.length === 1
+            ? expr.fieldAccess[0]
+            : undefined;
+
+      if (fieldName !== undefined) {
+        // Qualified enum access: TrafficState.RED
+        if (enumTypeNames.has(nameUpper) && !varTypeMap.has(nameUpper)) {
+          return enumValues.get(`${nameUpper}.${fieldName.toUpperCase()}`);
+        }
+        return undefined;
+      }
+
+      if (varTypeMap.has(nameUpper)) return undefined;
+
+      const enumEntry = this.enumMemberMap.get(nameUpper);
+      if (enumEntry?.typeName) {
+        return enumValues.get(
+          `${enumEntry.typeName.toUpperCase()}.${nameUpper}`,
+        );
+      }
+      if (enumEntry?.typeName === null) {
+        // Ambiguous bare enum member - not a usable constant here.
+        return undefined;
+      }
+    }
+    return undefined;
   }
 
   // =============================================================================
