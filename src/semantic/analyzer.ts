@@ -1813,6 +1813,34 @@ export class SemanticAnalyzer {
         );
         checkCaseLabels(method.body, methodVarMap, methodConstants);
       }
+      for (const property of fb.properties) {
+        if (property.getter) {
+          const getterVarMap = new Map(fbVarMap);
+          for (const [k, v] of this.buildVarTypeMap(
+            property.getterVarBlocks ?? [],
+          )) {
+            getterVarMap.set(k, v);
+          }
+          const getterConstants = buildConstantMap(
+            property.getterVarBlocks ?? [],
+            new Map(fbConstants),
+          );
+          checkCaseLabels(property.getter, getterVarMap, getterConstants);
+        }
+        if (property.setter) {
+          const setterVarMap = new Map(fbVarMap);
+          for (const [k, v] of this.buildVarTypeMap(
+            property.setterVarBlocks ?? [],
+          )) {
+            setterVarMap.set(k, v);
+          }
+          const setterConstants = buildConstantMap(
+            property.setterVarBlocks ?? [],
+            new Map(fbConstants),
+          );
+          checkCaseLabels(property.setter, setterVarMap, setterConstants);
+        }
+      }
     }
     for (const func of ast.functions) {
       const localConstants = buildConstantMap(

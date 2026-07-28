@@ -153,4 +153,36 @@ describe("CASE label validation", () => {
     expect(dup?.file).toBe("test.st");
     expect(nonConst?.file).toBe("test.st");
   });
+
+  it("validates CASE labels inside property getters and setters", () => {
+    const { errors } = analyzeSource(`
+      FUNCTION_BLOCK Motor
+        VAR x : INT; END_VAR
+        PROPERTY Speed : INT
+          GET
+            CASE x OF
+              1:
+              1:
+              y:
+            END_CASE;
+            Speed := x;
+          END_GET
+          SET
+            CASE x OF
+              2:
+              2:
+            END_CASE;
+          END_SET
+        END_PROPERTY
+      END_FUNCTION_BLOCK
+    `);
+    expect(
+      errors.filter((e) => e.includes("Duplicate CASE label value")),
+    ).toHaveLength(2);
+    expect(
+      errors.some((e) =>
+        e.includes("CASE label must be a constant integer expression"),
+      ),
+    ).toBe(true);
+  });
 });
