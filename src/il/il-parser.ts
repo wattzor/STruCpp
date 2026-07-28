@@ -119,8 +119,12 @@ export function parseILBody(
       continue;
     }
 
-    const operatorStr = tokenMatch[1]!.toUpperCase();
+    let operatorStr = tokenMatch[1]!.toUpperCase();
     const openParen = tokenMatch[2] === "(";
+
+    // IEC 61131-3 IL aliases: JMPN/RETN mean "if not accumulator".
+    if (operatorStr === "JMPN") operatorStr = "JMPCN";
+    if (operatorStr === "RETN") operatorStr = "RETCN";
 
     let operator: ILOperator;
     let funcCallName: string | undefined;

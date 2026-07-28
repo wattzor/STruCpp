@@ -565,6 +565,58 @@ END_PROGRAM
   });
 });
 
+describe("IL additional operators and parentheses", () => {
+  it("should compile IL with JMPN and RETN", () => {
+    const result = compile(`
+FUNCTION_BLOCK ILJump
+  VAR_INPUT x : INT; END_VAR
+  VAR_OUTPUT y : INT; END_VAR
+LD x
+GT 0
+JMPN done
+LD 99
+ST y
+JMP exit
+done:
+LD -1
+ST y
+exit:
+END_FUNCTION_BLOCK
+
+PROGRAM Main
+  VAR fb : ILJump; y : INT; END_VAR
+  fb(x := 0);
+  y := fb.y;
+END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("should compile IL with parenthesized arithmetic", () => {
+    const result = compile(`
+FUNCTION_BLOCK ILParen
+  VAR_INPUT a, b, c : INT; END_VAR
+  VAR_OUTPUT y : INT; END_VAR
+LD a
+ADD(
+LD b
+MUL c
+)
+ST y
+END_FUNCTION_BLOCK
+
+PROGRAM Main
+  VAR fb : ILParen; y : INT; END_VAR
+  fb(a := 1, b := 2, c := 3);
+  y := fb.y;
+END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+});
+
 describe("isILBody edge cases (issue 9 + mixed detection)", () => {
   it("should classify a body that starts with LD as IL even with a trailing inline comment", () => {
     expect(isILBody("LD x (* set acc *)")).toBe(true);
