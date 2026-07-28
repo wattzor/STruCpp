@@ -45,6 +45,7 @@ import {
   resolveArrayElementType,
   typeName as typeNameUtil,
   isGenericGroupType,
+  isGenericTypeName,
   shouldHarmonizeStdFuncArgs,
   getHarmonizableRange,
   isBareLiteral,
@@ -935,7 +936,15 @@ export class TypeChecker {
               range.end,
             );
         if (commonName) {
-          const ret = ELEMENTARY_TYPES[commonName];
+          const ret =
+            ELEMENTARY_TYPES[commonName] ??
+            (isGenericTypeName(commonName)
+              ? ({
+                  typeKind: "elementary",
+                  name: commonName,
+                  sizeBits: 0,
+                } as ElementaryType)
+              : undefined);
           if (ret) return ret;
         }
       }

@@ -120,6 +120,18 @@ export const TYPE_CATEGORIES: Record<string, TypeCategory[]> = {
   DATE_AND_TIME: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
   STRING: ["ANY", "ANY_ELEMENTARY", "ANY_STRING"],
   WSTRING: ["ANY", "ANY_ELEMENTARY", "ANY_STRING"],
+  // IEC 61131-3 generic type groups can also appear as declared parameter types.
+  // They belong to the same categories as the concrete types they subsume.
+  ANY: ["ANY"],
+  ANY_DERIVED: ["ANY", "ANY_DERIVED"],
+  ANY_ELEMENTARY: ["ANY", "ANY_ELEMENTARY"],
+  ANY_MAGNITUDE: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE"],
+  ANY_NUM: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM"],
+  ANY_REAL: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_REAL"],
+  ANY_INT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
+  ANY_BIT: ["ANY", "ANY_ELEMENTARY", "ANY_BIT"],
+  ANY_STRING: ["ANY", "ANY_ELEMENTARY", "ANY_STRING"],
+  ANY_DATE: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
 };
 
 /**
@@ -275,6 +287,12 @@ export function matchesConstraint(
   // Map constraint to TypeCategory and check membership
   const elem = ELEMENTARY_TYPES[upper];
   if (!elem) {
+    // Generic type group names (ANY, ANY_NUM, etc.) are not concrete elementary
+    // types, but they still belong to IEC categories.
+    const categories = TYPE_CATEGORIES[upper];
+    if (categories) {
+      return categories.includes(constraint as TypeCategory);
+    }
     // Non-elementary types match ANY and ANY_DERIVED
     return constraint === "ANY" || (constraint as string) === "ANY_DERIVED";
   }
