@@ -149,6 +149,11 @@ struct ProgramBase {
         *offset = 0;
         *count = 0;
     }
+
+    /** Bind this program's located variable descriptors to its member storage.
+     *  Called once by the runtime after all static initialization is complete
+     *  so the I/O image copy routines see valid pointers. */
+    virtual void bind_located_vars() {}
 };
 
 /**

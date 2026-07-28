@@ -15,8 +15,11 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 #include "iec_fault.hpp"
 #if STRUCPP_HAS_EXCEPTIONS
 #include <stdexcept>
@@ -200,6 +203,99 @@ constexpr char size_to_char(LocatedSize size) noexcept {
         case LocatedSize::LWord: return 'L';
         default: return '?';
     }
+}
+
+// =============================================================================
+// I/O Image Buffers and Located Variable Synchronisation
+// =============================================================================
+
+/**
+ * Flat I/O image buffers. Inputs are copied from these buffers into the
+ * IECVar wrappers before each scan; outputs are copied from the wrappers
+ * back into the buffers after each scan. The buffers grow on demand to the
+ * largest byte index referenced by any located variable descriptor.
+ */
+/**
+ * Runtime-facing located variable table. Generated main() sets these to the
+ * project-specific `locatedVars` / `locatedVarsCount` symbols so the generic
+ * REPL/cyclic runners can copy I/O images without knowing the project's
+ * namespace.
+ */
+inline LocatedVar* __located_vars = nullptr;
+inline uint32_t __located_vars_count = 0;
+
+inline std::vector<uint8_t>& __input_image() {
+    static std::vector<uint8_t> image;
+    return image;
+}
+
+inline std::vector<uint8_t>& __output_image() {
+    static std::vector<uint8_t> image;
+    return image;
+}
+
+inline std::vector<uint8_t>& __memory_image() {
+    static std::vector<uint8_t> image;
+    return image;
+}
+
+inline std::vector<uint8_t>& __image_for_area(LocatedArea area) {
+    switch (area) {
+        case LocatedArea::Input:  return __input_image();
+        case LocatedArea::Output: return __output_image();
+        case LocatedArea::Memory: return __memory_image();
+    }
+    return __memory_image();
+}
+
+inline void __sync_located_in(LocatedVar* vars, uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i) {
+        const LocatedVar& v = vars[i];
+        if (!v.pointer) continue;
+        if (v.area != LocatedArea::Input && v.area != LocatedArea::Memory) continue;
+
+        size_t needed = v.is_bit() ? v.byte_index + 1 : v.byte_index + v.byte_size();
+        std::vector<uint8_t>& image = __image_for_area(v.area);
+        if (image.size() < needed) image.resize(needed, 0);
+
+        if (v.is_bit()) {
+            const bool bit = (image[v.byte_index] >> v.bit_index) & 1u;
+            *static_cast<bool*>(v.pointer) = bit;
+        } else {
+            std::memcpy(v.pointer, image.data() + v.byte_index, v.byte_size());
+        }
+    }
+}
+
+inline void __sync_located_out(LocatedVar* vars, uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i) {
+        const LocatedVar& v = vars[i];
+        if (!v.pointer) continue;
+        if (v.area != LocatedArea::Output && v.area != LocatedArea::Memory) continue;
+
+        size_t needed = v.is_bit() ? v.byte_index + 1 : v.byte_index + v.byte_size();
+        std::vector<uint8_t>& image = __image_for_area(v.area);
+        if (image.size() < needed) image.resize(needed, 0);
+
+        if (v.is_bit()) {
+            const bool bit = *static_cast<const bool*>(v.pointer);
+            if (bit) {
+                image[v.byte_index] |= static_cast<uint8_t>(1u << v.bit_index);
+            } else {
+                image[v.byte_index] &= static_cast<uint8_t>(~(1u << v.bit_index));
+            }
+        } else {
+            std::memcpy(image.data() + v.byte_index, v.pointer, v.byte_size());
+        }
+    }
+}
+
+inline void __sync_located_in() {
+    __sync_located_in(__located_vars, __located_vars_count);
+}
+
+inline void __sync_located_out() {
+    __sync_located_out(__located_vars, __located_vars_count);
 }
 
 // =============================================================================
