@@ -160,6 +160,27 @@ describe('Phase 3.6 - REPL Main Generator', () => {
       expect(mainCpp).toContain('VarTypeTag::ARRAY');
     });
 
+    it('maps non-default-length STRING/WSTRING to OTHER in descriptors', () => {
+      const source = `
+        PROGRAM Str
+          VAR
+            s20 : STRING(20);
+            ws80 : WSTRING(80);
+          END_VAR
+          s20 := '';
+        END_PROGRAM
+      `;
+      const result = compile(source);
+      expect(result.success).toBe(true);
+
+      const mainCpp = generateReplMain(result.ast!, result.projectModel!);
+      expect(mainCpp).not.toContain('VarTypeTag::STRING');
+      expect(mainCpp).not.toContain('VarTypeTag::WSTRING');
+      expect(
+        (mainCpp.match(/VarTypeTag::OTHER/g) || []).length,
+      ).toBeGreaterThanOrEqual(2);
+    });
+
     it('should handle program with no variables', () => {
       const source = `
         PROGRAM Empty

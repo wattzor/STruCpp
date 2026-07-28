@@ -765,5 +765,27 @@ describe("CLI Library Features", () => {
       expect(existsSync(`${base}.cpp`)).toBe(true);
       expect(existsSync(`${base}.hpp`)).toBe(true);
     });
+
+    it("normalizes a non-.cpp -o file to .cpp so the header does not overwrite it", () => {
+      const workDir = freshDir("output-hpp-file");
+      const stFile = join(workDir, "main.st");
+      writeFileSync(
+        stFile,
+        `
+        PROGRAM Main
+          VAR w : WORD; END_VAR
+        END_PROGRAM
+      `,
+      );
+      const hppFile = join(workDir, "generated.hpp");
+      const cppFile = join(workDir, "generated.cpp");
+      const stdout = runCLI([stFile, "-o", hppFile]);
+      expect(stdout).toContain(`Output written to ${cppFile}`);
+      expect(stdout).toContain(`Header written to ${hppFile}`);
+      expect(existsSync(cppFile)).toBe(true);
+      expect(existsSync(hppFile)).toBe(true);
+      // The implementation must not have been overwritten by the header
+      expect(readFileSync(cppFile, "utf-8")).toContain("Program_MAIN");
+    });
   });
 });

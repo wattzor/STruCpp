@@ -1018,6 +1018,8 @@ async function main(): Promise<void> {
 
   // Resolve the output path. A directory argument produces <dir>/<input>.cpp;
   // an argument without an extension is treated as a .cpp base path.
+  // Any explicit extension on a file argument is normalized to .cpp so the
+  // derived .hpp header never collides with the implementation file.
   const outputPath = (() => {
     if (!options.output) {
       return inputPath.replace(/\.(st|il)$/i, ".cpp");
@@ -1031,7 +1033,7 @@ async function main(): Promise<void> {
     if (!/\.[^\\/]+$/.test(out)) {
       return `${out}.cpp`;
     }
-    return out;
+    return out.replace(/\.[^\\/]+$/, ".cpp");
   })();
 
   // Derive header filename from output path for correct #include directive

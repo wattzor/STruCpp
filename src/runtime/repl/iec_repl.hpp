@@ -243,11 +243,8 @@ inline std::string var_value_to_string(VarTypeTag type, void* ptr) {
             return buf;
         }
         case VarTypeTag::STRING: {
-            // IECStringVar<N> starts with IECString<N> value_ whose layout is:
-            //   char data_[N+1]; uint16_t length_;  (data_ first, then length_)
-            // data_ is always null-terminated and starts at offset 0
-            const char* str_data = reinterpret_cast<const char*>(ptr);
-            return std::string("'") + str_data + "'";
+            const auto* str = static_cast<IEC_STRING*>(ptr);
+            return std::string("'") + (str ? str->c_str() : "") + "'";
         }
         case VarTypeTag::WSTRING: {
             const auto* wstr = static_cast<IEC_WSTRING*>(ptr);
@@ -389,10 +386,7 @@ inline bool var_set_value(VarTypeTag type, void* ptr, const std::string& val) {
             case VarTypeTag::STRING: {
                 std::string s = val;
                 if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'') s = s.substr(1, s.size() - 2);
-                char* data_ptr = reinterpret_cast<char*>(ptr);
-                uint16_t len = static_cast<uint16_t>(s.size() > 254 ? 254 : s.size());
-                std::memcpy(data_ptr, s.c_str(), len);
-                data_ptr[len] = '\0';
+                static_cast<IEC_STRING*>(ptr)->set(s.c_str());
                 return true;
             }
             case VarTypeTag::WSTRING: {
@@ -438,6 +432,19 @@ inline bool var_force_value(VarTypeTag type, void* ptr, const std::string& val) 
             case VarTypeTag::LDT:   static_cast<IECVar<LDT_t>*>(ptr)->force(static_cast<LDT_t>(std::stoll(val))); return true;
             case VarTypeTag::CHAR:  static_cast<IEC_CHAR*>(ptr)->force(static_cast<CHAR_t>(std::stoi(val, nullptr, 0))); return true;
             case VarTypeTag::WCHAR: static_cast<IEC_WCHAR*>(ptr)->force(static_cast<WCHAR_t>(std::stoul(val, nullptr, 0))); return true;
+            case VarTypeTag::STRING: {
+                std::string s = val;
+                if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'') s = s.substr(1, s.size() - 2);
+                static_cast<IEC_STRING*>(ptr)->force(s.c_str());
+                return true;
+            }
+            case VarTypeTag::WSTRING: {
+                std::string s = val;
+                if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'') s = s.substr(1, s.size() - 2);
+                std::u16string u16 = utf8_to_utf16(s);
+                static_cast<IEC_WSTRING*>(ptr)->force(u16.c_str());
+                return true;
+            }
             default: return false;
         }
     } catch (...) { return false; }
@@ -470,6 +477,8 @@ inline void var_unforce(VarTypeTag type, void* ptr) {
         case VarTypeTag::LDT:   static_cast<IECVar<LDT_t>*>(ptr)->unforce(); break;
         case VarTypeTag::CHAR:  static_cast<IEC_CHAR*>(ptr)->unforce(); break;
         case VarTypeTag::WCHAR: static_cast<IEC_WCHAR*>(ptr)->unforce(); break;
+        case VarTypeTag::STRING: static_cast<IEC_STRING*>(ptr)->unforce(); break;
+        case VarTypeTag::WSTRING: static_cast<IEC_WSTRING*>(ptr)->unforce(); break;
         default: break;
     }
 }
