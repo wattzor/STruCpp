@@ -82,6 +82,20 @@ describe("ANY generic parameter validation", () => {
     expect(result.errors[0].message).toContain("Generic type");
   });
 
+  it("allows ANY_NUM parameters to be forwarded to a standard function", () => {
+    const result = analyzeSource(`
+      FUNCTION MaxAny : ANY_NUM
+        VAR_INPUT mn, val, mx : ANY_NUM; END_VAR
+        MaxAny := LIMIT(mn, val, mx);
+      END_FUNCTION
+      PROGRAM Main END_PROGRAM
+    `);
+    const limitErrors = result.errors.filter((e) =>
+      e.message.includes("LIMIT") || e.message.includes("ANY_NUM"),
+    );
+    expect(limitErrors).toHaveLength(0);
+  });
+
   it("allows ANY_DATE as a function parameter type", () => {
     const result = analyzeSource(`
       FUNCTION funDate : BOOL

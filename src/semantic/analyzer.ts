@@ -3020,10 +3020,24 @@ export class SemanticAnalyzer {
     // Functions — var blocks + return type
     for (const func of ast.functions) {
       validateVarBlocks(func.varBlocks, `FUNCTION '${func.name}'`);
-      this.validateSingleTypeReference(
-        func.returnType,
-        `FUNCTION '${func.name}' return type`,
-      );
+      const returnName = func.returnType.name?.toUpperCase();
+      if (returnName && isGenericTypeName(returnName)) {
+        // Generic function return types are allowed except for the
+        // catch-all ANY / ANY_DERIVED groups, which cannot be lowered.
+        if (returnName === "ANY" || returnName === "ANY_DERIVED") {
+          this.addError(
+            `Generic type '${func.returnType.name}' is only allowed in VAR_INPUT parameters in FUNCTION '${func.name}' return type`,
+            func.returnType.sourceSpan.startLine,
+            func.returnType.sourceSpan.startCol,
+            func.returnType.sourceSpan.file,
+          );
+        }
+      } else {
+        this.validateSingleTypeReference(
+          func.returnType,
+          `FUNCTION '${func.name}' return type`,
+        );
+      }
     }
 
     // Function blocks — var blocks, methods, properties, EXTENDS, IMPLEMENTS
