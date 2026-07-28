@@ -20,12 +20,19 @@ const END_MARKERS: Record<string, string> = {
  * Normalizes line endings, trims whitespace, and adds proper END markers.
  */
 export function formatPOU(pou: ExtractedPOU): string {
-  const decl = pou.declaration.replace(/\r\n/g, "\n").trimEnd();
-  const impl = pou.implementation.replace(/\r\n/g, "\n").trimEnd();
+  let decl = pou.declaration.replace(/\r\n/g, "\n").trimEnd();
+  let impl = pou.implementation.replace(/\r\n/g, "\n").trimEnd();
 
   // TYPE and GVL are already self-contained with their own END markers
   if (pou.type === "TYPE" || pou.type === "GVL") {
     return decl + "\n";
+  }
+
+  // CODESYS 2.3 sometimes uses the one-word keyword FUNCTIONBLOCK /
+  // END_FUNCTIONBLOCK; normalize to standard IEC 61131-3 FUNCTION_BLOCK.
+  if (pou.type === "FUNCTION_BLOCK") {
+    decl = decl.replace(/\bFUNCTIONBLOCK\b/g, "FUNCTION_BLOCK");
+    impl = impl.replace(/\bEND_FUNCTIONBLOCK\b/g, "END_FUNCTION_BLOCK");
   }
 
   const endMarker = END_MARKERS[pou.type] ?? `END_${pou.type}`;
