@@ -1015,9 +1015,24 @@ async function main(): Promise<void> {
 
   const primaryInput = options.inputs[0]!;
   const inputPath = resolve(primaryInput);
-  const outputPath = options.output
-    ? resolve(options.output)
-    : inputPath.replace(/\.(st|il)$/i, ".cpp");
+
+  // Resolve the output path. A directory argument produces <dir>/<input>.cpp;
+  // an argument without an extension is treated as a .cpp base path.
+  const outputPath = (() => {
+    if (!options.output) {
+      return inputPath.replace(/\.(st|il)$/i, ".cpp");
+    }
+    const out = resolve(options.output);
+    const endsWithSep = /[\\/]$/.test(options.output);
+    if (endsWithSep || (existsSync(out) && statSync(out).isDirectory())) {
+      mkdirSync(out, { recursive: true });
+      return join(out, basename(inputPath).replace(/\.(st|il)$/i, ".cpp"));
+    }
+    if (!/\.[^\\/]+$/.test(out)) {
+      return `${out}.cpp`;
+    }
+    return out;
+  })();
 
   // Derive header filename from output path for correct #include directive
   const headerFileName = basename(outputPath).replace(/\.cpp$/i, ".hpp");
@@ -1089,6 +1104,7 @@ async function main(): Promise<void> {
   printDiagnostics(result.warnings, diagSources, "warn");
 
   try {
+    mkdirSync(dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, result.cppCode, "utf-8");
     console.log(`Output written to ${outputPath}`);
 

@@ -54,12 +54,27 @@ const TYPE_TAG_MAP: Record<string, string> = {
   LWORD: "LWORD",
   TIME: "TIME",
   STRING: "STRING",
+  WSTRING: "WSTRING",
+  CHAR: "CHAR",
+  WCHAR: "WCHAR",
+  DATE: "DATE",
+  TOD: "TOD",
+  TIME_OF_DAY: "TOD",
+  DT: "DT",
+  DATE_AND_TIME: "DT",
+  LTIME: "LTIME",
+  LDATE: "LDATE",
+  LTOD: "LTOD",
+  LONG_TIME_OF_DAY: "LTOD",
+  LDT: "LDT",
+  LONG_DATE_AND_TIME: "LDT",
 };
 
 /**
  * Get the VarTypeTag for a given IEC type name.
  */
-function getTypeTag(typeName: string): string {
+function getTypeTag(typeName: string, isArray = false): string {
+  if (isArray) return "ARRAY";
   return TYPE_TAG_MAP[typeName.toUpperCase()] ?? "OTHER";
 }
 
@@ -68,8 +83,8 @@ function getTypeTag(typeName: string): string {
  */
 function collectVarsFromBlocks(
   varBlocks: VarBlock[],
-): Array<{ name: string; typeName: string }> {
-  const vars: Array<{ name: string; typeName: string }> = [];
+): Array<{ name: string; typeName: string; isArray: boolean }> {
+  const vars: Array<{ name: string; typeName: string; isArray: boolean }> = [];
   for (const block of varBlocks) {
     // Include VAR, VAR_INPUT, VAR_OUTPUT — skip VAR_EXTERNAL, VAR_TEMP, VAR_IN_OUT
     if (
@@ -78,8 +93,11 @@ function collectVarsFromBlocks(
       block.blockType === "VAR_OUTPUT"
     ) {
       for (const decl of block.declarations) {
+        const isArray =
+          decl.type.arrayDimensions !== undefined &&
+          decl.type.arrayDimensions.length > 0;
         for (const name of decl.names) {
-          vars.push({ name, typeName: decl.type.name });
+          vars.push({ name, typeName: decl.type.name, isArray });
         }
       }
     }
@@ -232,7 +250,7 @@ interface ProgramInfo {
   /** Name for the VarDescriptor array */
   varsDescName: string;
   /** Variables to expose in the REPL */
-  vars: Array<{ name: string; typeName: string }>;
+  vars: Array<{ name: string; typeName: string; isArray: boolean }>;
   /** Task interval in nanoseconds (0 = REPL applies 20ms default) */
   intervalNs: number;
 }
@@ -245,7 +263,7 @@ function emitVarDescriptors(lines: string[], programs: ProgramInfo[]): void {
     if (prog.vars.length > 0) {
       lines.push(`static VarDescriptor ${prog.varsDescName}[] = {`);
       for (const v of prog.vars) {
-        const tag = getTypeTag(v.typeName);
+        const tag = getTypeTag(v.typeName, v.isArray);
         lines.push(
           `    {"${v.name}", VarTypeTag::${tag}, &${prog.instanceExpr}.${v.name}},`,
         );
