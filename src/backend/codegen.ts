@@ -4230,7 +4230,10 @@ export class CodeGenerator {
       symbolName,
     );
     if (byteOffsetExpr !== "0") {
-      address.byteOffset = byteOffsetExpr;
+      address.byteOffset =
+        address.byteOffset === "0"
+          ? byteOffsetExpr
+          : `(${address.byteOffset}) + (${byteOffsetExpr})`;
     }
 
     const id = this.varInfoSymbolIds.get(symbolName) ?? ++this.varInfoCounter;
@@ -4448,7 +4451,7 @@ export class CodeGenerator {
           step.indices.length > 0
             ? this.generateExpression(step.indices[0]!)
             : "0";
-        const elementSizeExpr = `iec_sizeof<${arrayInfo.elementCppType}>::value`;
+        const elementSizeExpr = `strucpp::iec_sizeof<${arrayInfo.elementCppType}>::value`;
         const subExpr = `(${indexExpr} - ${arrayInfo.lowerBound}) * ${elementSizeExpr}`;
         byteOffsetExpr =
           byteOffsetExpr === "0" ? subExpr : `(${byteOffsetExpr}) + ${subExpr}`;
