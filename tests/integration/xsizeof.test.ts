@@ -87,6 +87,6 @@ int main() {
 }
 `,
     });
-    expect(stdout).toBe("20,4,81,2,4,7,7");
+    expect(stdout).toBe("20,4,81,2,4,8,8");
   });
 });

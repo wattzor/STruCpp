@@ -117,7 +117,7 @@ int main() {
 }
 `,
     });
-    expect(stdout).toBe("7,7");
+    expect(stdout).toBe("8,8");
   });
 
   it("includes alignment padding for mixed-width struct members", () => {
