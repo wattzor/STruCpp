@@ -1,9 +1,9 @@
 /**
  * Constant literal narrowing / overflow tests.
  *
- * Untyped numeric literals are polymorphic, but they must still fit in the
- * target type's range. This suite verifies overflow errors and narrowing
- * warnings for program VAR initializers.
+ * Both untyped and typed numeric literals must fit in their declared type's
+ * range. This suite verifies overflow errors and narrowing warnings for program
+ * VAR initializers.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -80,6 +80,43 @@ describe('constant literal narrowing and overflow', () => {
 
   it('accepts LREAL values too large for REAL', () => {
     const result = compileSource('x : LREAL := 1e40;');
+    expect(result.success).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('errors on typed literal overflow for BYTE', () => {
+    const result = compileSource('x : BYTE := BYTE#300;');
+    expect(result.success).toBe(false);
+    expect(result.errors[0]?.message).toMatch(/300 is out of range for BYTE/);
+  });
+
+  it('errors on typed literal overflow for USINT', () => {
+    const result = compileSource('x : USINT := USINT#300;');
+    expect(result.success).toBe(false);
+    expect(result.errors[0]?.message).toMatch(/300 is out of range for USINT/);
+  });
+
+  it('errors on typed literal overflow for SINT', () => {
+    const result = compileSource('x : SINT := SINT#128;');
+    expect(result.success).toBe(false);
+    expect(result.errors[0]?.message).toMatch(/128 is out of range for SINT/);
+  });
+
+  it('errors on typed literal overflow for INT', () => {
+    const result = compileSource('x : INT := INT#32768;');
+    expect(result.success).toBe(false);
+    expect(result.errors[0]?.message).toMatch(/32768 is out of range for INT/);
+  });
+
+  it('errors on typed real overflow for REAL', () => {
+    const result = compileSource('x : REAL := REAL#1e40;');
+    expect(result.success).toBe(false);
+    expect(result.errors[0]?.message).toMatch(/overflows REAL/);
+  });
+
+  it('accepts typed literals that fit their prefix', () => {
+    const result = compileSource('x : BYTE := BYTE#255;');
     expect(result.success).toBe(true);
     expect(result.warnings).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
