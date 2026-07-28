@@ -411,7 +411,9 @@ describe("Phase 3.2: FOR Statement Code Generation", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("for (I = 0; I <= N; I++) {");
+    // Non-constant end value is captured once at loop entry.
+    expect(result.cppCode).toContain("const auto __strucpp_for_end_");
+    expect(result.cppCode).toMatch(/for \(I = 0; I <= __strucpp_for_end_\d+; I\+\+\) \{/);
   });
 });
 
