@@ -728,8 +728,11 @@ export class SemanticAnalyzer {
                 address: decl.address,
               });
 
-              // Track located variables for validation
-              if (decl.address) {
+              // Track located variables for validation.
+              // Addresses ending in '*' are incomplete placeholders that will
+              // be bound to concrete addresses by a VAR_CONFIG block (or by an
+              // OpenPLC I/O layer); accept them without detailed validation.
+              if (decl.address && !decl.address.endsWith("*")) {
                 const parsed = parseAddress(decl.address);
                 if (parsed) {
                   this.locatedVars.push({

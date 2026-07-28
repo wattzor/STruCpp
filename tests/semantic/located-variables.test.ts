@@ -98,6 +98,17 @@ describe('Phase 2.3 - Located Variables', () => {
       expect(result.ast?.programs[0].varBlocks[0].declarations[0].address).toBe('%ML0');
     });
 
+    it('should parse incomplete placeholder address (AT %I*)', () => {
+      const source = `
+        PROGRAM Main
+          VAR input_bit AT %I* : BOOL; END_VAR
+        END_PROGRAM
+      `;
+      const result = parse(source);
+      expect(result.errors).toHaveLength(0);
+      expect(result.ast?.programs[0].varBlocks[0].declarations[0].address).toBe('%I*');
+    });
+
     it('should parse address declared AFTER the type (non-standard but widely used)', () => {
       // IEC 61131-3 puts `AT %X…` between the variable name and the
       // colon (`v AT %QX0.0 : BOOL;`).  Editors like OpenPLC emit it
@@ -184,6 +195,19 @@ describe('Phase 2.3 - Located Variables', () => {
             bit0 AT %IX0.0 : BOOL;
             bit1 AT %IX0.1 : BOOL;
             bit7 AT %IX0.7 : BOOL;
+          END_VAR
+        END_PROGRAM
+      `;
+      const result = compile(source);
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept placeholder addresses without a concrete byte/bit index', () => {
+      const source = `
+        PROGRAM Main
+          VAR
+            b AT %I* : BOOL;
+            w AT %QW* : INT;
           END_VAR
         END_PROGRAM
       `;
