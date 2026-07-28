@@ -103,6 +103,19 @@ inline std::string to_display_string(const strucpp::IECVar<strucpp::IECWString<N
     return iec_wstring_to_display(static_cast<strucpp::IECWString<N>>(value));
 }
 
+// Pointer display: show the pointed-to value for concrete types, or a descriptor
+// for abstract interface pointers / null pointers.
+template<typename T, typename std::enable_if<!std::is_abstract<T>::value, int>::type = 0>
+inline std::string to_display_string(const strucpp::IEC_Ptr<T>& value) {
+    if (!value) return "(null)";
+    return to_display_string(*value);
+}
+
+template<typename T, typename std::enable_if<std::is_abstract<T>::value, int>::type = 0>
+inline std::string to_display_string(const strucpp::IEC_Ptr<T>& value) {
+    return value ? "(interface pointer)" : "(null)";
+}
+
 #include "iec_array.hpp"
 #include "iec_wstring.hpp"
 // Stream output for IEC arrays (used by the generic to_display_string fallback).
@@ -111,7 +124,7 @@ inline std::ostream& operator<<(std::ostream& os, const strucpp::IEC_ARRAY_1D<T,
     os << '[';
     for (size_t i = 0; i < arr.length(); ++i) {
         if (i > 0) os << ", ";
-        os << arr[static_cast<int64_t>(Bounds::lower + i)];
+        os << to_display_string(arr[static_cast<int64_t>(Bounds::lower + i)]);
     }
     os << ']';
     return os;
@@ -125,7 +138,7 @@ inline std::ostream& operator<<(std::ostream& os, const strucpp::IEC_ARRAY_2D<T,
         os << '[';
         for (int64_t j = arr.dim2_lower(); j <= arr.dim2_upper(); ++j) {
             if (j > arr.dim2_lower()) os << ", ";
-            os << arr(i, j);
+            os << to_display_string(arr(i, j));
         }
         os << ']';
     }
@@ -144,7 +157,7 @@ inline std::ostream& operator<<(std::ostream& os, const strucpp::IEC_ARRAY_3D<T,
             os << '[';
             for (int64_t k = Bounds3::lower; k <= Bounds3::upper; ++k) {
                 if (k > Bounds3::lower) os << ", ";
-                os << arr(i, j, k);
+                os << to_display_string(arr(i, j, k));
             }
             os << ']';
         }

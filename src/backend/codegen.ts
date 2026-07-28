@@ -1661,6 +1661,7 @@ export class CodeGenerator {
     const finalSpec = fb.isFinal ? " final" : "";
 
     const iecStructMembers: string[] = [];
+    const fbDataMemberNames: string[] = [];
     if (fb.extends) {
       iecStructMembers.push(`${fb.extends}`);
     }
@@ -1751,6 +1752,7 @@ export class CodeGenerator {
           this.emitHeader(`    ${tag}${cppType} ${memberName};`);
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
           iecStructMembers.push(`${tag}${cppType}`);
+          fbDataMemberNames.push(memberName);
         }
       }
     }
@@ -1789,6 +1791,7 @@ export class CodeGenerator {
       this.emitHeader("");
       this.emitHeader("    // Implicit IEC 61131-3 ENO pin (mirrors EN)");
       this.emitHeader("    IEC_BOOL ENO = true;");
+      fbDataMemberNames.push("ENO");
     }
 
     this.emitHeader("");
@@ -1858,6 +1861,41 @@ export class CodeGenerator {
         `    static constexpr std::size_t iec_byte_size = iec_struct_size<${iecStructMembers.join(", ")}>::value;`,
       );
     }
+
+    // Equality and test-only stream output helpers for ASSERT_EQ on FBs.
+    const eqParts: string[] = [];
+    if (fb.extends) {
+      eqParts.push(
+        `static_cast<const ${fb.extends}&>(*this) == static_cast<const ${fb.extends}&>(other)`,
+      );
+    }
+    for (const memberName of fbDataMemberNames) {
+      eqParts.push(`${memberName} == other.${memberName}`);
+    }
+    const eqBody = eqParts.length > 0 ? eqParts.join(" && ") : "true";
+    this.emitHeader("");
+    this.emitHeader(
+      `    bool operator==(const ${fb.name}& other) const noexcept { return ${eqBody}; }`,
+    );
+    this.emitHeader(
+      `    bool operator!=(const ${fb.name}& other) const noexcept { return !(*this == other); }`,
+    );
+    this.emitHeader("    #ifdef STRUCPP_TEST");
+    const streamParts: string[] = [];
+    if (fb.extends) {
+      streamParts.push(`os << static_cast<const ${fb.extends}&>(s)`);
+    }
+    for (const memberName of fbDataMemberNames) {
+      streamParts.push(
+        `os << "${streamParts.length > 0 ? ", " : ""}${memberName}=" << to_display_string(s.${memberName})`,
+      );
+    }
+    const streamBody =
+      streamParts.length > 0 ? streamParts.join("; ") : 'os << "{}"';
+    this.emitHeader(
+      `    friend std::ostream& operator<<(std::ostream& os, const ${fb.name}& s) { os << "{"; ${streamBody}; os << "}"; return os; }`,
+    );
+    this.emitHeader("    #endif");
 
     // Test build: add mock infrastructure
     if (this.options.isTestBuild) {
