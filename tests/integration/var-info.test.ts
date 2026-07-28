@@ -119,6 +119,8 @@ END_PROGRAM
     const matches = cpp.match(/__strucpp_varinfo_\d+/g);
     expect(new Set(matches).size).toBe(1);
   });
+
+
 });
 
 describe.skipIf(!hasGpp)("__VARINFO runtime", () => {
