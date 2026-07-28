@@ -26,6 +26,10 @@ import { buildEnumMemberMap } from "../semantic/type-utils.js";
 export class TestCodeGenerator extends CodeGenerator {
   private pouMap: Map<string, POUInfo>;
   private setupVarNames = new Set<string>();
+  /** VAR_EXTERNAL names (upper case) that reference plain C++ global variables */
+  private externalVarNames = new Set<string>();
+  /** VAR_EXTERNAL names (upper case) that reference GlobalVar<V>-wrapped globals */
+  private externalGlobalVarNames = new Set<string>();
   /** User-defined function names (upper case) — skip std registry for these */
   private userFunctionNames = new Set<string>();
 
@@ -203,6 +207,19 @@ export class TestCodeGenerator extends CodeGenerator {
     this.setupVarNames.clear();
   }
 
+  /**
+   * Set names of VAR_EXTERNAL variables that reference source VAR_GLOBALs.
+   * `plainNames` are globals emitted as inline C++ variables (top-level
+   * VAR_GLOBAL blocks); `globalVarNames` are globals wrapped in `GlobalVar<V>`.
+   */
+  setExternalVars(
+    plainNames: Iterable<string>,
+    globalVarNames: Iterable<string> = [],
+  ): void {
+    this.externalVarNames = new Set(plainNames);
+    this.externalGlobalVarNames = new Set(globalVarNames);
+  }
+
   /** Populate the scope's variable→type map for POU invocation detection. */
   setScopeFromVarTypes(varTypes: Map<string, string>): void {
     this.currentScopeVarTypes.clear();
@@ -299,6 +316,12 @@ export class TestCodeGenerator extends CodeGenerator {
   protected override resolveVariableBaseName(name: string): string {
     if (this.setupVarNames.has(name)) {
       return `s.${name}`;
+    }
+    if (this.externalGlobalVarNames.has(name)) {
+      return `${name}.value`;
+    }
+    if (this.externalVarNames.has(name)) {
+      return name;
     }
     return name;
   }
