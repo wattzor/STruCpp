@@ -1823,15 +1823,16 @@ export class CodeGenerator {
     const hasFBExit = fb.methods.some(
       (m) => m.name.toUpperCase() === "FB_EXIT",
     );
+    const hasBaseFB = fb.extends !== undefined;
+    const needsUserDestructor = hasFBExit || hasNestedFB || hasBaseFB;
     if (
-      hasFBExit ||
-      hasNestedFB ||
+      needsUserDestructor ||
       fb.methods.length > 0 ||
       fb.properties.length > 0 ||
       !fb.isFinal
     ) {
       this.emitHeader("");
-      if (hasFBExit || hasNestedFB) {
+      if (needsUserDestructor) {
         this.emitHeader(`    virtual ~${fb.name}();`);
       } else {
         this.emitHeader(`    virtual ~${fb.name}() = default;`);
@@ -2562,8 +2563,9 @@ export class CodeGenerator {
       (m) => m.name.toUpperCase() === "FB_EXIT",
     );
     const hasNestedFB = memberFBs.length > 0;
-
     const baseName = fb.extends ?? undefined;
+    const needsUserDestructor =
+      hasFBExit || hasNestedFB || baseName !== undefined;
 
     // Constructor: delegates to lifecycle helpers. The default parameter lets
     // stand-alone instances run init automatically while nested members defer it
@@ -2656,7 +2658,7 @@ export class CodeGenerator {
     }
 
     // Destructor with FB_Exit lifecycle call
-    if (hasFBExit || hasNestedFB) {
+    if (needsUserDestructor) {
       this.emit(`${fb.name}::~${fb.name}() {`);
       // Normal instance destruction (not an online change copy operation).
       this.emit(

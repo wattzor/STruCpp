@@ -16,7 +16,6 @@ import type {
   EnumType,
   Expression,
   FunctionBlockDeclaration,
-  FunctionCallStatement,
   FunctionCallExpression,
   IECType,
   MethodDeclaration,
@@ -2100,7 +2099,6 @@ export class SemanticAnalyzer {
         this.validateExpression(stmt.source, varTypeMap, ast);
       } else if (stmt.kind === "FunctionCallStatement") {
         this.validateExpression(stmt.call, varTypeMap, ast);
-        this.checkSuperLifecycleCall(stmt);
       }
       // Recurse into control flow
       this.recurseStatementsForExpressionValidation(stmt, varTypeMap, ast);
@@ -2562,12 +2560,6 @@ export class SemanticAnalyzer {
   /**
    * CODESYS forbids calling base lifecycle methods via SUPER^.
    */
-  private checkSuperLifecycleCall(stmt: FunctionCallStatement): void {
-    if (stmt.call.kind === "FunctionCallExpression") {
-      this.checkSuperLifecycleCallExpr(stmt.call);
-    }
-  }
-
   private checkSuperLifecycleCallExpr(expr: FunctionCallExpression): void {
     const nameUpper = expr.functionName.toUpperCase();
     if (

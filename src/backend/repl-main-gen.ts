@@ -70,21 +70,51 @@ const TYPE_TAG_MAP: Record<string, string> = {
   LONG_DATE_AND_TIME: "LDT",
 };
 
+const DEFAULT_STRING_LENGTH = 254;
+
+function isStringType(typeName: string): boolean {
+  const upper = typeName.toUpperCase();
+  return upper === "STRING" || upper === "WSTRING";
+}
+
 /**
  * Get the VarTypeTag for a given IEC type name.
+ *
+ * Non-default-length STRING/WSTRING are mapped to OTHER because the REPL
+ * runtime helpers are currently specialized for the default 254-character
+ * IEC_STRING/IEC_WSTRING aliases; casting a smaller/larger instance to those
+ * fixed-width aliases reads/writes outside the variable's storage.
  */
-function getTypeTag(typeName: string, isArray = false): string {
+function getTypeTag(
+  typeName: string,
+  isArray = false,
+  maxLength?: number | string,
+): string {
   if (isArray) return "ARRAY";
-  return TYPE_TAG_MAP[typeName.toUpperCase()] ?? "OTHER";
+  const upper = typeName.toUpperCase();
+  if (isStringType(typeName)) {
+    if (maxLength !== undefined && maxLength !== DEFAULT_STRING_LENGTH) {
+      return "OTHER";
+    }
+  }
+  return TYPE_TAG_MAP[upper] ?? "OTHER";
 }
 
 /**
  * Collect variable names and types from var blocks (only VAR, VAR_INPUT, VAR_OUTPUT).
  */
-function collectVarsFromBlocks(
-  varBlocks: VarBlock[],
-): Array<{ name: string; typeName: string; isArray: boolean }> {
-  const vars: Array<{ name: string; typeName: string; isArray: boolean }> = [];
+function collectVarsFromBlocks(varBlocks: VarBlock[]): Array<{
+  name: string;
+  typeName: string;
+  isArray: boolean;
+  maxLength?: number | string;
+}> {
+  const vars: Array<{
+    name: string;
+    typeName: string;
+    isArray: boolean;
+    maxLength?: number | string;
+  }> = [];
   for (const block of varBlocks) {
     // Include VAR, VAR_INPUT, VAR_OUTPUT — skip VAR_EXTERNAL, VAR_TEMP, VAR_IN_OUT
     if (
@@ -97,7 +127,15 @@ function collectVarsFromBlocks(
           decl.type.arrayDimensions !== undefined &&
           decl.type.arrayDimensions.length > 0;
         for (const name of decl.names) {
-          vars.push({ name, typeName: decl.type.name, isArray });
+          const entry: (typeof vars)[number] = {
+            name,
+            typeName: decl.type.name,
+            isArray,
+          };
+          if (decl.type.maxLength !== undefined) {
+            entry.maxLength = decl.type.maxLength;
+          }
+          vars.push(entry);
         }
       }
     }
@@ -250,7 +288,12 @@ interface ProgramInfo {
   /** Name for the VarDescriptor array */
   varsDescName: string;
   /** Variables to expose in the REPL */
-  vars: Array<{ name: string; typeName: string; isArray: boolean }>;
+  vars: Array<{
+    name: string;
+    typeName: string;
+    isArray: boolean;
+    maxLength?: number | string;
+  }>;
   /** Task interval in nanoseconds (0 = REPL applies 20ms default) */
   intervalNs: number;
 }
@@ -263,7 +306,7 @@ function emitVarDescriptors(lines: string[], programs: ProgramInfo[]): void {
     if (prog.vars.length > 0) {
       lines.push(`static VarDescriptor ${prog.varsDescName}[] = {`);
       for (const v of prog.vars) {
-        const tag = getTypeTag(v.typeName, v.isArray);
+        const tag = getTypeTag(v.typeName, v.isArray, v.maxLength);
         lines.push(
           `    {"${v.name}", VarTypeTag::${tag}, &${prog.instanceExpr}.${v.name}},`,
         );

@@ -121,7 +121,7 @@ d();
 END_PROGRAM
 `);
     expect(result.success).toBe(false);
-    expect(result.errors.some((e) => e.message.includes("SUPER"))).toBe(true);
+    expect(result.errors.filter((e) => e.message.includes("SUPER"))).toHaveLength(1);
   });
 
   it('rejects SUPER^.FB_Init used as an expression', () => {
