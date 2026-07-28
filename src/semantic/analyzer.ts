@@ -16,6 +16,7 @@ import type {
   EnumType,
   Expression,
   FunctionBlockDeclaration,
+  FunctionCallStatement,
   FunctionCallExpression,
   IECType,
   MethodDeclaration,
@@ -1913,6 +1914,7 @@ export class SemanticAnalyzer {
         this.validateExpression(stmt.source, varTypeMap, ast);
       } else if (stmt.kind === "FunctionCallStatement") {
         this.validateExpression(stmt.call, varTypeMap, ast);
+        this.checkSuperLifecycleCall(stmt);
       }
       // Recurse into control flow
       this.recurseStatementsForExpressionValidation(stmt, varTypeMap, ast);
@@ -2367,6 +2369,27 @@ export class SemanticAnalyzer {
           getAncestors,
         );
       }
+    }
+  }
+
+  /**
+   * CODESYS forbids calling base lifecycle methods via SUPER^.
+   */
+  private checkSuperLifecycleCall(stmt: FunctionCallStatement): void {
+    if (stmt.call.kind !== "FunctionCallExpression") return;
+    const nameUpper = stmt.call.functionName.toUpperCase();
+    if (
+      nameUpper === "SUPER.FB_INIT" ||
+      nameUpper === "SUPER.FB_EXIT" ||
+      nameUpper === "SUPER.FB_REINIT"
+    ) {
+      this.addError(
+        `Calling ${stmt.call.functionName}() via SUPER^ is not allowed`,
+        stmt.call.sourceSpan.startLine,
+        stmt.call.sourceSpan.startCol,
+        stmt.call.sourceSpan.file,
+        "SUPER_LIFECYCLE_CALL",
+      );
     }
   }
 

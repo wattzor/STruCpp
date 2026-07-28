@@ -1680,6 +1680,27 @@ export class CodeGenerator {
       }
     }
 
+    // Detect nested scalar function-block members (used for lifecycle ordering).
+    const hasNestedFB = fb.varBlocks.some((block) => {
+      if (block.blockType === "VAR_EXTERNAL") return false;
+      return block.declarations.some((decl) => {
+        const isInoutFBScalar =
+          block.blockType === "VAR_IN_OUT" &&
+          decl.type.arrayDimensions === undefined &&
+          decl.type.elementTypeName === undefined &&
+          this.isPointerInoutType(decl.type.name);
+        const isInoutArray =
+          block.blockType === "VAR_IN_OUT" &&
+          (decl.type.arrayDimensions !== undefined ||
+            decl.type.elementTypeName !== undefined);
+        if (isInoutFBScalar || isInoutArray) return false;
+        return (
+          decl.type.arrayDimensions === undefined &&
+          this.isFBType(decl.type.name)
+        );
+      });
+    });
+
     // Generate member variables
     for (const block of fb.varBlocks) {
       // VAR_EXTERNAL is a reference to a configuration global, not a member of
@@ -1767,8 +1788,19 @@ export class CodeGenerator {
     }
 
     this.emitHeader("");
+    this.emitHeader("  protected:");
+    this.emitHeader("    // Lifecycle control flag");
+    this.emitHeader("    bool __strucpp_lifecycle_ = true;");
+    this.emitHeader("");
+    this.emitHeader("  public:");
     this.emitHeader("    // Constructor");
-    this.emitHeader(`    ${fb.name}();`);
+    this.emitHeader(`    ${fb.name}(bool __strucpp_lifecycle = true);`);
+    this.emitHeader("");
+    this.emitHeader("    // Lifecycle helpers");
+    this.emitHeader(
+      "    void __strucpp_fb_init(bool bInitRetains, bool bInCopyCode);",
+    );
+    this.emitHeader("    void __strucpp_fb_exit(bool bInCopyCode);");
     this.emitHeader("");
     this.emitHeader("    // Execute function block");
     this.emitHeader("    void operator()();");
@@ -1792,12 +1824,13 @@ export class CodeGenerator {
     );
     if (
       hasFBExit ||
+      hasNestedFB ||
       fb.methods.length > 0 ||
       fb.properties.length > 0 ||
       !fb.isFinal
     ) {
       this.emitHeader("");
-      if (hasFBExit) {
+      if (hasFBExit || hasNestedFB) {
         this.emitHeader(`    virtual ~${fb.name}();`);
       } else {
         this.emitHeader(`    virtual ~${fb.name}() = default;`);
@@ -2216,9 +2249,14 @@ export class CodeGenerator {
         // Interface return: assignments to result become return statements
         this.interfaceReturnMethod = true;
       } else {
+        const lifecycleInit = ["FB_INIT", "FB_EXIT", "FB_REINIT"].includes(
+          method.name.toUpperCase(),
+        )
+          ? " = IEC_BOOL(true)"
+          : "";
         this.emit(
           `    ${this.mapMethodResultVarType(method.returnType)} ${method.name}_result${
-            isRefToUserDefined ? " = nullptr" : ""
+            isRefToUserDefined ? " = nullptr" : lifecycleInit
           };`,
         );
       }
@@ -2448,11 +2486,13 @@ export class CodeGenerator {
 
     // Constructor. VAR_EXTERNAL pointers and pointer-style VAR_IN_OUT members
     // are bound in the initializer list (they must be valid before FB_Init
-    // runs). User-supplied initial values are applied in the constructor body
-    // *before* FB_Init is called, matching CODESYS/Beckhoff first-download
-    // semantics (implicit variable initialization, then explicit FB_Init).
+    // runs). Nested scalar FB members are constructed with lifecycle suppressed
+    // so the outer FB controls initialization order: outer FB_Init runs first,
+    // then nested FBs are initialized depth-first. User-supplied initial values
+    // are applied in __strucpp_fb_init AFTER FB_Init returns.
     const fbInits: string[] = [];
     const userInitStatements: string[] = [];
+    const memberFBs: string[] = [];
     // Bind each VAR_EXTERNAL pointer to the file-scope canonical global. The
     // namespace qualifier disambiguates the global from the same-named pointer
     // member being initialized. File-scope visibility means this works no
@@ -2473,6 +2513,10 @@ export class CodeGenerator {
           (decl.type.arrayDimensions !== undefined ||
             decl.type.elementTypeName !== undefined ||
             this.isPointerInoutType(decl.type.name));
+        const isScalarFB =
+          decl.type.arrayDimensions === undefined &&
+          !isPointerInout &&
+          this.isFBType(decl.type.name);
         if (decl.initialValue) {
           const initExpr = this.generateInitializer(
             decl.type,
@@ -2496,6 +2540,17 @@ export class CodeGenerator {
             );
             fbInits.push(`${memberName}(nullptr)`);
           }
+        } else if (isScalarFB) {
+          for (const name of decl.names) {
+            const cppType = this.mapTypeRefToCpp(decl.type);
+            const memberName = this.mangleMemberIfNeeded(
+              name,
+              cppType,
+              decl.type.name,
+            );
+            fbInits.push(`${memberName}(false)`);
+            memberFBs.push(memberName);
+          }
         }
       }
     }
@@ -2505,20 +2560,65 @@ export class CodeGenerator {
     const hasFBExit = fb.methods.some(
       (m) => m.name.toUpperCase() === "FB_EXIT",
     );
-    if (fbInits.length > 0) {
-      this.emit(`${fb.name}::${fb.name}()`);
-      this.emit(`    : ${fbInits.join(", ")}`);
-      this.emit("{");
-    } else {
-      this.emit(`${fb.name}::${fb.name}() {`);
+    const hasNestedFB = memberFBs.length > 0;
+
+    const baseName = fb.extends ?? undefined;
+
+    // Constructor: delegates to lifecycle helpers. The default parameter lets
+    // stand-alone instances run init automatically while nested members defer it
+    // to the outer FB. Inherited FBs receive the same lifecycle flag so the
+    // base subobject does not self-initialize out of order.
+    const baseInit = baseName ? `${baseName}(__strucpp_lifecycle), ` : "";
+    const initList = fbInits.length > 0 ? `, ${fbInits.join(", ")}` : "";
+    this.emit(`${fb.name}::${fb.name}(bool __strucpp_lifecycle)`);
+    this.emit(
+      `    : ${baseInit}__strucpp_lifecycle_(__strucpp_lifecycle)${initList} {`,
+    );
+    this.emit(
+      "    if (__strucpp_lifecycle_) this->__strucpp_fb_init(true, false);",
+    );
+    this.emit("}");
+    this.emit("");
+
+    // __strucpp_fb_init runs the base lifecycle, then FB_Init, then nested FBs,
+    // then applies user-supplied initial values. CODESYS calls FB_Init before
+    // initialization expression assignments become valid.
+    this.emit(
+      `void ${fb.name}::__strucpp_fb_init(bool bInitRetains, bool bInCopyCode) {`,
+    );
+    if (baseName) {
+      this.emit(
+        `    this->${baseName}::__strucpp_fb_init(bInitRetains, bInCopyCode);`,
+      );
+    }
+    if (hasFBInit) {
+      this.emit(`    this->${fb.name}::FB_INIT(bInitRetains, bInCopyCode);`);
+    }
+    for (const memberName of memberFBs) {
+      this.emit(
+        `    this->${memberName}.__strucpp_fb_init(bInitRetains, bInCopyCode);`,
+      );
     }
     this.emit("    // Initialize variables");
     for (const stmt of userInitStatements) {
       this.emit(stmt);
     }
-    if (hasFBInit) {
-      // First-download invocation: retain variables are initialized, not in copy code.
-      this.emit("    this->FB_INIT(true, false);");
+    this.emit("}");
+    this.emit("");
+
+    // __strucpp_fb_exit tears down nested FBs (innermost first), then FB_Exit,
+    // then the base class lifecycle. The base lifecycle flag is cleared so the
+    // base destructor does not run the base FB_Exit a second time.
+    this.emit(`void ${fb.name}::__strucpp_fb_exit(bool bInCopyCode) {`);
+    for (let i = memberFBs.length - 1; i >= 0; i--) {
+      this.emit(`    this->${memberFBs[i]!}.__strucpp_fb_exit(bInCopyCode);`);
+    }
+    if (hasFBExit) {
+      this.emit(`    this->${fb.name}::FB_EXIT(bInCopyCode);`);
+    }
+    if (baseName) {
+      this.emit(`    this->${baseName}::__strucpp_fb_exit(bInCopyCode);`);
+      this.emit(`    ${baseName}::__strucpp_lifecycle_ = false;`);
     }
     this.emit("}");
     this.emit("");
@@ -2551,10 +2651,12 @@ export class CodeGenerator {
     }
 
     // Destructor with FB_Exit lifecycle call
-    if (hasFBExit) {
+    if (hasFBExit || hasNestedFB) {
       this.emit(`${fb.name}::~${fb.name}() {`);
       // Normal instance destruction (not an online change copy operation).
-      this.emit("    this->FB_EXIT(false);");
+      this.emit(
+        "    if (__strucpp_lifecycle_) this->__strucpp_fb_exit(false);",
+      );
       this.emit("}");
       this.emit("");
     }
