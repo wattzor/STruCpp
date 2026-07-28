@@ -1696,6 +1696,7 @@ export class CodeGenerator {
         if (isInoutFBScalar || isInoutArray) return false;
         return (
           decl.type.arrayDimensions === undefined &&
+          !decl.initialValue &&
           this.isFBType(decl.type.name)
         );
       });
@@ -2566,14 +2567,18 @@ export class CodeGenerator {
 
     // Constructor: delegates to lifecycle helpers. The default parameter lets
     // stand-alone instances run init automatically while nested members defer it
-    // to the outer FB. Inherited FBs receive the same lifecycle flag so the
-    // base subobject does not self-initialize out of order.
-    const baseInit = baseName ? `${baseName}(__strucpp_lifecycle), ` : "";
-    const initList = fbInits.length > 0 ? `, ${fbInits.join(", ")}` : "";
+    // to the outer FB. Inherited FBs construct their base with lifecycle
+    // disabled; the most-derived __strucpp_fb_init drives the whole chain once.
+    const baseInit = baseName ? `${baseName}(false)` : "";
+    const memberInit = fbInits.length > 0 ? fbInits.join(", ") : "";
+    const lifecycleInit = `__strucpp_lifecycle_(__strucpp_lifecycle)`;
+    let initList = baseInit;
+    if (memberInit) {
+      initList = initList ? `${initList}, ${memberInit}` : memberInit;
+    }
+    initList = initList ? `${initList}, ${lifecycleInit}` : lifecycleInit;
     this.emit(`${fb.name}::${fb.name}(bool __strucpp_lifecycle)`);
-    this.emit(
-      `    : ${baseInit}__strucpp_lifecycle_(__strucpp_lifecycle)${initList} {`,
-    );
+    this.emit(`    : ${initList} {`);
     this.emit(
       "    if (__strucpp_lifecycle_) this->__strucpp_fb_init(true, false);",
     );

@@ -123,4 +123,31 @@ END_PROGRAM
     expect(result.success).toBe(false);
     expect(result.errors.some((e) => e.message.includes("SUPER"))).toBe(true);
   });
+
+  it('rejects SUPER^.FB_Init used as an expression', () => {
+    const result = compile(`
+FUNCTION_BLOCK Base
+METHOD FB_Init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+  FB_Init := TRUE;
+END_METHOD
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK Derived EXTENDS Base
+METHOD FB_Init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+  IF SUPER^.FB_Init(bInitRetains := TRUE, bInCopyCode := FALSE) THEN
+    FB_Init := TRUE;
+  END_IF;
+END_METHOD
+END_FUNCTION_BLOCK
+
+PROGRAM Main
+VAR d : Derived; END_VAR
+d();
+END_PROGRAM
+`);
+    expect(result.success).toBe(false);
+    expect(result.errors.some((e) => e.message.includes("SUPER"))).toBe(true);
+  });
 });

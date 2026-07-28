@@ -2191,6 +2191,7 @@ export class SemanticAnalyzer {
     } else if (expr.kind === "UnaryExpression") {
       this.validateExpression(expr.operand, varTypeMap, ast);
     } else if (expr.kind === "FunctionCallExpression") {
+      this.checkSuperLifecycleCallExpr(expr);
       for (const arg of expr.arguments) {
         this.validateExpression(arg.value, varTypeMap, ast);
       }
@@ -2562,18 +2563,23 @@ export class SemanticAnalyzer {
    * CODESYS forbids calling base lifecycle methods via SUPER^.
    */
   private checkSuperLifecycleCall(stmt: FunctionCallStatement): void {
-    if (stmt.call.kind !== "FunctionCallExpression") return;
-    const nameUpper = stmt.call.functionName.toUpperCase();
+    if (stmt.call.kind === "FunctionCallExpression") {
+      this.checkSuperLifecycleCallExpr(stmt.call);
+    }
+  }
+
+  private checkSuperLifecycleCallExpr(expr: FunctionCallExpression): void {
+    const nameUpper = expr.functionName.toUpperCase();
     if (
       nameUpper === "SUPER.FB_INIT" ||
       nameUpper === "SUPER.FB_EXIT" ||
       nameUpper === "SUPER.FB_REINIT"
     ) {
       this.addError(
-        `Calling ${stmt.call.functionName}() via SUPER^ is not allowed`,
-        stmt.call.sourceSpan.startLine,
-        stmt.call.sourceSpan.startCol,
-        stmt.call.sourceSpan.file,
+        `Calling ${expr.functionName}() via SUPER^ is not allowed`,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
         "SUPER_LIFECYCLE_CALL",
       );
     }
