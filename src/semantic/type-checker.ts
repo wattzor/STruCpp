@@ -51,6 +51,8 @@ import {
   resolveHarmonizedCommonType,
   resolveSelectionCommonType,
   stdFuncReturnsCommonType,
+  getTypeNumericRange,
+  parseIntegerLiteral,
 } from "./type-utils.js";
 import {
   getSystemType,
@@ -1239,17 +1241,31 @@ export class TypeChecker {
   ): void {
     if (!targetType || !valueType) return;
 
-    // Integer/real/bool literals without explicit type prefix are polymorphic:
-    // they can be assigned to any compatible numeric or bit type.
+    // Integer/real/bool literals without explicit type prefix are polymorphic,
+    // but they must still fit in the target type's range and not overflow.
     if (this.isUntypedNumericLiteral(value)) {
-      if (targetType.typeKind === "elementary") {
-        // INT/REAL literals → any numeric or bit type
-        if (
-          _isTypeInCategory(targetType, "ANY_NUM") ||
-          _isTypeInCategory(targetType, "ANY_BIT")
-        ) {
+      const literal = value as LiteralExpression;
+      const check = this.validateUntypedLiteralFits(targetType, literal);
+      if (check) {
+        if (check.kind === "error") {
+          this.addError(
+            check.message,
+            value.sourceSpan.startLine,
+            value.sourceSpan.startCol,
+            value.sourceSpan.file,
+          );
           return;
         }
+        if (check.kind === "warning") {
+          this.addWarning(
+            check.message,
+            value.sourceSpan.startLine,
+            value.sourceSpan.startCol,
+            value.sourceSpan.file,
+          );
+          return;
+        }
+        return;
       }
     }
 
@@ -1309,6 +1325,98 @@ export class TypeChecker {
       );
       return;
     }
+  }
+
+  /**
+   * Check whether an untyped numeric literal fits its target type.
+   * Returns an object describing the result, or undefined when the target
+   * is not a range-tracked numeric type (fall through to normal assignability).
+   */
+  private validateUntypedLiteralFits(
+    targetType: IECType,
+    value: LiteralExpression,
+  ):
+    | { kind: "ok" }
+    | { kind: "error"; message: string }
+    | { kind: "warning"; message: string }
+    | undefined {
+    if (targetType.typeKind !== "elementary") return undefined;
+    const targetName = (targetType as ElementaryType).name.toUpperCase();
+    const range = getTypeNumericRange(targetName);
+    if (!range) return undefined;
+
+    if (value.literalType === "BOOL") {
+      const boolValue =
+        value.value === true ||
+        value.value === "TRUE" ||
+        value.rawValue?.toUpperCase() === "TRUE";
+      const intValue = boolValue ? 1n : 0n;
+      if (intValue < range.min || intValue > range.max) {
+        return {
+          kind: "error",
+          message: `Boolean literal ${value.rawValue} does not fit in ${targetName}`,
+        };
+      }
+      return { kind: "ok" };
+    }
+
+    if (value.literalType === "INT") {
+      const bigValue = parseIntegerLiteral(String(value.rawValue));
+      if (bigValue === undefined) return undefined;
+      if (range.isInteger) {
+        if (bigValue < range.min || bigValue > range.max) {
+          return {
+            kind: "error",
+            message: `Literal value ${bigValue} is out of range for ${targetName}`,
+          };
+        }
+        return { kind: "ok" };
+      }
+      // Untyped integer assigned to a real type: check it is representable.
+      const num = Number(bigValue);
+      if (Math.abs(num) > range.max) {
+        return {
+          kind: "error",
+          message: `Literal value ${bigValue} overflows ${targetName}`,
+        };
+      }
+      return { kind: "ok" };
+    }
+
+    if (value.literalType === "REAL") {
+      const num = Number(value.value);
+      if (!Number.isFinite(num)) {
+        return {
+          kind: "error",
+          message: `Literal value ${value.rawValue} is not finite`,
+        };
+      }
+      if (Math.abs(num) > range.max) {
+        return {
+          kind: "error",
+          message: `Literal value ${value.rawValue} overflows ${targetName}`,
+        };
+      }
+      if (range.isInteger) {
+        if (!Number.isInteger(num)) {
+          return {
+            kind: "warning",
+            message: `Narrowing conversion from REAL to ${targetName}`,
+          };
+        }
+        const bigValue = BigInt(Math.trunc(num));
+        if (bigValue < range.min || bigValue > range.max) {
+          return {
+            kind: "error",
+            message: `Literal value ${bigValue} is out of range for ${targetName}`,
+          };
+        }
+        return { kind: "ok" };
+      }
+      return { kind: "ok" };
+    }
+
+    return undefined;
   }
 
   /**
