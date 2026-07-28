@@ -3405,6 +3405,8 @@ export class CodeGenerator {
           this.emit(
             `${indent}${this.generateMethodCallExpression(stmt.call)};`,
           );
+        } else if (stmt.call.functionName.toUpperCase() === "ADVANCE_TIME") {
+          this.generateAdvanceTime(stmt.call, indent);
         } else {
           const fbType = this.getFBInvocationType(stmt.call.functionName);
           if (fbType) {
@@ -3853,6 +3855,27 @@ export class CodeGenerator {
     const closingLine = this.currentLine;
     this.emit(`${indent}}`);
     this.recordLineMapping(stmt.sourceSpan.endLine, closingLine);
+  }
+
+  /**
+   * Generate code for an ADVANCE_TIME(duration) statement.
+   * Used in both normal program bodies and test blocks to advance the
+   * simulated current time by the given TIME expression (nanoseconds).
+   */
+  private generateAdvanceTime(
+    call: FunctionCallExpression,
+    indent: string,
+  ): void {
+    if (call.arguments.length !== 1 || call.arguments[0]!.isOutput) {
+      this.emit(
+        `${indent}static_assert(false, "ADVANCE_TIME requires one input duration");`,
+      );
+      return;
+    }
+    const duration = this.generateExpression(call.arguments[0]!.value);
+    this.emit(
+      `${indent}strucpp::__CURRENT_TIME_NS += static_cast<int64_t>(${duration});`,
+    );
   }
 
   /**
