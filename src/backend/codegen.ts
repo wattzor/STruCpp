@@ -1788,9 +1788,11 @@ export class CodeGenerator {
     }
 
     this.emitHeader("");
+    this.emitHeader("  protected:");
     this.emitHeader("    // Lifecycle control flag");
     this.emitHeader("    bool __strucpp_lifecycle_ = true;");
     this.emitHeader("");
+    this.emitHeader("  public:");
     this.emitHeader("    // Constructor");
     this.emitHeader(`    ${fb.name}(bool __strucpp_lifecycle = true);`);
     this.emitHeader("");
@@ -2560,26 +2562,37 @@ export class CodeGenerator {
     );
     const hasNestedFB = memberFBs.length > 0;
 
+    const baseName = fb.extends ?? undefined;
+
     // Constructor: delegates to lifecycle helpers. The default parameter lets
     // stand-alone instances run init automatically while nested members defer it
-    // to the outer FB.
+    // to the outer FB. Inherited FBs receive the same lifecycle flag so the
+    // base subobject does not self-initialize out of order.
+    const baseInit = baseName ? `${baseName}(__strucpp_lifecycle), ` : "";
     const initList = fbInits.length > 0 ? `, ${fbInits.join(", ")}` : "";
     this.emit(`${fb.name}::${fb.name}(bool __strucpp_lifecycle)`);
-    this.emit(`    : __strucpp_lifecycle_(__strucpp_lifecycle)${initList} {`);
+    this.emit(
+      `    : ${baseInit}__strucpp_lifecycle_(__strucpp_lifecycle)${initList} {`,
+    );
     this.emit(
       "    if (__strucpp_lifecycle_) this->__strucpp_fb_init(true, false);",
     );
     this.emit("}");
     this.emit("");
 
-    // __strucpp_fb_init runs FB_Init, then recursively initializes nested FBs,
+    // __strucpp_fb_init runs the base lifecycle, then FB_Init, then nested FBs,
     // then applies user-supplied initial values. CODESYS calls FB_Init before
     // initialization expression assignments become valid.
     this.emit(
       `void ${fb.name}::__strucpp_fb_init(bool bInitRetains, bool bInCopyCode) {`,
     );
+    if (baseName) {
+      this.emit(
+        `    this->${baseName}::__strucpp_fb_init(bInitRetains, bInCopyCode);`,
+      );
+    }
     if (hasFBInit) {
-      this.emit("    this->FB_INIT(bInitRetains, bInCopyCode);");
+      this.emit(`    this->${fb.name}::FB_INIT(bInitRetains, bInCopyCode);`);
     }
     for (const memberName of memberFBs) {
       this.emit(
@@ -2593,13 +2606,19 @@ export class CodeGenerator {
     this.emit("}");
     this.emit("");
 
-    // __strucpp_fb_exit tears down nested FBs (innermost first) then FB_Exit.
+    // __strucpp_fb_exit tears down nested FBs (innermost first), then FB_Exit,
+    // then the base class lifecycle. The base lifecycle flag is cleared so the
+    // base destructor does not run the base FB_Exit a second time.
     this.emit(`void ${fb.name}::__strucpp_fb_exit(bool bInCopyCode) {`);
     for (let i = memberFBs.length - 1; i >= 0; i--) {
       this.emit(`    this->${memberFBs[i]!}.__strucpp_fb_exit(bInCopyCode);`);
     }
     if (hasFBExit) {
-      this.emit("    this->FB_EXIT(bInCopyCode);");
+      this.emit(`    this->${fb.name}::FB_EXIT(bInCopyCode);`);
+    }
+    if (baseName) {
+      this.emit(`    this->${baseName}::__strucpp_fb_exit(bInCopyCode);`);
+      this.emit(`    ${baseName}::__strucpp_lifecycle_ = false;`);
     }
     this.emit("}");
     this.emit("");
