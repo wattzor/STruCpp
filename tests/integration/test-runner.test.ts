@@ -574,4 +574,29 @@ END_TEST
     expect(stdout).toContain("[PASS] Motor starts and stops");
     expect(stdout).toContain("[PASS] Motor set speed");
   });
+
+  it("should support SETUP VAR initialisers and ASSERT_EQ on arrays", () => {
+    const source = `
+PROGRAM ArrP
+  VAR arr : ARRAY[0..3] OF INT; END_VAR
+  arr[0] := 10; arr[1] := 20; arr[2] := 30; arr[3] := 40;
+END_PROGRAM
+`;
+    const test = `
+SETUP
+  VAR base : INT := 5; expected : ARRAY[0..3] OF INT := [10,20,30,40]; END_VAR
+END_SETUP
+
+TEST 'Array equals expected'
+  VAR uut : ArrP; END_VAR
+  uut();
+  ASSERT_EQ(uut.arr, expected);
+  ASSERT_EQ(base, 5);
+END_TEST
+`;
+    const { stdout, exitCode } = runTest(source, test, "test_arr.st");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("[PASS] Array equals expected");
+    expect(stdout).toContain("1 test, 1 passed, 0 failed");
+  });
 });

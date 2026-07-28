@@ -123,6 +123,9 @@ public:
     // Raw data access (for interop)
     var_type* data() noexcept { return data_.data(); }
     const var_type* data() const noexcept { return data_.data(); }
+
+    bool operator==(const IEC_ARRAY_1D& other) const noexcept { return data_ == other.data_; }
+    bool operator!=(const IEC_ARRAY_1D& other) const noexcept { return data_ != other.data_; }
 };
 
 // Multi-dimensional array (2D)
@@ -210,6 +213,9 @@ public:
     auto end() noexcept { return data_.end(); }
     auto begin() const noexcept { return data_.begin(); }
     auto end() const noexcept { return data_.end(); }
+
+    bool operator==(const IEC_ARRAY_2D& other) const noexcept { return data_ == other.data_; }
+    bool operator!=(const IEC_ARRAY_2D& other) const noexcept { return data_ != other.data_; }
 };
 
 // Multi-dimensional array (3D)
@@ -253,6 +259,9 @@ public:
     
     var_type* data() noexcept { return data_.data(); }
     const var_type* data() const noexcept { return data_.data(); }
+
+    bool operator==(const IEC_ARRAY_3D& other) const noexcept { return data_ == other.data_; }
+    bool operator!=(const IEC_ARRAY_3D& other) const noexcept { return data_ != other.data_; }
 };
 
 // Convenience type aliases

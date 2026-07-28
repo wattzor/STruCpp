@@ -408,6 +408,16 @@ class TestFunctionGenerator {
     lines.push("    void setup() {");
     const savedIndent = this.indent;
     this.indent = "        ";
+    // Apply SETUP VAR initial values before running the body.
+    for (const varBlock of setup.varBlocks) {
+      for (const decl of varBlock.declarations) {
+        if (!decl.initialValue) continue;
+        const initExpr = this.testCodegen.emitExpression(decl.initialValue);
+        for (const name of decl.names) {
+          lines.push(`${this.indent}this->${name} = ${initExpr};`);
+        }
+      }
+    }
     for (const stmt of setup.body) {
       this.generateTestStatement(lines, stmt);
     }
