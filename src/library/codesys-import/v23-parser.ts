@@ -56,6 +56,11 @@ const RECORD_KEYWORDS: Array<{
     type: "FUNCTION_BLOCK",
     hasImpl: true,
   },
+  {
+    bytes: utf8ToBytes("FUNCTIONBLOCK "),
+    type: "FUNCTION_BLOCK",
+    hasImpl: true,
+  },
   { bytes: utf8ToBytes("FUNCTION "), type: "FUNCTION", hasImpl: true },
   { bytes: utf8ToBytes("PROGRAM "), type: "PROGRAM", hasImpl: true },
   { bytes: utf8ToBytes("VAR_GLOBAL"), type: "GVL", hasImpl: false },
@@ -64,7 +69,7 @@ const RECORD_KEYWORDS: Array<{
 
 /** Regex for extracting POU names from declaration text. */
 const POU_NAME_RE =
-  /^\s*(?:FUNCTION_BLOCK\s+(\w+)|FUNCTION\s+(\w+)|PROGRAM\s+(\w+))/;
+  /^\s*(?:FUNCTION_BLOCK\s+(\w+)|FUNCTIONBLOCK\s+(\w+)|FUNCTION\s+(\w+)|PROGRAM\s+(\w+))/;
 
 /** Regex for extracting the type name from a `TYPE Name : …` declaration. */
 const TYPE_NAME_RE = /^\s*TYPE\s+(\w+)\s*:/;
@@ -214,7 +219,7 @@ function findRecords(data: Uint8Array): ExtractedPOU[] {
       } else {
         const m = decl.text.match(POU_NAME_RE);
         if (!m) continue;
-        name = m[1] ?? m[2] ?? m[3] ?? "";
+        name = m[1] ?? m[2] ?? m[3] ?? m[4] ?? "";
       }
 
       seen.add(textStart);
