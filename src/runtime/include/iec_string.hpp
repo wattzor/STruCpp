@@ -480,6 +480,13 @@ private:
 
 using STRING_VAR = IECStringVar<254>;
 
+// Unwrap helper so generic standard-library templates can reach the underlying
+// IECString value from an IECStringVar without infinite recursion.
+template<size_t MaxLen>
+inline IECString<MaxLen> iec_unwrap(const IECStringVar<MaxLen>& v) noexcept {
+    return v.get();
+}
+
 // Deferred definition: IECString::operator=(const IECStringVar<OtherLen>&)
 // Template deduction doesn't consider user-defined conversions, so we need
 // this explicit assignment to handle: rawStringField = stringVar
@@ -601,14 +608,14 @@ inline bool operator>(const IECStringVar<Len1>& a, const IECString<Len2>& b) noe
 using IEC_STRING = IECStringVar<254>;
 
 template<size_t MaxLen>
-inline size_t LEN(const IECString<MaxLen>& s) noexcept {
-    return s.length();
+inline IEC_INT LEN(const IECString<MaxLen>& s) noexcept {
+    return IEC_INT(static_cast<INT_t>(s.length()));
 }
 
 // IECStringVar overload: template deduction doesn't go through implicit conversions
 template<size_t MaxLen>
-inline size_t LEN(const IECStringVar<MaxLen>& s) noexcept {
-    return s.get().length();
+inline IEC_INT LEN(const IECStringVar<MaxLen>& s) noexcept {
+    return IEC_INT(static_cast<INT_t>(s.get().length()));
 }
 
 template<size_t MaxLen>
@@ -637,10 +644,31 @@ CONCAT(const IECString<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
     return result;
 }
 
-// Variadic CONCAT for 3+ arguments (IEC 61131-3 extensible function)
+// Variadic CONCAT for 3+ arguments (IEC 61131-3 extensible function).
+// Wrapped literals are IECStringVar, variables are IECStringVar, and the
+// intermediate result of a two-arg CONCAT is an IECString value, so we
+// provide overloads for all four first/second-type combinations.
 template<size_t MaxLen1, size_t MaxLen2, typename... Args>
 inline auto
 CONCAT(const IECString<MaxLen1>& s1, const IECString<MaxLen2>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(s1, s2), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto
+CONCAT(const IECStringVar<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(s1, s2), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto
+CONCAT(const IECString<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(s1, s2), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto
+CONCAT(const IECStringVar<MaxLen1>& s1, const IECString<MaxLen2>& s2, const Args&... rest) noexcept {
     return CONCAT(CONCAT(s1, s2), rest...);
 }
 
@@ -690,19 +718,19 @@ inline IECString<MaxLen> INSERT(const IECStringVar<MaxLen>& s1, const char* s2, 
 }
 
 template<size_t MaxLen>
-inline size_t FIND(const IECString<MaxLen>& s1, const char* s2) noexcept {
+inline IEC_INT FIND(const IECString<MaxLen>& s1, const char* s2) noexcept {
     return FIND(s1, IECString<MaxLen>(s2));
 }
 
 template<size_t MaxLen>
-inline size_t FIND(const IECStringVar<MaxLen>& s1, const char* s2) noexcept {
+inline IEC_INT FIND(const IECStringVar<MaxLen>& s1, const char* s2) noexcept {
     return FIND(s1.get(), IECString<MaxLen>(s2));
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECString<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
+inline IEC_INT FIND(const IECString<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
     size_t pos = s1.find(s2);
-    return pos == IECString<MaxLen1>::npos ? 0 : pos + 1;
+    return IEC_INT(static_cast<INT_t>(pos == IECString<MaxLen1>::npos ? 0 : pos + 1));
 }
 
 // =============================================================================
@@ -779,17 +807,17 @@ inline IECString<MaxLen> REPLACE(const IECString<MaxLen>& s1, const IECStringVar
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECStringVar<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
+inline IEC_INT FIND(const IECStringVar<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
     return FIND(s1.get(), s2.get());
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECStringVar<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
+inline IEC_INT FIND(const IECStringVar<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
     return FIND(s1.get(), s2);
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECString<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
+inline IEC_INT FIND(const IECString<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
     return FIND(s1, s2.get());
 }
 
@@ -799,8 +827,8 @@ inline size_t FIND(const IECString<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2
 // =============================================================================
 
 template<size_t MaxLen>
-inline size_t LEN(const IECVar<IECString<MaxLen>>& s) noexcept {
-    return static_cast<IECString<MaxLen>>(s).length();
+inline IEC_INT LEN(const IECVar<IECString<MaxLen>>& s) noexcept {
+    return IEC_INT(static_cast<INT_t>(static_cast<IECString<MaxLen>>(s).length()));
 }
 
 template<size_t MaxLen>
@@ -824,17 +852,17 @@ inline IECString<MaxLen> DELETE_STR(const IECVar<IECString<MaxLen>>& s, size_t l
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECVar<IECString<MaxLen1>>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
+inline IEC_INT FIND(const IECVar<IECString<MaxLen1>>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
     return FIND(static_cast<IECString<MaxLen1>>(s1), s2.get());
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECVar<IECString<MaxLen1>>& s1, const IECString<MaxLen2>& s2) noexcept {
+inline IEC_INT FIND(const IECVar<IECString<MaxLen1>>& s1, const IECString<MaxLen2>& s2) noexcept {
     return FIND(static_cast<IECString<MaxLen1>>(s1), s2);
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECStringVar<MaxLen1>& s1, const IECVar<IECString<MaxLen2>>& s2) noexcept {
+inline IEC_INT FIND(const IECStringVar<MaxLen1>& s1, const IECVar<IECString<MaxLen2>>& s2) noexcept {
     return FIND(s1.get(), static_cast<IECString<MaxLen2>>(s2));
 }
 

@@ -17,6 +17,7 @@
 #include <cstring>
 #include <algorithm>
 #include "iec_types.hpp"
+#include "iec_var.hpp"
 
 namespace strucpp {
 
@@ -457,56 +458,142 @@ private:
 
 using WSTRING_VAR = IECWStringVar<254>;
 
+// Unwrap helper so generic standard-library templates can reach the underlying
+// IECWString value from an IECWStringVar without infinite recursion.
+template<size_t MaxLen>
+inline IECWString<MaxLen> iec_unwrap(const IECWStringVar<MaxLen>& v) noexcept {
+    return v.get();
+}
+
 // Non-template alias for codegen: IEC_WSTRING = IECWStringVar<254>
 // For parameterized WSTRING(N), codegen emits IECWStringVar<N> directly
 using IEC_WSTRING = IECWStringVar<254>;
 
 // Standard-function name overloads so ST calls like LEN(s), LEFT(s, n), etc.
 // dispatch to the wide-string helpers when the argument is a WSTRING.
+// These mirror the STRING overloads in iec_string.hpp and accept both the
+// value type IECWString<N> and the variable wrapper IECWStringVar<N>.
 
 template<size_t MaxLen>
-inline size_t LEN(const IECWString<MaxLen>& s) noexcept {
-    return s.length();
+inline IEC_INT LEN(const IECWString<MaxLen>& s) noexcept {
+    return IEC_INT(static_cast<INT_t>(s.length()));
 }
 
 template<size_t MaxLen>
-inline size_t LEN(const IECWStringVar<MaxLen>& s) noexcept {
-    return s.length();
+inline IEC_INT LEN(const IECWStringVar<MaxLen>& s) noexcept {
+    return IEC_INT(static_cast<INT_t>(s.get().length()));
 }
 
 template<size_t MaxLen>
-inline size_t WLEN(const IECWString<MaxLen>& s) noexcept {
-    return s.length();
+inline IEC_INT LEN(const IECVar<IECWString<MaxLen>>& s) noexcept {
+    return IEC_INT(static_cast<INT_t>(static_cast<IECWString<MaxLen>>(s).length()));
 }
 
 template<size_t MaxLen>
-inline IECWString<MaxLen> WLEFT(const IECWString<MaxLen>& s, size_t len) noexcept {
+inline IECWString<MaxLen> LEFT(const IECWString<MaxLen>& s, size_t len) noexcept {
     return s.substr(0, len);
 }
 
 template<size_t MaxLen>
-inline IECWString<MaxLen> WRIGHT(const IECWString<MaxLen>& s, size_t len) noexcept {
+inline IECWString<MaxLen> LEFT(const IECWStringVar<MaxLen>& s, size_t len) noexcept {
+    return LEFT(s.get(), len);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> LEFT(const IECVar<IECWString<MaxLen>>& s, size_t len) noexcept {
+    return LEFT(static_cast<IECWString<MaxLen>>(s), len);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> RIGHT(const IECWString<MaxLen>& s, size_t len) noexcept {
     if (len >= s.length()) return s;
     return s.substr(s.length() - len, len);
 }
 
 template<size_t MaxLen>
-inline IECWString<MaxLen> WMID(const IECWString<MaxLen>& s, size_t pos, size_t len) noexcept {
+inline IECWString<MaxLen> RIGHT(const IECWStringVar<MaxLen>& s, size_t len) noexcept {
+    return RIGHT(s.get(), len);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> RIGHT(const IECVar<IECWString<MaxLen>>& s, size_t len) noexcept {
+    return RIGHT(static_cast<IECWString<MaxLen>>(s), len);
+}
+
+// IEC 61131-3 MID signature: MID(IN, L, P) -> (s, len, pos)
+template<size_t MaxLen>
+inline IECWString<MaxLen> MID(const IECWString<MaxLen>& s, size_t len, size_t pos) noexcept {
     if (pos == 0) return IECWString<MaxLen>();
     return s.substr(pos - 1, len);
 }
 
+template<size_t MaxLen>
+inline IECWString<MaxLen> MID(const IECWStringVar<MaxLen>& s, size_t len, size_t pos) noexcept {
+    return MID(s.get(), len, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> MID(const IECVar<IECWString<MaxLen>>& s, size_t len, size_t pos) noexcept {
+    return MID(static_cast<IECWString<MaxLen>>(s), len, pos);
+}
+
 template<size_t MaxLen1, size_t MaxLen2>
-inline IECWString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)> 
-WCONCAT(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>& s2) noexcept {
+inline IECWString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
+CONCAT(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>& s2) noexcept {
     constexpr size_t ResultLen = MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2;
     IECWString<ResultLen> result(s1);
     result.append(s2);
     return result;
 }
 
+// Variadic CONCAT for 3+ arguments (IEC 61131-3 extensible function).
+// Wrapped literals are IECWStringVar, variables are IECWStringVar, and the
+// intermediate result of a two-arg CONCAT is an IECWString value, so we
+// provide overloads for all four first/second-type combinations.
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto
+CONCAT(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(s1, s2), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto
+CONCAT(const IECWStringVar<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(s1, s2), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto
+CONCAT(const IECWString<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(s1, s2), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto
+CONCAT(const IECWStringVar<MaxLen1>& s1, const IECWString<MaxLen2>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(s1, s2), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IECWString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
+CONCAT(const IECWStringVar<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2) noexcept {
+    return CONCAT(s1.get(), s2.get());
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IECWString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
+CONCAT(const IECWStringVar<MaxLen1>& s1, const IECWString<MaxLen2>& s2) noexcept {
+    return CONCAT(s1.get(), s2);
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IECWString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
+CONCAT(const IECWString<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2) noexcept {
+    return CONCAT(s1, s2.get());
+}
+
 template<size_t MaxLen>
-inline IECWString<MaxLen> WINSERT(const IECWString<MaxLen>& s1, const IECWString<MaxLen>& s2, size_t pos) noexcept {
+inline IECWString<MaxLen> INSERT(const IECWString<MaxLen>& s1, const IECWString<MaxLen>& s2, size_t pos) noexcept {
     IECWString<MaxLen> result(s1);
     if (pos == 0) pos = 1;
     result.insert(pos - 1, s2.c_str());
@@ -514,7 +601,7 @@ inline IECWString<MaxLen> WINSERT(const IECWString<MaxLen>& s1, const IECWString
 }
 
 template<size_t MaxLen>
-inline IECWString<MaxLen> WDELETE(const IECWString<MaxLen>& s, size_t len, size_t pos) noexcept {
+inline IECWString<MaxLen> DELETE_STR(const IECWString<MaxLen>& s, size_t len, size_t pos) noexcept {
     IECWString<MaxLen> result(s);
     if (pos == 0) pos = 1;
     result.erase(pos - 1, len);
@@ -522,18 +609,101 @@ inline IECWString<MaxLen> WDELETE(const IECWString<MaxLen>& s, size_t len, size_
 }
 
 template<size_t MaxLen>
-inline IECWString<MaxLen> WREPLACE(const IECWString<MaxLen>& s1, const IECWString<MaxLen>& s2, size_t len, size_t pos) noexcept {
+inline IECWString<MaxLen> REPLACE(const IECWString<MaxLen>& s1, const IECWString<MaxLen>& s2, size_t len, size_t pos) noexcept {
     IECWString<MaxLen> result(s1);
     if (pos == 0) pos = 1;
     result.replace(pos - 1, len, s2.c_str());
     return result;
 }
 
-template<size_t MaxLen1, size_t MaxLen2>
-inline size_t WFIND(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>& s2) noexcept {
-    size_t pos = s1.find(s2);
-    return pos == IECWString<MaxLen1>::npos ? 0 : pos + 1;
+// IECWStringVar overloads — template deduction doesn't use implicit conversions,
+// so we need explicit overloads that forward to the IECWString versions via .get()
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> INSERT(const IECWStringVar<MaxLen>& s1, const IECWStringVar<MaxLen>& s2, size_t pos) noexcept {
+    return INSERT(s1.get(), s2.get(), pos);
 }
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> INSERT(const IECWStringVar<MaxLen>& s1, const IECWString<MaxLen>& s2, size_t pos) noexcept {
+    return INSERT(s1.get(), s2, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> INSERT(const IECWString<MaxLen>& s1, const IECWStringVar<MaxLen>& s2, size_t pos) noexcept {
+    return INSERT(s1, s2.get(), pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> DELETE_STR(const IECWStringVar<MaxLen>& s, size_t len, size_t pos) noexcept {
+    return DELETE_STR(s.get(), len, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> REPLACE(const IECWStringVar<MaxLen>& s1, const IECWStringVar<MaxLen>& s2, size_t len, size_t pos) noexcept {
+    return REPLACE(s1.get(), s2.get(), len, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> REPLACE(const IECWStringVar<MaxLen>& s1, const IECWString<MaxLen>& s2, size_t len, size_t pos) noexcept {
+    return REPLACE(s1.get(), s2, len, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> REPLACE(const IECWString<MaxLen>& s1, const IECWStringVar<MaxLen>& s2, size_t len, size_t pos) noexcept {
+    return REPLACE(s1, s2.get(), len, pos);
+}
+
+// Cross-size REPLACE/INSERT: arguments may have different WSTRING sizes.
+// The result length follows the first argument (the target string).
+template<size_t MaxLen1, size_t MaxLen2, std::enable_if_t<MaxLen1 != MaxLen2, int> = 0>
+inline IECWString<MaxLen1> REPLACE(const IECWStringVar<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2, size_t len, size_t pos) noexcept {
+    return REPLACE(s1.get(), IECWString<MaxLen1>(s2.get().c_str()), len, pos);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, std::enable_if_t<MaxLen1 != MaxLen2, int> = 0>
+inline IECWString<MaxLen1> INSERT(const IECWStringVar<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2, size_t pos) noexcept {
+    return INSERT(s1.get(), IECWString<MaxLen1>(s2.get().c_str()), pos);
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IEC_INT FIND(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>& s2) noexcept {
+    size_t pos = s1.find(s2);
+    return IEC_INT(static_cast<INT_t>(pos == IECWString<MaxLen1>::npos ? 0 : pos + 1));
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IEC_INT FIND(const IECWStringVar<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2) noexcept {
+    return FIND(s1.get(), s2.get());
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IEC_INT FIND(const IECWStringVar<MaxLen1>& s1, const IECWString<MaxLen2>& s2) noexcept {
+    return FIND(s1.get(), s2);
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IEC_INT FIND(const IECWString<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2) noexcept {
+    return FIND(s1, s2.get());
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IEC_INT FIND(const IECVar<IECWString<MaxLen1>>& s1, const IECWStringVar<MaxLen2>& s2) noexcept {
+    return FIND(static_cast<IECWString<MaxLen1>>(s1), s2.get());
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IEC_INT FIND(const IECVar<IECWString<MaxLen1>>& s1, const IECWString<MaxLen2>& s2) noexcept {
+    return FIND(static_cast<IECWString<MaxLen1>>(s1), s2);
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline IEC_INT FIND(const IECWStringVar<MaxLen1>& s1, const IECVar<IECWString<MaxLen2>>& s2) noexcept {
+    return FIND(s1.get(), static_cast<IECWString<MaxLen2>>(s2));
+}
+
+// Wide-string comparison helpers used by generated relational expressions.
+// Keep the W-prefixed names for backwards compatibility.
 
 template<size_t MaxLen1, size_t MaxLen2>
 inline bool GT_WSTRING(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>& s2) noexcept {
