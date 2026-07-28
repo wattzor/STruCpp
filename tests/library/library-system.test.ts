@@ -554,6 +554,105 @@ describe("Library System", () => {
     });
   });
 
+  describe("registerLibrarySymbols - user-defined types", () => {
+    it("should resolve library function return type to a struct type", () => {
+      const symbolTables = new SymbolTables();
+      const manifest = loadLibraryManifest({
+        name: "test",
+        version: "1.0.0",
+        namespace: "test",
+        functions: [
+          {
+            name: "GetCoord",
+            returnType: "COORD",
+            parameters: [],
+          },
+        ],
+        functionBlocks: [],
+        types: [
+          {
+            name: "COORD",
+            kind: "struct",
+            fields: [
+              { name: "x", type: "REAL" },
+              { name: "y", type: "REAL" },
+            ],
+          },
+        ],
+        headers: [],
+        isBuiltin: false,
+      });
+
+      registerLibrarySymbols(manifest, symbolTables);
+
+      const func = symbolTables.lookupFunction("GetCoord");
+      expect(func).toBeDefined();
+      expect(func!.returnType.typeKind).toBe("struct");
+      expect((func!.returnType as import("../../src/frontend/ast.js").StructType).name).toBe("COORD");
+    });
+
+    it("should resolve FB input to a library-defined FB type", () => {
+      const symbolTables = new SymbolTables();
+      const manifest = loadLibraryManifest({
+        name: "test",
+        version: "1.0.0",
+        namespace: "test",
+        functions: [],
+        functionBlocks: [
+          {
+            name: "OuterFB",
+            inputs: [{ name: "inner", type: "InnerFB" }],
+            outputs: [],
+            inouts: [],
+          },
+          {
+            name: "InnerFB",
+            inputs: [],
+            outputs: [],
+            inouts: [],
+          },
+        ],
+        types: [],
+        headers: [],
+        isBuiltin: false,
+      });
+
+      registerLibrarySymbols(manifest, symbolTables);
+
+      const outer = symbolTables.lookupFunctionBlock("OuterFB");
+      expect(outer).toBeDefined();
+      expect(outer!.inputs[0]!.type!.typeKind).toBe("functionBlock");
+    });
+
+    it("should resolve library global variable to a user-defined type", () => {
+      const symbolTables = new SymbolTables();
+      const manifest = loadLibraryManifest({
+        name: "test",
+        version: "1.0.0",
+        namespace: "test",
+        functions: [],
+        functionBlocks: [],
+        types: [
+          {
+            name: "SETTINGS",
+            kind: "struct",
+            fields: [{ name: "limit", type: "INT" }],
+          },
+        ],
+        globals: [{ name: "cfg", type: "SETTINGS" }],
+        headers: [],
+        isBuiltin: false,
+      });
+
+      registerLibrarySymbols(manifest, symbolTables);
+
+      const cfg = symbolTables.globalScope.lookup("cfg");
+      expect(cfg).toBeDefined();
+      expect(cfg!.kind).toBe("variable");
+      expect(cfg!.type!.typeKind).toBe("struct");
+    });
+  });
+
   describe("registerLibrarySymbols - duplicate handling", () => {
     it("should silently skip duplicate function symbols", () => {
       const symbolTables = new SymbolTables();

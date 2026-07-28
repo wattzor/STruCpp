@@ -18,6 +18,10 @@ import type {
   ElementaryType,
   IECType,
   StructType,
+  FunctionBlockType,
+  EnumType,
+  ArrayType,
+  ReferenceType,
   TypeReference,
   VarDeclaration,
 } from "../frontend/ast.js";
@@ -63,12 +67,9 @@ function makeTypeRef(v: LibraryVarType): TypeReference {
 function makeVarSymbol(
   v: LibraryVarType,
   direction: "input" | "output" | "inout",
+  resolveType: (v: LibraryVarType) => IECType,
 ): VariableSymbol {
-  const varType: ElementaryType = ELEMENTARY_TYPES[v.type.toUpperCase()] ?? {
-    typeKind: "elementary",
-    name: v.type,
-    sizeBits: 0,
-  };
+  const varType = resolveType(v);
   const declaration: VarDeclaration = {
     kind: "VarDeclaration",
     sourceSpan: createDefaultSourceSpan(),
@@ -259,80 +260,147 @@ export function registerLibrarySymbols(
   manifest: LibraryManifest,
   symbolTables: SymbolTables,
 ): void {
-  // Register functions
-  for (const fn of manifest.functions) {
-    const returnType: ElementaryType = ELEMENTARY_TYPES[
-      fn.returnType.toUpperCase()
-    ] ?? {
+  // Build a type resolver that can turn manifest type/FB/variable references
+  // into real IECType nodes (StructType, FunctionBlockType, ArrayType, ...).
+  // This fixes the "library types treated as elementary" defect and lets
+  // library functions returning STRUCT/FB, and FBs with struct-typed I/O,
+  // participate in type checking and codegen.
+  const typeCache = new Map<string, IECType>();
+  const fbCache = new Map<string, FunctionBlockType>();
+
+  function fallbackType(name: string): ElementaryType {
+    return {
       typeKind: "elementary",
-      name: fn.returnType,
+      name,
       sizeBits: 0,
     };
-
-    try {
-      symbolTables.globalScope.define({
-        name: fn.name,
-        kind: "function",
-        declaration: {
-          kind: "FunctionDeclaration",
-          sourceSpan: createDefaultSourceSpan(),
-          name: fn.name,
-          returnType: {
-            kind: "TypeReference",
-            sourceSpan: createDefaultSourceSpan(),
-            name: fn.returnType,
-            isReference: false,
-            referenceKind: "none",
-          },
-          varBlocks: [],
-          body: [],
-        },
-        returnType,
-        parameters: fn.parameters.map((p) => {
-          const sym = makeVarSymbol(
-            { name: p.name, type: p.type },
-            p.direction,
-          );
-          // Carry the optional-input marker: a parameter with an initial value
-          // is optional at the call site (see Option A in the analyzer).
-          if (p.initialValue !== undefined) sym.initialValue = p.initialValue;
-          return sym;
-        }),
-      });
-    } catch (e) {
-      // Skip duplicate symbol errors (first definition wins), re-throw others
-      if (!(e instanceof DuplicateSymbolError)) throw e;
-    }
   }
 
-  // Register types
-  for (const t of manifest.types) {
-    // For a struct with exported fields, register a real StructType carrying its
-    // member types, so member access on a dependency struct (e.g. `MATH.PI`)
-    // resolves to the field's type rather than staying untyped.
-    const resolvedType: IECType =
-      t.kind === "struct" && t.fields
-        ? ({
+  function resolveTypeName(
+    typeName: string,
+    seen = new Set<string>(),
+  ): IECType {
+    const upper = typeName.toUpperCase();
+    if (seen.has(upper)) return fallbackType(typeName);
+
+    const cached = typeCache.get(upper) ?? fbCache.get(upper);
+    if (cached) return cached;
+
+    const elem = ELEMENTARY_TYPES[upper];
+    if (elem) return elem;
+
+    const typeEntry = manifest.types.find(
+      (t) => t.name.toUpperCase() === upper,
+    );
+    if (typeEntry) {
+      seen.add(upper);
+      try {
+        if (typeEntry.kind === "struct" && typeEntry.fields) {
+          const fields = new Map<string, IECType>();
+          const st: StructType = {
             typeKind: "struct",
-            name: t.name,
-            fields: new Map<string, IECType>(
-              t.fields.map((f) => [
-                f.name,
-                ELEMENTARY_TYPES[f.type.toUpperCase()] ??
-                  ({
-                    typeKind: "elementary",
-                    name: f.type,
-                    sizeBits: 0,
-                  } as ElementaryType),
-              ]),
-            ),
-          } as StructType)
-        : (ELEMENTARY_TYPES[t.name.toUpperCase()] ??
-          ({
-            typeKind: "elementary",
-            name: t.name,
-            sizeBits: 0,
-          } as ElementaryType));
+            name: typeEntry.name,
+            fields,
+          };
+          typeCache.set(upper, st);
+          for (const f of typeEntry.fields) {
+            fields.set(f.name.toUpperCase(), resolveTypeName(f.type, seen));
+          }
+          return st;
+        } else if (typeEntry.kind === "enum") {
+          const et: EnumType = {
+            typeKind: "enum",
+            name: typeEntry.name,
+            values: typeEntry.baseType ? [typeEntry.baseType] : [],
+          };
+          typeCache.set(upper, et);
+          return et;
+        } else {
+          // Alias
+          const resolved = resolveTypeName(
+            typeEntry.baseType ?? typeEntry.name,
+            seen,
+          );
+          typeCache.set(upper, resolved);
+          return resolved;
+        }
+      } finally {
+        seen.delete(upper);
+      }
+    }
+
+    const fbEntry = manifest.functionBlocks.find(
+      (fb) => fb.name.toUpperCase() === upper,
+    );
+    if (fbEntry) {
+      const fbType: FunctionBlockType = {
+        typeKind: "functionBlock",
+        name: fbEntry.name,
+        inputVars: new Map(),
+        outputVars: new Map(),
+        inoutVars: new Map(),
+      };
+      fbCache.set(upper, fbType);
+      for (const i of fbEntry.inputs) {
+        fbType.inputVars.set(i.name.toUpperCase(), resolveVarType(i, seen));
+      }
+      for (const o of fbEntry.outputs) {
+        fbType.outputVars.set(o.name.toUpperCase(), resolveVarType(o, seen));
+      }
+      for (const io of fbEntry.inouts) {
+        fbType.inoutVars.set(io.name.toUpperCase(), resolveVarType(io, seen));
+      }
+      return fbType;
+    }
+
+    return fallbackType(typeName);
+  }
+
+  function resolveVarType(
+    v: LibraryVarType,
+    seen = new Set<string>(),
+  ): IECType {
+    if (
+      v.referenceKind === "pointer_to" ||
+      v.referenceKind === "reference_to"
+    ) {
+      const rt: ReferenceType = {
+        typeKind: "reference",
+        referencedType: resolveTypeName(v.type, seen),
+        isImplicitDeref: v.referenceKind === "reference_to",
+      };
+      return rt;
+    }
+
+    if (v.arrayDimensions && v.arrayDimensions.length > 0) {
+      const elementTypeName = v.elementTypeName ?? v.type;
+      const at: ArrayType = {
+        typeKind: "array",
+        elementType: resolveTypeName(elementTypeName, seen),
+        dimensions: v.arrayDimensions.map((d) => ({
+          start: d.start,
+          end: d.end,
+        })),
+      };
+      return at;
+    }
+
+    return resolveTypeName(v.type, seen);
+  }
+
+  // Prime caches with manifest entries so mutually-referencing FBs/structs
+  // resolve to a stable object.
+  for (const t of manifest.types) {
+    resolveTypeName(t.name);
+  }
+  for (const fb of manifest.functionBlocks) {
+    resolveTypeName(fb.name);
+  }
+
+  // Register types first so functions/FBs can reference them.
+  for (const t of manifest.types) {
+    const resolvedType = typeCache.get(t.name.toUpperCase());
+    if (!resolvedType) continue; // Should not happen
 
     try {
       symbolTables.globalScope.define({
@@ -357,10 +425,7 @@ export function registerLibrarySymbols(
     }
   }
 
-  // Register function blocks. The library only ships its public interface
-  // (inputs/outputs/inouts) — locals are implementation details and stay
-  // inside the compiled archive. The debugger treats library FBs as
-  // black boxes for the same reason: only the user-facing API is exposed.
+  // Register function blocks.
   for (const fb of manifest.functionBlocks) {
     try {
       symbolTables.globalScope.define({
@@ -377,9 +442,13 @@ export function registerLibrarySymbols(
           properties: [],
           body: [],
         },
-        inputs: fb.inputs.map((i) => makeVarSymbol(i, "input")),
-        outputs: fb.outputs.map((o) => makeVarSymbol(o, "output")),
-        inouts: fb.inouts.map((io) => makeVarSymbol(io, "inout")),
+        inputs: fb.inputs.map((i) => makeVarSymbol(i, "input", resolveVarType)),
+        outputs: fb.outputs.map((o) =>
+          makeVarSymbol(o, "output", resolveVarType),
+        ),
+        inouts: fb.inouts.map((io) =>
+          makeVarSymbol(io, "inout", resolveVarType),
+        ),
         locals: [],
       });
     } catch (e) {
@@ -387,16 +456,47 @@ export function registerLibrarySymbols(
     }
   }
 
-  // Register exported global variables into the shared global scope. Because
-  // every imported library registers into the SAME globalScope (and duplicates
-  // are skipped, first-wins), a program importing several libraries can see all
-  // of their globals together at the same place — globals are additive.
+  // Register functions.
+  for (const fn of manifest.functions) {
+    const returnType = resolveTypeName(fn.returnType);
+
+    try {
+      symbolTables.globalScope.define({
+        name: fn.name,
+        kind: "function",
+        declaration: {
+          kind: "FunctionDeclaration",
+          sourceSpan: createDefaultSourceSpan(),
+          name: fn.name,
+          returnType: {
+            kind: "TypeReference",
+            sourceSpan: createDefaultSourceSpan(),
+            name: fn.returnType,
+            isReference: false,
+            referenceKind: "none",
+          },
+          varBlocks: [],
+          body: [],
+        },
+        returnType,
+        parameters: fn.parameters.map((p) => {
+          const sym = makeVarSymbol(
+            { name: p.name, type: p.type },
+            p.direction,
+            resolveVarType,
+          );
+          if (p.initialValue !== undefined) sym.initialValue = p.initialValue;
+          return sym;
+        }),
+      });
+    } catch (e) {
+      if (!(e instanceof DuplicateSymbolError)) throw e;
+    }
+  }
+
+  // Register exported global variables.
   for (const g of manifest.globals ?? []) {
-    const varType: ElementaryType = ELEMENTARY_TYPES[g.type.toUpperCase()] ?? {
-      typeKind: "elementary",
-      name: g.type,
-      sizeBits: 0,
-    };
+    const varType = resolveTypeName(g.type);
     try {
       symbolTables.globalScope.define({
         name: g.name,
