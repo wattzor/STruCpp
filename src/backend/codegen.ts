@@ -2945,7 +2945,11 @@ export class CodeGenerator {
         ) {
           continue;
         }
-        const initVal = this.getDefaultValue(decl.typeName, decl.initialValue);
+        const initVal = this.getDefaultValue(
+          decl.typeName,
+          decl.initialValue,
+          decl.elementTypeName,
+        );
         // Skip user-defined types (empty initVal) - they use default constructors
         if (initVal) {
           inits.push(`${decl.name}(${initVal})`);
@@ -2985,7 +2989,11 @@ export class CodeGenerator {
         ) {
           continue;
         }
-        const initVal = this.getDefaultValue(decl.typeName, decl.initialValue);
+        const initVal = this.getDefaultValue(
+          decl.typeName,
+          decl.initialValue,
+          decl.elementTypeName,
+        );
         // Skip user-defined types (empty initVal) - they use default constructors
         if (initVal) {
           inits.push(`${decl.name}(${initVal})`);
@@ -3103,7 +3111,11 @@ export class CodeGenerator {
             ? { referenceKind: gvar.referenceKind }
             : {}),
         });
-        const initVal = this.getDefaultValue(gvar.typeName, gvar.initialValue);
+        const initVal = this.getDefaultValue(
+          gvar.typeName,
+          gvar.initialValue,
+          gvar.elementTypeName,
+        );
 
         if (!emittedAny) {
           this.emitHeader(
@@ -7192,7 +7204,11 @@ export class CodeGenerator {
   /**
    * Get the default value for a type.
    */
-  private getDefaultValue(typeName: string, initialValue?: string): string {
+  private getDefaultValue(
+    typeName: string,
+    initialValue?: string,
+    elementTypeName?: string,
+  ): string {
     const upperType = typeName.toUpperCase();
     if (this.knownInterfaceTypes.has(upperType)) {
       if (initialValue) {
@@ -7291,6 +7307,19 @@ export class CodeGenerator {
       if (numeric !== null) {
         return numeric;
       }
+
+      // Array aggregate initialisers (e.g. `[10, 20, 30, 40]`). Program and
+      // global VAR initialisers arrive here as raw strings because the project
+      // model serialises `initialValue`; convert them to C++ brace lists.
+      if (
+        initialValue.trim().startsWith("[") &&
+        initialValue.trim().endsWith("]")
+      ) {
+        const elType =
+          elementTypeName ?? this.extractInlineArrayElementType(typeName);
+        return this.lowerArrayInitializer(initialValue, elType);
+      }
+
       return initialValue;
     }
 
@@ -7331,6 +7360,95 @@ export class CodeGenerator {
     // User-defined types (structs, enums, arrays, subranges, type aliases)
     // use default initialization - return empty string to skip in initializer list
     return "";
+  }
+
+  /**
+   * For inline ARRAY types, strip the synthetic `__INLINE_ARRAY_` prefix to
+   * reveal the element type name (e.g. `__INLINE_ARRAY_DINT` -> `DINT`).
+   * Nested arrays strip one prefix at a time.
+   */
+  private extractInlineArrayElementType(typeName: string): string | undefined {
+    const prefix = "__INLINE_ARRAY_";
+    if (typeName.toUpperCase().startsWith(prefix)) {
+      return typeName.slice(prefix.length);
+    }
+    return undefined;
+  }
+
+  /**
+   * Convert an IEC array aggregate literal string (e.g. `[10, 20, 30, 40]` or
+   * `[[1,2], [3,4]]`) into a C++ brace-initialiser list. Each element is lowered
+   * with `getDefaultValue` so typed literals, based numbers, strings, bools,
+   * times, and nested arrays are handled uniformly.
+   */
+  private lowerArrayInitializer(
+    initialValue: string,
+    elementTypeName?: string,
+  ): string {
+    const trimmed = initialValue.trim();
+    if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
+      return trimmed;
+    }
+    const inner = trimmed.slice(1, -1).trim();
+    if (inner.length === 0) {
+      return "{}";
+    }
+    const elements = this.splitArrayElements(inner);
+    const nestedElementType = elementTypeName
+      ? this.extractInlineArrayElementType(elementTypeName)
+      : undefined;
+    const lowered = elements.map((el) => {
+      const trimmedEl = el.trim();
+      if (trimmedEl.startsWith("[")) {
+        return this.getDefaultValue(
+          elementTypeName ?? "",
+          trimmedEl,
+          nestedElementType,
+        );
+      }
+      return this.getDefaultValue(elementTypeName ?? "", trimmedEl);
+    });
+    return `{${lowered.join(", ")}}`;
+  }
+
+  /**
+   * Split a comma-separated list of IEC array elements, respecting nested
+   * brackets and string quotes.
+   */
+  private splitArrayElements(inner: string): string[] {
+    const elements: string[] = [];
+    let depth = 0;
+    let inString: string | undefined;
+    let current = "";
+    for (const ch of inner) {
+      if (inString) {
+        current += ch;
+        if (ch === inString) {
+          inString = undefined;
+        }
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        inString = ch;
+        current += ch;
+        continue;
+      }
+      if (ch === "[") {
+        depth++;
+      } else if (ch === "]") {
+        depth--;
+      }
+      if (ch === "," && depth === 0) {
+        elements.push(current.trim());
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim().length > 0) {
+      elements.push(current.trim());
+    }
+    return elements;
   }
 
   /**
