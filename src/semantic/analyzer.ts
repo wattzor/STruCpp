@@ -167,6 +167,14 @@ interface LocatedVarInfo {
 }
 
 /**
+ * Closed interval [start, end] produced from evaluating a CASE label.
+ */
+interface CaseLabelInterval {
+  start: number;
+  end: number;
+}
+
+/**
  * Context for undeclared variable checking within a POU scope.
  */
 interface UndeclaredVarContext {
@@ -1641,6 +1649,7 @@ export class SemanticAnalyzer {
             const explicit = this.evaluateCaseConstant(
               member.value,
               new Map(),
+              new Map(),
               enumTypeNames,
               enumValues,
             );
@@ -1655,52 +1664,99 @@ export class SemanticAnalyzer {
       }
     }
 
+    // Build a map of constant integer values for CASE label evaluation.
+    const buildConstantMap = (
+      varBlocks: VarBlock[],
+      initial = new Map<string, number>(),
+    ): Map<string, number> => {
+      const result = new Map(initial);
+      for (let pass = 0; pass < 10; pass++) {
+        let changed = false;
+        for (const block of varBlocks) {
+          if (!block.isConstant) continue;
+          for (const decl of block.declarations) {
+            if (!decl.initialValue) continue;
+            for (const name of decl.names) {
+              const key = name.toUpperCase();
+              if (result.has(key)) continue;
+              const v = this.evaluateCaseConstant(
+                decl.initialValue,
+                new Map(),
+                result,
+                enumTypeNames,
+                enumValues,
+              );
+              if (v !== undefined) {
+                result.set(key, v);
+                changed = true;
+              }
+            }
+          }
+        }
+        if (!changed) break;
+      }
+      return result;
+    };
+
+    const globalConstants = buildConstantMap(ast.globalVarBlocks);
+
     const checkCaseLabels = (
       stmts: Statement[],
       varTypeMap: Map<string, string>,
+      constantValues: Map<string, number>,
     ): void => {
       const visit = (body: Statement[]): void => {
         for (const stmt of body) {
           if (stmt.kind === "CaseStatement") {
-            const seen = new Map<
-              number,
-              { line: number; col: number; label: string }
-            >();
+            const selectorType = this.inferCaseSelectorType(
+              stmt.selector,
+              varTypeMap,
+            );
+            const seen: CaseLabelInterval[] = [];
 
             for (const caseElement of stmt.cases) {
               for (const caseLabel of caseElement.labels) {
-                const values = this.evaluateCaseLabelValues(
+                const intervals = this.evaluateCaseLabelValues(
                   caseLabel,
                   varTypeMap,
+                  constantValues,
                   enumTypeNames,
                   enumValues,
+                  selectorType,
                 );
-                if (values === undefined) {
+                if (intervals === undefined) {
                   this.addError(
                     "CASE label must be a constant integer expression",
                     caseLabel.sourceSpan.startLine,
                     caseLabel.sourceSpan.startCol,
-                    undefined,
+                    caseLabel.sourceSpan.file,
                     "CASE_LABEL_NOT_CONSTANT",
                   );
                   continue;
                 }
-                for (const value of values) {
-                  if (seen.has(value)) {
-                    this.addError(
-                      `Duplicate CASE label value ${value}`,
-                      caseElement.sourceSpan.startLine,
-                      caseElement.sourceSpan.startCol,
-                      undefined,
-                      "DUPLICATE_CASE_LABEL",
-                    );
-                  } else {
-                    seen.set(value, {
-                      line: caseElement.sourceSpan.startLine,
-                      col: caseElement.sourceSpan.startCol,
-                      label: String(value),
-                    });
+                for (const interval of intervals) {
+                  let overlapped = false;
+                  for (const existing of seen) {
+                    if (
+                      interval.start <= existing.end &&
+                      interval.end >= existing.start
+                    ) {
+                      const overlapStart = Math.max(
+                        interval.start,
+                        existing.start,
+                      );
+                      this.addError(
+                        `Duplicate CASE label value ${overlapStart}`,
+                        caseElement.sourceSpan.startLine,
+                        caseElement.sourceSpan.startCol,
+                        caseElement.sourceSpan.file,
+                        "DUPLICATE_CASE_LABEL",
+                      );
+                      overlapped = true;
+                      break;
+                    }
                   }
+                  if (!overlapped) seen.push(interval);
                 }
               }
             }
@@ -1730,56 +1786,127 @@ export class SemanticAnalyzer {
     };
 
     for (const prog of ast.programs) {
-      checkCaseLabels(prog.body, this.buildVarTypeMap(prog.varBlocks));
+      const localConstants = buildConstantMap(
+        prog.varBlocks,
+        new Map(globalConstants),
+      );
+      checkCaseLabels(
+        prog.body,
+        this.buildVarTypeMap(prog.varBlocks),
+        localConstants,
+      );
     }
     for (const fb of ast.functionBlocks) {
       const fbVarMap = this.buildVarTypeMap(fb.varBlocks);
-      checkCaseLabels(fb.body, fbVarMap);
+      const fbConstants = buildConstantMap(
+        fb.varBlocks,
+        new Map(globalConstants),
+      );
+      checkCaseLabels(fb.body, fbVarMap, fbConstants);
       for (const method of fb.methods) {
         const methodVarMap = new Map(fbVarMap);
         for (const [k, v] of this.buildVarTypeMap(method.varBlocks)) {
           methodVarMap.set(k, v);
         }
-        checkCaseLabels(method.body, methodVarMap);
+        const methodConstants = buildConstantMap(
+          method.varBlocks,
+          new Map(fbConstants),
+        );
+        checkCaseLabels(method.body, methodVarMap, methodConstants);
+      }
+      for (const property of fb.properties) {
+        if (property.getter) {
+          const getterVarMap = new Map(fbVarMap);
+          for (const [k, v] of this.buildVarTypeMap(
+            property.getterVarBlocks ?? [],
+          )) {
+            getterVarMap.set(k, v);
+          }
+          const getterConstants = buildConstantMap(
+            property.getterVarBlocks ?? [],
+            new Map(fbConstants),
+          );
+          checkCaseLabels(property.getter, getterVarMap, getterConstants);
+        }
+        if (property.setter) {
+          const setterVarMap = new Map(fbVarMap);
+          for (const [k, v] of this.buildVarTypeMap(
+            property.setterVarBlocks ?? [],
+          )) {
+            setterVarMap.set(k, v);
+          }
+          const setterConstants = buildConstantMap(
+            property.setterVarBlocks ?? [],
+            new Map(fbConstants),
+          );
+          checkCaseLabels(property.setter, setterVarMap, setterConstants);
+        }
       }
     }
     for (const func of ast.functions) {
-      checkCaseLabels(func.body, this.buildVarTypeMap(func.varBlocks));
+      const localConstants = buildConstantMap(
+        func.varBlocks,
+        new Map(globalConstants),
+      );
+      checkCaseLabels(
+        func.body,
+        this.buildVarTypeMap(func.varBlocks),
+        localConstants,
+      );
     }
   }
 
   /**
-   * Evaluate a CASE label to the list of integer values it covers.
+   * Infer the enum type name of a CASE selector, if it is a simple variable
+   * of an enum type. Used to disambiguate bare enum member labels.
+   */
+  private inferCaseSelectorType(
+    expr: Expression,
+    varTypeMap: Map<string, string>,
+  ): string | undefined {
+    if (expr.kind === "VariableExpression") {
+      return varTypeMap.get(expr.name.toUpperCase());
+    }
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.inferCaseSelectorType(expr.expression, varTypeMap);
+    }
+    return undefined;
+  }
+
+  /**
+   * Evaluate a CASE label to the intervals it covers.
    * Returns undefined if the label is not a constant integer expression.
    */
   private evaluateCaseLabelValues(
     label: CaseLabel,
     varTypeMap: Map<string, string>,
+    constantValues: Map<string, number>,
     enumTypeNames: Set<string>,
     enumValues: Map<string, number>,
-  ): number[] | undefined {
+    selectorType?: string,
+  ): CaseLabelInterval[] | undefined {
     const start = this.evaluateCaseConstant(
       label.start,
       varTypeMap,
+      constantValues,
       enumTypeNames,
       enumValues,
+      selectorType,
     );
     if (start === undefined) return undefined;
     if (label.end) {
       const end = this.evaluateCaseConstant(
         label.end,
         varTypeMap,
+        constantValues,
         enumTypeNames,
         enumValues,
+        selectorType,
       );
       if (end === undefined) return undefined;
-      const values: number[] = [];
-      for (let i = start; i <= end; i++) {
-        values.push(i);
-      }
-      return values;
+      return [{ start, end }];
     }
-    return [start];
+    return [{ start, end: start }];
   }
 
   /**
@@ -1788,8 +1915,10 @@ export class SemanticAnalyzer {
   private evaluateCaseConstant(
     expr: Expression,
     varTypeMap: Map<string, string>,
+    constantValues: Map<string, number>,
     enumTypeNames: Set<string>,
     enumValues: Map<string, number>,
+    selectorType?: string,
   ): number | undefined {
     if (expr.kind === "LiteralExpression" && expr.literalType === "INT") {
       if (typeof expr.value === "number") return expr.value;
@@ -1807,8 +1936,10 @@ export class SemanticAnalyzer {
       return this.evaluateCaseConstant(
         expr.expression,
         varTypeMap,
+        constantValues,
         enumTypeNames,
         enumValues,
+        selectorType,
       );
     }
     if (
@@ -1818,14 +1949,57 @@ export class SemanticAnalyzer {
       const v = this.evaluateCaseConstant(
         expr.operand,
         varTypeMap,
+        constantValues,
         enumTypeNames,
         enumValues,
+        selectorType,
       );
       if (v === undefined) return undefined;
       return expr.operator === "-" ? -v : v;
     }
+    if (
+      expr.kind === "BinaryExpression" &&
+      ["+", "-", "*", "/", "MOD"].includes(expr.operator)
+    ) {
+      const left = this.evaluateCaseConstant(
+        expr.left,
+        varTypeMap,
+        constantValues,
+        enumTypeNames,
+        enumValues,
+        selectorType,
+      );
+      const right = this.evaluateCaseConstant(
+        expr.right,
+        varTypeMap,
+        constantValues,
+        enumTypeNames,
+        enumValues,
+        selectorType,
+      );
+      if (left === undefined || right === undefined) return undefined;
+      switch (expr.operator) {
+        case "+":
+          return left + right;
+        case "-":
+          return left - right;
+        case "*":
+          return left * right;
+        case "/":
+          if (right === 0) return undefined;
+          return Math.trunc(left / right);
+        case "MOD":
+          if (right === 0) return undefined;
+          return left % right;
+      }
+    }
     if (expr.kind === "VariableExpression") {
       const nameUpper = expr.name.toUpperCase();
+
+      if (constantValues.has(nameUpper)) {
+        return constantValues.get(nameUpper)!;
+      }
+
       const fieldName =
         expr.accessChain &&
         expr.accessChain.length === 1 &&
@@ -1852,6 +2026,18 @@ export class SemanticAnalyzer {
         );
       }
       if (enumEntry?.typeName === null) {
+        // Disambiguate using the selector's enum type if possible.
+        if (selectorType) {
+          const selectorUpper = selectorType.toUpperCase();
+          if (
+            enumEntry.conflictingTypes.some(
+              (t) => t.toUpperCase() === selectorUpper,
+            ) &&
+            enumValues.has(`${selectorUpper}.${nameUpper}`)
+          ) {
+            return enumValues.get(`${selectorUpper}.${nameUpper}`);
+          }
+        }
         // Ambiguous bare enum member - not a usable constant here.
         return undefined;
       }
@@ -3123,12 +3309,9 @@ export class SemanticAnalyzer {
         case "CaseStatement":
           this.checkExpressionForUndeclaredVars(stmt.selector, scope, ctx);
           for (const c of stmt.cases) {
-            for (const label of c.labels) {
-              this.checkExpressionForUndeclaredVars(label.start, scope, ctx);
-              if (label.end) {
-                this.checkExpressionForUndeclaredVars(label.end, scope, ctx);
-              }
-            }
+            // Label expressions are validated separately in validateCaseLabels
+            // so that ambiguous bare enum members can be disambiguated by the
+            // selector's type and named constants are accepted as labels.
             this.walkStatementsForUndeclaredVars(c.statements, scope, ctx);
           }
           this.walkStatementsForUndeclaredVars(stmt.elseStatements, scope, ctx);
