@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "iec_located.hpp"
+
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -68,6 +70,9 @@ inline void cyclic_run(ProgramDescriptor* programs, size_t program_count,
     auto next_tick = std::chrono::steady_clock::now();
 
     while (g_cyclic_running) {
+        // Read physical inputs into the IEC variables before the scan.
+        __sync_located_in();
+
         // Execute the current scan at the current time (first scan is t = 0).
         // Advance simulated time after the scan so timers see elapsed time only
         // on subsequent cycles.
@@ -77,6 +82,9 @@ inline void cyclic_run(ProgramDescriptor* programs, size_t program_count,
                 programs[i].instance->run();
             }
         }
+
+        // Write IEC variables to the physical output image after the scan.
+        __sync_located_out();
 
         __CURRENT_TIME_NS += common_ticktime;
         ++cycle_count;

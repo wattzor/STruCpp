@@ -21,6 +21,7 @@
 #include "iec_types.hpp"
 #include "iec_var.hpp"
 #include "iec_std_lib.hpp"
+#include "iec_located.hpp"
 #include "isocline.h"
 #include <string>
 #include <cstring>
@@ -1023,6 +1024,9 @@ inline void repl_run(ProgramDescriptor* programs, size_t program_count,
                 if (n < 1) n = 1;
             }
             for (int c = 0; c < n; ++c) {
+                // Read physical inputs into the IEC variables before the scan.
+                __sync_located_in();
+
                 // Run the current cycle at the current time (first scan is t = 0).
                 // Advance the global clock after the scan completes so timers see
                 // elapsed time only on subsequent cycles.
@@ -1032,6 +1036,10 @@ inline void repl_run(ProgramDescriptor* programs, size_t program_count,
                         programs[i].instance->run();
                     }
                 }
+
+                // Write IEC variables to the physical output image after the scan.
+                __sync_located_out();
+
                 cycle_count++;
                 __CURRENT_TIME_NS += common_ticktime;
             }

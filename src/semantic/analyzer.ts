@@ -75,16 +75,18 @@ interface ParsedAddress {
  */
 function parseAddress(address: string): ParsedAddress | null {
   // Pattern: %<area><size><byte_index>.<bit_index>
-  // Examples: %IX0.0, %QX2.3, %IW10, %QW5, %MW100, %MD50
-  const match = address.match(/^%([IQM])([XBWDL]?)(\d+)(?:\.(\d+))?$/i);
+  // Concrete examples: %IX0.0, %QX2.3, %IW10, %QW5, %MW100, %MD50
+  // Placeholder (bound later by VAR_CONFIG): %I*, %QX*, %MD*
+  const match = address.match(/^%([IQM])([XBWDL]?)(?:(\d+)(?:\.(\d+))?|\*)$/i);
   if (!match) {
     return null;
   }
 
   const area = match[1]!.toUpperCase() as "I" | "Q" | "M";
   let size = match[2]?.toUpperCase() as "X" | "B" | "W" | "D" | "L" | undefined;
-  const byteIndex = parseInt(match[3]!, 10);
-  const bitIndex = match[4] ? parseInt(match[4], 10) : 0;
+  const isPlaceholder = match[3] === "*";
+  const byteIndex = isPlaceholder ? 0 : parseInt(match[3]!, 10);
+  const bitIndex = isPlaceholder ? 0 : match[4] ? parseInt(match[4], 10) : 0;
 
   // Default size to X (bit) if not specified and bit index is present
   if (!size) {

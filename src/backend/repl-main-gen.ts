@@ -336,6 +336,16 @@ function emitProgramDescriptorsAndMain(
   lines.push("");
 
   lines.push("int main(int argc, char* argv[]) {");
+  lines.push(
+    "    // Bind located variable pointers after all static initialization.",
+  );
+  lines.push("    __init_global_located_pointers();");
+  for (const prog of programs) {
+    lines.push(`    ${prog.instanceExpr}.bind_located_vars();`);
+  }
+  lines.push("    strucpp::__located_vars = locatedVars;");
+  lines.push("    strucpp::__located_vars_count = locatedVarsCount;");
+  lines.push("");
   lines.push("    bool cyclic = false;");
   lines.push("    bool print_vars = false;");
   lines.push("    for (int i = 1; i < argc; ++i) {");

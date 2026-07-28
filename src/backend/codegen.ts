@@ -100,6 +100,7 @@ import { isEnEnoArgument } from "../ast-utils.js";
  */
 interface LocatedVarDescriptor {
   varName: string;
+  cppName: string;
   address: string;
   area: "Input" | "Output" | "Memory";
   size: "Bit" | "Byte" | "Word" | "DWord" | "LWord";
@@ -107,6 +108,8 @@ interface LocatedVarDescriptor {
   bitIndex: number;
   typeName: string;
   programName: string;
+  /** True when the C++ variable is a GlobalVar<V> wrapper (project-model VAR_GLOBAL). */
+  isGlobalVarWrapper: boolean;
 }
 
 /**
@@ -118,13 +121,16 @@ function parseLocatedAddress(address: string): {
   byteIndex: number;
   bitIndex: number;
 } | null {
-  const match = address.match(/^%([IQM])([XBWDL]?)(\d+)(?:\.(\d+))?$/i);
+  // Concrete: %IX0.0, %QW10, %MD100
+  // Placeholder (bound later by VAR_CONFIG or the OpenPLC I/O layer): %I*, %QX*
+  const match = address.match(/^%([IQM])([XBWDL]?)(?:(\d+)(?:\.(\d+))?|\*)$/i);
   if (!match) return null;
 
   const areaChar = match[1]!.toUpperCase();
   const sizeChar = match[2]?.toUpperCase() || "X";
-  const byteIndex = parseInt(match[3]!, 10);
-  const bitIndex = match[4] ? parseInt(match[4], 10) : 0;
+  const isPlaceholder = match[3] === "*";
+  const byteIndex = isPlaceholder ? 0 : parseInt(match[3]!, 10);
+  const bitIndex = isPlaceholder ? 0 : match[4] ? parseInt(match[4], 10) : 0;
 
   const areaMap: Record<string, "Input" | "Output" | "Memory"> = {
     I: "Input",
@@ -1443,6 +1449,10 @@ export class CodeGenerator {
             } else {
               this.emitHeader(`inline ${cppType} ${name}{};`);
             }
+            // Track top-level global located variables for runtime I/O binding.
+            if (decl.address) {
+              this.collectLocatedVar(name, name, decl, "@config", false);
+            }
             this.emitHeaderChunkMarker("end", "inlineGlobal", name);
           }
         }
@@ -1553,6 +1563,7 @@ export class CodeGenerator {
     }
 
     this.generateLocatedVarsDefinition();
+    this.generateInitGlobalLocatedPointers();
 
     if (this.projectModel) {
       for (const config of this.projectModel.configurations) {
@@ -1940,7 +1951,7 @@ export class CodeGenerator {
               `    ${cppType} ${memberName};  // AT ${decl.address}`,
             );
             // Collect located variable info
-            this.collectLocatedVar(name, decl, prog.name);
+            this.collectLocatedVar(name, memberName, decl, prog.name);
           } else {
             this.emitHeader(`    ${cppType} ${memberName};`);
           }
@@ -1964,6 +1975,11 @@ export class CodeGenerator {
     this.emitHeader("");
     this.emitHeader("    // Run program");
     this.emitHeader("    void run() override;");
+
+    if (this.locatedVars.some((v) => v.programName === prog.name)) {
+      this.emitHeader("    // Bind located variable pointers at runtime");
+      this.emitHeader("    void bind_located_vars() override;");
+    }
 
     if (iecStructMembers.length > 0) {
       this.emitHeader("");
@@ -2480,6 +2496,9 @@ export class CodeGenerator {
     this.emit("");
     // PROGRAM line now maps to header class declaration, not constructor
 
+    // Bind located variable pointers after static initialization is complete.
+    this.generateBindLocatedVars(prog.name);
+
     // Run method
     this.emit(`void Program_${prog.name}::run() {`);
     this.enterScope(prog.varBlocks);
@@ -2925,7 +2944,10 @@ export class CodeGenerator {
             `    ${constQualifier}${cppType} ${memberName};  // AT ${decl.address}`,
           );
           // Collect located variable info
-          this.collectLocatedVarFromModel(decl, prog.name);
+          this.collectLocatedVarFromModel(
+            { ...decl, cppName: memberName },
+            prog.name,
+          );
         } else {
           this.emitHeader(`    ${constQualifier}${cppType} ${memberName};`);
         }
@@ -3005,6 +3027,11 @@ export class CodeGenerator {
     this.emitHeader("");
     this.emitHeader("    // Run program");
     this.emitHeader("    void run() override;");
+
+    if (this.locatedVars.some((v) => v.programName === prog.name)) {
+      this.emitHeader("    // Bind located variable pointers at runtime");
+      this.emitHeader("    void bind_located_vars() override;");
+    }
 
     // Threaded-runtime override (STRUCPP_THREADED only): this program's slice
     // of the located-vars table, for PROGRAM-LOCAL `VAR AT` only. Shared globals
@@ -3160,6 +3187,9 @@ export class CodeGenerator {
       this.emit("}");
     }
     this.emit("");
+    // Bind located variable pointers after static initialization is complete.
+    this.generateBindLocatedVars(prog.name);
+    this.emit("");
     // PROGRAM line now maps to header class declaration, not constructor
 
     // Run method
@@ -3284,7 +3314,13 @@ export class CodeGenerator {
         // (not a real program) keeps it out of every program's located_range.
         if (gvar.address) {
           this.collectLocatedVarFromModel(
-            { name: gvar.name, typeName: gvar.typeName, address: gvar.address },
+            {
+              name: gvar.name,
+              cppName: gvar.name,
+              typeName: gvar.typeName,
+              address: gvar.address,
+              isGlobalVarWrapper: true,
+            },
             "@config",
           );
         }
@@ -3436,7 +3472,7 @@ export class CodeGenerator {
     // storage (through the GlobalVar<V> wrapper's `.value`). The runtime copies
     // the I/O image to/from these pointers (locking each global's mutex on the
     // threaded path).
-    this.generateLocatedVarPointerInit("@config", "    ", ".value");
+    this.generateLocatedVarPointerInit("@config");
 
     this.emit("}");
     this.emit("");
@@ -7990,8 +8026,10 @@ export class CodeGenerator {
    */
   private collectLocatedVar(
     varName: string,
+    cppName: string,
     decl: VarDeclaration,
     programName: string,
+    isGlobalVarWrapper: boolean = false,
   ): void {
     if (!decl.address) return;
 
@@ -8000,6 +8038,7 @@ export class CodeGenerator {
 
     this.locatedVars.push({
       varName,
+      cppName,
       address: decl.address,
       area: parsed.area,
       size: parsed.size,
@@ -8007,6 +8046,7 @@ export class CodeGenerator {
       bitIndex: parsed.bitIndex,
       typeName: decl.type.name,
       programName,
+      isGlobalVarWrapper,
     });
   }
 
@@ -8014,7 +8054,13 @@ export class CodeGenerator {
    * Collect a located variable from project model for descriptor array generation.
    */
   private collectLocatedVarFromModel(
-    decl: { name: string; typeName: string; address?: string },
+    decl: {
+      name: string;
+      cppName?: string;
+      typeName: string;
+      address?: string;
+      isGlobalVarWrapper?: boolean;
+    },
     programName: string,
   ): void {
     if (!decl.address) return;
@@ -8024,6 +8070,7 @@ export class CodeGenerator {
 
     this.locatedVars.push({
       varName: decl.name,
+      cppName: decl.cppName ?? decl.name,
       address: decl.address,
       area: parsed.area,
       size: parsed.size,
@@ -8031,6 +8078,7 @@ export class CodeGenerator {
       bitIndex: parsed.bitIndex,
       typeName: decl.typeName,
       programName,
+      isGlobalVarWrapper: decl.isGlobalVarWrapper ?? false,
     });
   }
 
@@ -8092,6 +8140,11 @@ export class CodeGenerator {
     this.emitHeader(
       `constexpr uint32_t locatedVarsCount = ${this.locatedVars.length};`,
     );
+    this.emitHeader("");
+    this.emitHeader(
+      "// Initialize all located variable pointers after static initialization.",
+    );
+    this.emitHeader("void __init_global_located_pointers();");
     this.emitHeader("");
   }
 
@@ -8165,10 +8218,6 @@ export class CodeGenerator {
   private generateLocatedVarPointerInit(
     programName: string,
     indent: string = "    ",
-    // Member accessor between the variable name and `.raw_ptr()`. Empty for
-    // program-local `VAR AT` (the member is the IEC value directly); ".value"
-    // for configuration VAR_GLOBAL (the member is a GlobalVar<V> wrapper).
-    memberAccess: string = "",
   ): void {
     const progVars = this.locatedVars.filter(
       (v) => v.programName === programName,
@@ -8183,11 +8232,65 @@ export class CodeGenerator {
           v.varName === locVar.varName && v.programName === locVar.programName,
       );
       if (index >= 0) {
+        const memberAccess = locVar.isGlobalVarWrapper ? ".value" : "";
         this.emit(
-          `${indent}locatedVars[${index}].pointer = ${locVar.varName}${memberAccess}.raw_ptr();`,
+          `${indent}locatedVars[${index}].pointer = ${locVar.cppName}${memberAccess}.raw_ptr();`,
         );
       }
     }
+  }
+
+  /**
+   * Generate a program method that binds this program's located variable
+   * descriptors to its member storage. Called from main() after all static
+   * initialization is complete, avoiding dynamic-initialization-order races
+   * with the global locatedVars[] array.
+   */
+  private generateBindLocatedVars(programName: string): void {
+    const progVars = this.locatedVars.filter(
+      (v) => v.programName === programName,
+    );
+    if (progVars.length === 0) return;
+
+    this.emit(`void Program_${programName}::bind_located_vars() {`);
+    for (const locVar of progVars) {
+      const index = this.locatedVars.findIndex(
+        (v) =>
+          v.varName === locVar.varName && v.programName === locVar.programName,
+      );
+      if (index >= 0) {
+        this.emit(
+          `    locatedVars[${index}].pointer = this->${locVar.cppName}.raw_ptr();`,
+        );
+      }
+    }
+    this.emit("}");
+    this.emit("");
+  }
+
+  /**
+   * Generate a function that binds configuration / top-level global located
+   * variable descriptors to their canonical storage. Called from main() after
+   * all static initialization is complete.
+   */
+  private generateInitGlobalLocatedPointers(): void {
+    const globals = this.locatedVars.filter((v) => v.programName === "@config");
+
+    this.emit("void __init_global_located_pointers() {");
+    for (const locVar of globals) {
+      const index = this.locatedVars.findIndex(
+        (v) =>
+          v.varName === locVar.varName && v.programName === locVar.programName,
+      );
+      if (index >= 0) {
+        const memberAccess = locVar.isGlobalVarWrapper ? ".value" : "";
+        this.emit(
+          `    locatedVars[${index}].pointer = ${locVar.cppName}${memberAccess}.raw_ptr();`,
+        );
+      }
+    }
+    this.emit("}");
+    this.emit("");
   }
 
   /**
