@@ -2797,13 +2797,23 @@ export class ASTBuilder {
 
     // Check for different literal types
 
-    // Typed literal: BYTE#255, DWORD#16#FF, INT#0, etc.
+    // Typed literal: BYTE#255, DWORD#16#FF, INT#0, STRING#'abc', etc.
     if (children.TypedLiteral) {
       const token = getFirstToken(children.TypedLiteral)!;
       const raw = token.image;
       const hashIdx = raw.indexOf("#");
       const typePrefix = raw.substring(0, hashIdx).toUpperCase();
       const valuePart = raw.substring(hashIdx + 1);
+      if (typePrefix === "STRING" || typePrefix === "WSTRING") {
+        return {
+          kind: "LiteralExpression",
+          sourceSpan: tokenToSourceSpan(token),
+          literalType: typePrefix,
+          value: valuePart,
+          rawValue: raw,
+          typePrefix,
+        };
+      }
       const numValue = parseIECNumeric(valuePart);
       const litType =
         typePrefix === "REAL" || typePrefix === "LREAL" ? "REAL" : "INT";

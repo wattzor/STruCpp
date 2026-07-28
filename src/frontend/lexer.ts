@@ -527,12 +527,13 @@ export const DateTimeLiteral = createToken({
     /(?:DT|DATE_AND_TIME|LDT)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
 });
 
-// Typed literal: BYTE#255, DWORD#16#FF, INT#0, BOOL#1, REAL#1.5E10, etc.
+// Typed literal: BYTE#255, DWORD#16#FF, INT#0, BOOL#1, REAL#1.5E10,
+// STRING#'abc', WSTRING#"abc", etc.
 // Must be before keyword tokens and RealLiteral/IntegerLiteral so that BYTE#255 isn't split
 export const TypedLiteral = createToken({
   name: "TypedLiteral",
   pattern:
-    /(?:BYTE|WORD|DWORD|LWORD|SINT|INT|DINT|LINT|USINT|UINT|UDINT|ULINT|BOOL|REAL|LREAL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[0-9][0-9_]*(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/i,
+    /(?:BYTE|WORD|DWORD|LWORD|SINT|INT|DINT|LINT|USINT|UINT|UDINT|ULINT|BOOL|REAL|LREAL|STRING|WSTRING)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[0-9][0-9_]*(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|'(?:[^'$]|\$\$|\$'|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{2}|'')*'|"(?:[^"$]|\$\$|\$"|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{4})*")/i,
 });
 
 // Real number literal: 3.14, 1.0e-10

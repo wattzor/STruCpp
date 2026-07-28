@@ -5091,9 +5091,20 @@ export class CodeGenerator {
   private generateLiteralExpression(expr: LiteralExpression): string {
     // Handle typed literals: BYTE#255 → static_cast<IEC_BYTE>(255)
     if (expr.typePrefix) {
-      const cppType = `IEC_${expr.typePrefix}`;
+      const upperPrefix = expr.typePrefix.toUpperCase();
       const hashIdx = expr.rawValue.indexOf("#");
       const valuePart = expr.rawValue.substring(hashIdx + 1);
+      if (upperPrefix === "STRING") {
+        const inner = valuePart.replace(/^'|'$/g, "");
+        const escaped = this.translateIECString(inner);
+        return `IEC_STRING("${escaped}")`;
+      }
+      if (upperPrefix === "WSTRING") {
+        const inner = valuePart.replace(/^["']|["']$/g, "");
+        const escaped = this.translateIECString(inner);
+        return `IEC_WSTRING(u"${escaped}")`;
+      }
+      const cppType = `IEC_${expr.typePrefix}`;
       const cppValue = iecBaseToCppLiteral(valuePart);
       return `static_cast<${cppType}>(${cppValue})`;
     }
@@ -5114,19 +5125,21 @@ export class CodeGenerator {
         return str.includes(".") || /[eE]/.test(str) ? str : str + ".0";
       }
       case "STRING": {
-        // rawValue includes surrounding single quotes: 'hello' → strip them
+        // rawValue includes surrounding single quotes: 'hello' → strip them.
+        // Wrap in IEC_STRING(...) so the literal can be passed directly to
+        // standard functions (LEFT/RIGHT/MID/CONCAT/FIND/etc.) that expect an
+        // IECStringVar/IECString argument.
         const inner = expr.rawValue.replace(/^'|'$/g, "");
         const escaped = this.translateIECString(inner);
-        return `"${escaped}"`;
+        return `IEC_STRING("${escaped}")`;
       }
       case "WSTRING": {
         // IEC WSTRING literals are double-quoted in source; strip either
-        // form for safety. The C++ prefix is `u` (char16_t), not `L`
-        // (wchar_t — wchar_t is 32-bit on Linux/AVR, so L"…" wouldn't
-        // bind to IECWStringVar's char16_t* constructor).
+        // form for safety. Wrap in IEC_WSTRING(...) so the literal binds to
+        // the WSTRING overloads of the standard string functions.
         const wInner = expr.rawValue.replace(/^["']|["']$/g, "");
         const wEscaped = this.translateIECString(wInner);
-        return `u"${wEscaped}"`;
+        return `IEC_WSTRING(u"${wEscaped}")`;
       }
       case "TIME": {
         const timeVal = parseTimeLiteral(String(expr.value));
@@ -7668,6 +7681,23 @@ export class CodeGenerator {
       // Convert IEC BOOL literals to C++ bool literals
       if (upperInit === "TRUE") return "true";
       if (upperInit === "FALSE") return "false";
+      // Handle typed string literals: STRING#'abc' and WSTRING#"abc".
+      // The type prefix tells us the literal kind; the value part uses the
+      // same quote conventions as untyped string literals.
+      const typedStringMatch = initialValue.match(/^(STRING|WSTRING)#/i);
+      if (typedStringMatch) {
+        const valuePart = initialValue.substring(typedStringMatch[0].length);
+        if (valuePart.startsWith("'") && valuePart.endsWith("'")) {
+          const inner = valuePart.slice(1, -1);
+          const escaped = this.translateIECString(inner);
+          return `"${escaped}"`;
+        }
+        if (valuePart.startsWith('"') && valuePart.endsWith('"')) {
+          const inner = valuePart.slice(1, -1);
+          const escaped = this.translateIECString(inner);
+          return `u"${escaped}"`;
+        }
+      }
       // Convert IEC string literals to the matching C++ literal shape:
       //   'foo' (STRING)  → "foo"  (const char*)
       //   "foo" (WSTRING) → u"foo" (const char16_t*, what IECWStringVar
