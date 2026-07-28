@@ -27,6 +27,8 @@
 #include <sstream>
 #include <type_traits>
 
+#include "iec_wstring.hpp"
+
 namespace strucpp {
 
 // Forward declaration of scan-cycle time global (defined in iec_std_lib.hpp)
@@ -73,6 +75,34 @@ inline std::string to_display_string(const strucpp::IECString<N>& value) {
 template<size_t N>
 inline std::string to_display_string(const strucpp::IECStringVar<N>& value) {
     return std::string("'") + value.get().c_str() + "'";
+}
+
+// Helper: convert an IECWString to an ASCII-quoted display string.
+template<size_t N>
+inline std::string iec_wstring_to_display(const strucpp::IECWString<N>& value) {
+    std::string out = "'";
+    for (size_t i = 0; i < value.length(); ++i) {
+        const char16_t c = value.c_str()[i];
+        out += (c < 0x80 ? static_cast<char>(c) : '?');
+    }
+    out += "'";
+    return out;
+}
+
+// Overloads for WSTRING value and variable wrappers.
+template<size_t N>
+inline std::string to_display_string(const strucpp::IECWString<N>& value) {
+    return iec_wstring_to_display(value);
+}
+
+template<size_t N>
+inline std::string to_display_string(const strucpp::IECWStringVar<N>& value) {
+    return iec_wstring_to_display(value.get());
+}
+
+template<size_t N>
+inline std::string to_display_string(const strucpp::IECVar<strucpp::IECWString<N>>& value) {
+    return iec_wstring_to_display(static_cast<strucpp::IECWString<N>>(value));
 }
 
 // ============================================================================
