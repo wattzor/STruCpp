@@ -327,7 +327,7 @@ int main() {
     expect(stdout).toBe("10,10\n10");
   });
 
-  it("applies user initial values before FB_Init", () => {
+  it("applies user initial values after FB_Init", () => {
     const result = compile(`
       FUNCTION_BLOCK FB
       VAR
@@ -371,6 +371,113 @@ int main() {
 }
 `,
     });
-    expect(stdout).toBe("100");
+    expect(stdout).toBe("5");
+  });
+
+  it("initializes and destroys nested FBs in CODESYS order", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Inner
+      VAR_EXTERNAL
+        pos : INT;
+        hist : ARRAY[0..3] OF INT;
+      END_VAR
+
+      METHOD FB_Init : BOOL
+      VAR_INPUT
+        bInitRetains : BOOL;
+        bInCopyCode : BOOL;
+      END_VAR
+        hist[pos] := 1;
+        pos := pos + 1;
+        FB_Init := TRUE;
+      END_METHOD
+
+      METHOD FB_Exit : BOOL
+      VAR_INPUT
+        bInCopyCode : BOOL;
+      END_VAR
+        hist[pos] := 2;
+        pos := pos + 1;
+        FB_Exit := TRUE;
+      END_METHOD
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Outer
+      VAR_EXTERNAL
+        pos : INT;
+        hist : ARRAY[0..3] OF INT;
+      END_VAR
+      VAR
+        in : Inner;
+      END_VAR
+
+      METHOD FB_Init : BOOL
+      VAR_INPUT
+        bInitRetains : BOOL;
+        bInCopyCode : BOOL;
+      END_VAR
+        hist[pos] := 3;
+        pos := pos + 1;
+        FB_Init := TRUE;
+      END_METHOD
+
+      METHOD FB_Exit : BOOL
+      VAR_INPUT
+        bInCopyCode : BOOL;
+      END_VAR
+        hist[pos] := 4;
+        pos := pos + 1;
+        FB_Exit := TRUE;
+      END_METHOD
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR_EXTERNAL
+        pos : INT;
+        hist : ARRAY[0..3] OF INT;
+      END_VAR
+      VAR
+        p : POINTER TO Outer;
+      END_VAR
+        p := __NEW(Outer);
+        __DELETE(p);
+      END_PROGRAM
+
+      CONFIGURATION MyConfig
+      VAR_GLOBAL
+        pos : INT;
+        hist : ARRAY[0..3] OF INT;
+      END_VAR
+      RESOURCE MyResource ON PLC
+        TASK MainTask(INTERVAL := T#100ms, PRIORITY := 1);
+        PROGRAM MainTask WITH MainTask : Main;
+      END_RESOURCE
+      END_CONFIGURATION
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "fb_nested_lifecycle_order",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog(&strucpp::POS, &strucpp::HIST);
+    prog.run();
+    strucpp::HIST.with_lock([](auto* arr) {
+        for (int i = 0; i < 4; i++) {
+            std::cout << static_cast<int>((*arr)[i].get());
+            if (i < 3) std::cout << " ";
+        }
+    });
+    std::cout << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("3 1 2 4");
   });
 });

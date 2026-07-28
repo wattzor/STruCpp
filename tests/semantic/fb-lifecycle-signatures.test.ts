@@ -97,4 +97,30 @@ END_METHOD
     expect(result.success).toBe(false);
     expect(result.errors[0]?.message).toContain("no VAR_INPUT parameters");
   });
+
+  it('rejects SUPER^.FB_Init in a derived FB', () => {
+    const result = compile(`
+FUNCTION_BLOCK Base
+METHOD FB_Init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+  FB_Init := TRUE;
+END_METHOD
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK Derived EXTENDS Base
+METHOD FB_Init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+  SUPER^.FB_Init(bInitRetains := TRUE, bInCopyCode := FALSE);
+  FB_Init := TRUE;
+END_METHOD
+END_FUNCTION_BLOCK
+
+PROGRAM Main
+VAR d : Derived; END_VAR
+d();
+END_PROGRAM
+`);
+    expect(result.success).toBe(false);
+    expect(result.errors.some((e) => e.message.includes("SUPER"))).toBe(true);
+  });
 });

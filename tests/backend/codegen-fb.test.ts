@@ -41,7 +41,7 @@ describe("Codegen - Function Blocks", () => {
       expect(result.headerCode).toContain("void operator()();");
 
       // Implementation should contain constructor and operator()
-      expect(result.cppCode).toContain("ADDER::ADDER()");
+      expect(result.cppCode).toContain("ADDER::ADDER(bool __strucpp_lifecycle)");
       expect(result.cppCode).toContain("void ADDER::operator()()");
       expect(result.cppCode).toContain("RESULT = A + B;");
     });
@@ -228,7 +228,7 @@ describe("Codegen - Function Blocks", () => {
         END_PROGRAM
       `);
 
-      expect(result.cppCode).toContain("MYFB::MYFB()");
+      expect(result.cppCode).toContain("MYFB::MYFB(bool __strucpp_lifecycle)");
     });
   });
 
