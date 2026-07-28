@@ -84,7 +84,7 @@ function parseAddress(address: string): ParsedAddress | null {
 
   const area = match[1]!.toUpperCase() as "I" | "Q" | "M";
   let size = match[2]?.toUpperCase() as "X" | "B" | "W" | "D" | "L" | undefined;
-  const isPlaceholder = match[3] === "*";
+  const isPlaceholder = match[3] === undefined;
   const byteIndex = isPlaceholder ? 0 : parseInt(match[3]!, 10);
   const bitIndex = isPlaceholder ? 0 : match[4] ? parseInt(match[4], 10) : 0;
 

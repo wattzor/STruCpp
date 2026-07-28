@@ -175,7 +175,7 @@ int main() {
     expect(output).toContain('OK');
   });
 
-  it('accepts incomplete placeholder located addresses', () => {
+  it('accepts and runs incomplete placeholder located addresses', () => {
     const result = compile(`
       PROGRAM Main
         VAR
@@ -186,5 +186,40 @@ int main() {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
+
+    const output = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: 'loc_placeholder',
+      mainCode: `
+#include <iostream>
+int main() {
+    using namespace strucpp;
+    __input_image().resize(1, 0);
+    __input_image()[0] = 0x01;
+
+    __init_global_located_pointers();
+    Program_MAIN p;
+    p.bind_located_vars();
+
+    __located_vars = locatedVars;
+    __located_vars_count = locatedVarsCount;
+
+    __sync_located_in();
+    p.run();
+    __sync_located_out();
+
+    if (__output_image().size() >= 1 && (__output_image()[0] & 0x01)) {
+        std::cout << "OK" << std::endl;
+        return 0;
+    }
+    return 1;
+}
+`,
+    });
+
+    expect(output).toContain('OK');
   });
 });
