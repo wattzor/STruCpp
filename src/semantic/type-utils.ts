@@ -766,9 +766,14 @@ function resolveCommonTypeWith(
     if (!isBare[i]) nonBareTypes.push(t);
   }
 
+  // A generic IEC type group (ANY, ANY_NUM, etc.) cannot be used as a
+  // concrete common type to cast other arguments to. Fall through to the
+  // full widened computation, which will fail for generic operands and
+  // produce a clear compile-time error instead of invalid C++.
   if (
     nonBareTypes.length > 0 &&
-    nonBareTypes.every((t) => t === nonBareTypes[0]!)
+    nonBareTypes.every((t) => t === nonBareTypes[0]!) &&
+    !isGenericTypeName(nonBareTypes[0]!)
   ) {
     return nonBareTypes[0]!;
   }

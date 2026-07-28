@@ -27,8 +27,6 @@
 #include <sstream>
 #include <type_traits>
 
-#include "iec_wstring.hpp"
-
 namespace strucpp {
 
 // Forward declaration of scan-cycle time global (defined in iec_std_lib.hpp)
@@ -103,6 +101,57 @@ inline std::string to_display_string(const strucpp::IECWStringVar<N>& value) {
 template<size_t N>
 inline std::string to_display_string(const strucpp::IECVar<strucpp::IECWString<N>>& value) {
     return iec_wstring_to_display(static_cast<strucpp::IECWString<N>>(value));
+}
+
+#include "iec_array.hpp"
+#include "iec_wstring.hpp"
+// Stream output for IEC arrays (used by the generic to_display_string fallback).
+template<typename T, typename Bounds>
+inline std::ostream& operator<<(std::ostream& os, const strucpp::IEC_ARRAY_1D<T, Bounds>& arr) {
+    os << '[';
+    for (size_t i = 0; i < arr.length(); ++i) {
+        if (i > 0) os << ", ";
+        os << arr[static_cast<int64_t>(Bounds::lower + i)];
+    }
+    os << ']';
+    return os;
+}
+
+template<typename T, typename Bounds1, typename Bounds2>
+inline std::ostream& operator<<(std::ostream& os, const strucpp::IEC_ARRAY_2D<T, Bounds1, Bounds2>& arr) {
+    os << '[';
+    for (int64_t i = arr.dim1_lower(); i <= arr.dim1_upper(); ++i) {
+        if (i > arr.dim1_lower()) os << "; ";
+        os << '[';
+        for (int64_t j = arr.dim2_lower(); j <= arr.dim2_upper(); ++j) {
+            if (j > arr.dim2_lower()) os << ", ";
+            os << arr(i, j);
+        }
+        os << ']';
+    }
+    os << ']';
+    return os;
+}
+
+template<typename T, typename Bounds1, typename Bounds2, typename Bounds3>
+inline std::ostream& operator<<(std::ostream& os, const strucpp::IEC_ARRAY_3D<T, Bounds1, Bounds2, Bounds3>& arr) {
+    os << '[';
+    for (int64_t i = Bounds1::lower; i <= Bounds1::upper; ++i) {
+        if (i > Bounds1::lower) os << "; ";
+        os << '[';
+        for (int64_t j = Bounds2::lower; j <= Bounds2::upper; ++j) {
+            if (j > Bounds2::lower) os << ", ";
+            os << '[';
+            for (int64_t k = Bounds3::lower; k <= Bounds3::upper; ++k) {
+                if (k > Bounds3::lower) os << ", ";
+                os << arr(i, j, k);
+            }
+            os << ']';
+        }
+        os << ']';
+    }
+    os << ']';
+    return os;
 }
 
 // ============================================================================
