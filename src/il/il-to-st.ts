@@ -192,15 +192,23 @@ function convertStraightLine(elements: ILElement[]): ILConvertResult {
       default: {
         // Binary operators: AND, OR, XOR, ADD, SUB, etc.
         const stOp = BINARY_OP_MAP[op];
-        if (stOp && operand) {
+        if (stOp) {
           if (instr.openParen) {
-            // Push current expression and operator to stack
+            // Push current expression and operator to stack.
+            // The operand may be empty (e.g. "ADD(") — the inner expression
+            // is supplied by the following instructions up to the closing ")".
             exprStack.push({ expr, op: stOp });
-            expr = operand;
-          } else {
+            expr = operand ?? "";
+          } else if (operand) {
             expr = `(${expr} ${stOp} ${operand})`;
+          } else {
+            errors.push({
+              message: `Binary IL operator ${op} requires an operand`,
+              line: instr.sourceLine,
+              column: 1,
+            });
           }
-        } else if (!stOp) {
+        } else {
           errors.push({
             message: `Unsupported IL operator in straight-line mode: ${op}`,
             line: instr.sourceLine,
