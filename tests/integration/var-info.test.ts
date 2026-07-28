@@ -388,4 +388,46 @@ END_TEST
     expect(exitCode).toBe(0);
     expect(stdout).not.toContain("[FAIL]");
   });
+
+  it("reports the correct ByteOffset and BitSize for a struct field", () => {
+    const sourceST = `
+TYPE VarInfoFieldStruct :
+STRUCT
+  a : BYTE;
+  b : INT;
+END_STRUCT
+END_TYPE
+
+PROGRAM VarInfoFieldTest
+  VAR
+    s : VarInfoFieldStruct;
+    info : __SYSTEM.VAR_INFO;
+  END_VAR
+  info := __VARINFO(s.b);
+END_PROGRAM
+`;
+
+    const testST = `
+TEST '__VARINFO struct field'
+  VAR uut : VarInfoFieldTest; END_VAR
+  uut();
+  ASSERT_EQ(uut.info.TypeClass, __SYSTEM.TYPE_CLASS.TYPE_INT);
+  ASSERT_EQ(uut.info.TypeName, 'INT');
+  ASSERT_EQ(uut.info.BitSize, 16);
+  ASSERT_EQ(uut.info.ByteOffset, 2);
+  ASSERT_EQ(uut.info.Symbol, 'S.B');
+END_TEST
+`;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "test_var_info_field.st",
+      tempDirPrefix: "strucpp-varinfo-field-",
+      isTestBuild: true,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("[FAIL]");
+  });
 });
