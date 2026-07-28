@@ -1332,6 +1332,76 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * Validate the fixed signatures of FB_Init, FB_Exit and FB_Reinit.
+   *
+   * CODESYS requires:
+   *   FB_Init  : BOOL with VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL;
+   *   FB_Exit  : BOOL with VAR_INPUT bInCopyCode : BOOL;
+   *   FB_Reinit: BOOL with no parameters.
+   */
+  private validateFBLifecycleSignatures(fb: FunctionBlockDeclaration): void {
+    const LIFECYCLE_METHODS = ["FB_INIT", "FB_EXIT", "FB_REINIT"] as const;
+    for (const method of fb.methods) {
+      const upper = method.name.toUpperCase();
+      if (
+        !LIFECYCLE_METHODS.includes(upper as (typeof LIFECYCLE_METHODS)[number])
+      ) {
+        continue;
+      }
+
+      const returnName = method.returnType?.name?.toUpperCase() ?? "";
+      if (returnName !== "BOOL") {
+        this.addError(
+          `Lifecycle method '${method.name}' in FUNCTION_BLOCK '${fb.name}' must return BOOL.`,
+          method.sourceSpan.startLine,
+          method.sourceSpan.startCol,
+          method.sourceSpan.file,
+        );
+      }
+
+      const inputs = this.extractMethodParams(method);
+      if (upper === "FB_INIT") {
+        if (
+          inputs.length !== 2 ||
+          inputs[0]!.name.toUpperCase() !== "BINITRETAINS" ||
+          inputs[0]!.type.toUpperCase() !== "BOOL" ||
+          inputs[1]!.name.toUpperCase() !== "BINCOPYCODE" ||
+          inputs[1]!.type.toUpperCase() !== "BOOL"
+        ) {
+          this.addError(
+            `METHOD FB_Init in FUNCTION_BLOCK '${fb.name}' must have VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR.`,
+            method.sourceSpan.startLine,
+            method.sourceSpan.startCol,
+            method.sourceSpan.file,
+          );
+        }
+      } else if (upper === "FB_EXIT") {
+        if (
+          inputs.length !== 1 ||
+          inputs[0]!.name.toUpperCase() !== "BINCOPYCODE" ||
+          inputs[0]!.type.toUpperCase() !== "BOOL"
+        ) {
+          this.addError(
+            `METHOD FB_Exit in FUNCTION_BLOCK '${fb.name}' must have VAR_INPUT bInCopyCode : BOOL; END_VAR.`,
+            method.sourceSpan.startLine,
+            method.sourceSpan.startCol,
+            method.sourceSpan.file,
+          );
+        }
+      } else if (upper === "FB_REINIT") {
+        if (inputs.length !== 0) {
+          this.addError(
+            `METHOD FB_Reinit in FUNCTION_BLOCK '${fb.name}' must have no VAR_INPUT parameters.`,
+            method.sourceSpan.startLine,
+            method.sourceSpan.startCol,
+            method.sourceSpan.file,
+          );
+        }
+      }
+    }
+  }
+
+  /**
    * Validate that abstract function blocks are not instantiated directly.
    */
   private validateAbstractInstantiation(ast: CompilationUnit): void {
@@ -2547,6 +2617,7 @@ export class SemanticAnalyzer {
           `METHOD '${method.name}' of '${fb.name}'`,
         );
       }
+      this.validateFBLifecycleSignatures(fb);
 
       // Properties — return type and local getter/setter VAR blocks
       for (const prop of fb.properties) {
