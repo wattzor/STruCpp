@@ -4086,16 +4086,15 @@ export class CodeGenerator {
     const cached = this.varInfoDescriptorCache.get(symbolName);
     if (cached) return cached;
 
-    const varInfo = this.findVarInfo(arg.name);
-    const declaration = varInfo?.decl;
-    const block = varInfo?.block;
+    const access = this.resolveVarInfoAccess(arg);
+    const { baseDecl, baseBlock, finalDecl, finalType, byteOffsetExpr } =
+      access;
 
-    // Resolve the argument's type from the type-checker annotation if available.
-    let targetType: IECType | undefined = arg.resolvedType;
+    // Resolve the final target type (after field/array access) from the
+    // type-checker annotation, then fall back to the declaration's type name.
+    let targetType: IECType | undefined = finalType ?? arg.resolvedType;
+    const declaration = finalDecl;
     if (!targetType && declaration) {
-      // The argument is a variable; resolve its declared type by name.
-      // For inline ARRAY [...] OF T declarations we fall through to the
-      // dedicated array handling below, which uses the element type name.
       targetType = this.resolveTypeByName(declaration.type.name);
     }
 
@@ -4202,25 +4201,31 @@ export class CodeGenerator {
 
     const comment = declaration?.comment ?? "";
 
-    const { area, memoryAreaName, bitNr, bitAddress, byteAddress, byteOffset } =
-      this.inferVarInfoAddressFields(declaration, block, symbolName);
+    const address = this.inferVarInfoAddressFields(
+      baseDecl,
+      baseBlock,
+      symbolName,
+    );
+    if (byteOffsetExpr !== "0") {
+      address.byteOffset = byteOffsetExpr;
+    }
 
     const id = this.varInfoSymbolIds.get(symbolName) ?? ++this.varInfoCounter;
     const descriptorName = `__strucpp_varinfo_${id}`;
 
     const fields = [
-      `/*BYTEADDRESS=*/ IEC_DWORD(${this.formatHex(byteAddress)}u)`,
-      `/*BYTEOFFSET=*/ IEC_DINT(${byteOffset})`,
-      `/*AREA=*/ IEC_INT(${area})`,
-      `/*BITNR=*/ IEC_INT(${bitNr})`,
+      `/*BYTEADDRESS=*/ IEC_DWORD(${this.formatHex(address.byteAddress)}u)`,
+      `/*BYTEOFFSET=*/ IEC_DINT(${address.byteOffset})`,
+      `/*AREA=*/ IEC_INT(${address.area})`,
+      `/*BITNR=*/ IEC_INT(${address.bitNr})`,
       `/*BITSIZE=*/ IEC_UDINT(${bitSizeExpr})`,
-      `/*BITADDRESS=*/ IEC_UDINT(${bitAddress}u)`,
+      `/*BITADDRESS=*/ IEC_UDINT(${address.bitAddress}u)`,
       `/*TYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${typeClassName})`,
       `/*TYPENAME=*/ strucpp::IECString<79>("${this.escapeCString(typeName)}")`,
       `/*NUMELEMENTS=*/ IEC_UDINT(${numElements}u)`,
       `/*BASETYPECLASS=*/ IEC_TYPE_CLASS(strucpp::__SYSTEM::TYPE_CLASS::${baseTypeClassName})`,
       `/*ELEMBITSIZE=*/ IEC_UDINT(${elemBitSizeExpr})`,
-      `/*MEMORYAREA=*/ IEC_MEMORY_AREA(strucpp::__SYSTEM::MEMORY_AREA::${memoryAreaName})`,
+      `/*MEMORYAREA=*/ IEC_MEMORY_AREA(strucpp::__SYSTEM::MEMORY_AREA::${address.memoryAreaName})`,
       `/*SYMBOL=*/ strucpp::IECString<39>("${this.escapeCString(symbolName)}")`,
       `/*COMMENT=*/ strucpp::IECString<79>("${this.escapeCString(comment)}")`,
     ];
@@ -4297,7 +4302,7 @@ export class CodeGenerator {
     bitNr: number;
     bitAddress: number;
     byteAddress: number;
-    byteOffset: number;
+    byteOffset: string;
   } {
     const byteAddress = this.generateVarInfoByteAddress(symbolName);
 
@@ -4316,7 +4321,7 @@ export class CodeGenerator {
               bitNr: realBitNr,
               bitAddress: realBitAddress,
               byteAddress: realByteAddress,
-              byteOffset: realByteOffset,
+              byteOffset: realByteOffset.toString(),
             };
           case "Output":
             return {
@@ -4325,7 +4330,7 @@ export class CodeGenerator {
               bitNr: realBitNr,
               bitAddress: realBitAddress,
               byteAddress: realByteAddress,
-              byteOffset: realByteOffset,
+              byteOffset: realByteOffset.toString(),
             };
           case "Memory":
           default:
@@ -4335,7 +4340,7 @@ export class CodeGenerator {
               bitNr: realBitNr,
               bitAddress: realBitAddress,
               byteAddress: realByteAddress,
-              byteOffset: realByteOffset,
+              byteOffset: realByteOffset.toString(),
             };
         }
       }
@@ -4359,8 +4364,249 @@ export class CodeGenerator {
       bitNr: -1,
       bitAddress: 0,
       byteAddress,
-      byteOffset: 0,
+      byteOffset: "0",
     };
+  }
+
+  /**
+   * Resolve a __VARINFO variable expression, walking field access and array
+   * subscript chains to find the final field declaration, its IEC type, and
+   * a C++ byte-offset expression.
+   */
+  private resolveVarInfoAccess(arg: VariableExpression): {
+    baseDecl: VarDeclaration | undefined;
+    baseBlock: VarBlock | undefined;
+    finalDecl: VarDeclaration | undefined;
+    finalType: IECType | undefined;
+    byteOffsetExpr: string;
+  } {
+    const baseInfo = this.findVarInfo(arg.name);
+    const baseDecl = baseInfo?.decl;
+    const baseBlock = baseInfo?.block;
+    let currentDecl: VarDeclaration | undefined = baseDecl;
+    let currentTypeName = baseDecl?.type.name ?? "";
+    let finalDecl: VarDeclaration | undefined = baseDecl;
+    let finalType: IECType | undefined = undefined;
+    let byteOffsetExpr = "0";
+
+    const steps = arg.accessChain ?? [];
+    if (steps.length === 0 && arg.resolvedType) {
+      finalType = arg.resolvedType;
+    }
+
+    for (const step of steps) {
+      if (!currentDecl) break;
+      if (step.kind === "field") {
+        const fieldDecl = this.findFieldDeclaration(currentTypeName, step.name);
+        if (!fieldDecl) break;
+
+        const memberInfo = this.getCompositeMemberInfo(
+          currentTypeName,
+          step.name,
+        );
+        const fieldOffset =
+          memberInfo !== undefined
+            ? `strucpp::iec_struct_member_offset<${memberInfo.index}, ${memberInfo.memberTypes.join(", ")}>::value`
+            : "0";
+        byteOffsetExpr =
+          byteOffsetExpr === "0"
+            ? fieldOffset
+            : `(${byteOffsetExpr}) + ${fieldOffset}`;
+
+        currentDecl = fieldDecl;
+        finalDecl = fieldDecl;
+        currentTypeName = fieldDecl.type.name;
+        finalType = this.resolveTypeByName(currentTypeName);
+      } else if (step.kind === "subscript") {
+        const arrayInfo = this.getInlineArrayElementInfo(currentDecl);
+        if (!arrayInfo) break;
+
+        const indexExpr =
+          step.indices.length > 0
+            ? this.generateExpression(step.indices[0]!)
+            : "0";
+        const elementSizeExpr = `iec_sizeof<${arrayInfo.elementCppType}>::value`;
+        const subExpr = `(${indexExpr} - ${arrayInfo.lowerBound}) * ${elementSizeExpr}`;
+        byteOffsetExpr =
+          byteOffsetExpr === "0" ? subExpr : `(${byteOffsetExpr}) + ${subExpr}`;
+
+        currentDecl = {
+          ...currentDecl,
+          type: {
+            ...currentDecl.type,
+            name: arrayInfo.elementTypeName,
+            arrayDimensions: undefined,
+            elementTypeName: undefined,
+          },
+        } as unknown as VarDeclaration;
+        currentTypeName = arrayInfo.elementTypeName;
+        finalDecl = currentDecl;
+        finalType = this.resolveTypeByName(currentTypeName);
+      } else if (step.kind === "dereference") {
+        // Cannot compute a compile-time offset through a pointer dereference.
+        break;
+      }
+    }
+
+    return { baseDecl, baseBlock, finalDecl, finalType, byteOffsetExpr };
+  }
+
+  /**
+   * Look up the VarDeclaration for a field of a struct, FB, or program type.
+   */
+  private findFieldDeclaration(
+    typeName: string,
+    fieldName: string,
+  ): VarDeclaration | undefined {
+    const upper = typeName.toUpperCase();
+    const fieldUpper = fieldName.toUpperCase();
+
+    for (const td of this.ast?.types ?? []) {
+      if (
+        td.name.toUpperCase() === upper &&
+        td.definition.kind === "StructDefinition"
+      ) {
+        for (const field of td.definition.fields) {
+          if (field.names.some((n) => n.toUpperCase() === fieldUpper)) {
+            return field;
+          }
+        }
+      }
+    }
+
+    for (const fb of this.ast?.functionBlocks ?? []) {
+      if (fb.name.toUpperCase() === upper) {
+        for (const block of fb.varBlocks) {
+          if (block.blockType === "VAR_EXTERNAL") continue;
+          for (const decl of block.declarations) {
+            if (decl.names.some((n) => n.toUpperCase() === fieldUpper)) {
+              return decl;
+            }
+          }
+        }
+      }
+    }
+
+    for (const prog of this.ast?.programs ?? []) {
+      if (prog.name.toUpperCase() === upper) {
+        for (const block of prog.varBlocks) {
+          if (block.blockType === "VAR_EXTERNAL") continue;
+          for (const decl of block.declarations) {
+            if (decl.names.some((n) => n.toUpperCase() === fieldUpper)) {
+              return decl;
+            }
+          }
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Return the ordered C++ member types of a struct/FB/program type and the
+   * index of the named field. Used to compute a CODESYS-logical byte offset.
+   */
+  private getCompositeMemberInfo(
+    typeName: string,
+    fieldName: string,
+  ): { memberTypes: string[]; index: number } | undefined {
+    const upper = typeName.toUpperCase();
+    const fieldUpper = fieldName.toUpperCase();
+
+    let index = -1;
+    const memberTypes: string[] = [];
+
+    for (const td of this.ast?.types ?? []) {
+      if (
+        td.name.toUpperCase() === upper &&
+        td.definition.kind === "StructDefinition"
+      ) {
+        for (const field of td.definition.fields) {
+          for (const name of field.names) {
+            if (index === -1 && name.toUpperCase() === fieldUpper) {
+              index = memberTypes.length;
+            }
+            memberTypes.push(this.mapMemberTypeToCpp(field.type));
+          }
+        }
+        break;
+      }
+    }
+
+    if (index === -1 && memberTypes.length === 0) {
+      const pou =
+        this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === upper) ??
+        this.ast?.programs.find((p) => p.name.toUpperCase() === upper);
+      if (pou) {
+        for (const block of pou.varBlocks) {
+          if (block.blockType === "VAR_EXTERNAL") continue;
+          for (const decl of block.declarations) {
+            for (const name of decl.names) {
+              if (index === -1 && name.toUpperCase() === fieldUpper) {
+                index = memberTypes.length;
+              }
+              memberTypes.push(this.mapMemberTypeToCpp(decl.type));
+            }
+          }
+        }
+      }
+    }
+
+    if (index === -1) return undefined;
+    return { memberTypes, index };
+  }
+
+  /**
+   * Map a VarDeclaration type to the C++ member type used for offset/size
+   * calculations. Matches the types emitted for struct/FB/program fields.
+   */
+  private mapMemberTypeToCpp(typeRef: {
+    name: string;
+    maxLength?: number | string;
+    referenceKind?: string;
+    arrayDimensions?: Array<{ start: number; end: number }>;
+    elementTypeName?: string;
+    elementReferenceKind?: string;
+  }): string {
+    return this.mapTypeRefToCpp(typeRef);
+  }
+
+  /**
+   * For an array-typed VarDeclaration or array type, return the element type
+   * name, its C++ type, and the lower bound of the first dimension.
+   */
+  private getInlineArrayElementInfo(decl: VarDeclaration):
+    | {
+        elementTypeName: string;
+        elementCppType: string;
+        lowerBound: number;
+      }
+    | undefined {
+    if (
+      decl.type.arrayDimensions &&
+      decl.type.arrayDimensions.length > 0 &&
+      decl.type.elementTypeName
+    ) {
+      return {
+        elementTypeName: decl.type.elementTypeName,
+        elementCppType: this.mapVarTypeToCpp(decl.type.elementTypeName),
+        lowerBound: decl.type.arrayDimensions[0]!.start,
+      };
+    }
+
+    const resolved = this.resolveTypeByName(decl.type.name);
+    if (resolved?.typeKind === "array") {
+      const arr = resolved as ArrayType;
+      const elementTypeName = typeNameUtil(arr.elementType);
+      return {
+        elementTypeName,
+        elementCppType: this.mapVarTypeToCpp(elementTypeName),
+        lowerBound: arr.dimensions[0]?.start ?? 0,
+      };
+    }
+
+    return undefined;
   }
 
   /**

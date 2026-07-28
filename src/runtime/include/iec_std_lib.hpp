@@ -1657,6 +1657,37 @@ struct iec_struct_size {
 };
 
 /**
+ * iec_struct_member_offset<I, Ts...> - Byte offset of the I-th member in a
+ * CODESYS logical struct layout. Uses iec_sizeof for member sizes and alignof
+ * for padding, matching the behavior of iec_struct_size.
+ */
+namespace detail {
+
+template<std::size_t I, typename... Ts>
+constexpr std::size_t compute_iec_member_offset() noexcept {
+    if constexpr (I == 0 || sizeof...(Ts) == 0) {
+        return 0;
+    } else {
+        constexpr std::size_t sizes[sizeof...(Ts)] = { iec_sizeof<Ts>::value ... };
+        constexpr std::size_t aligns[sizeof...(Ts)] = { alignof(Ts) ... };
+        std::size_t offset = 0;
+        for (std::size_t i = 0; i < I && i < sizeof...(Ts); ++i) {
+            std::size_t a = aligns[i];
+            offset = (offset + a - 1) / a * a;
+            offset += sizes[i];
+        }
+        return (offset + aligns[I] - 1) / aligns[I] * aligns[I];
+    }
+}
+
+} // namespace detail
+
+template<std::size_t I, typename... Ts>
+struct iec_struct_member_offset {
+    static constexpr std::size_t value = detail::compute_iec_member_offset<I, Ts...>();
+};
+
+/**
  * IEC_SIZEOF(var) - Returns the logical IEC type size in bytes.
  * For IECVar<T> types, returns sizeof(T) (the underlying type),
  * not sizeof(IECVar<T>) which includes the forcing wrapper overhead.
