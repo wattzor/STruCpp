@@ -276,4 +276,60 @@ int main() {
     expect(output).toContain('C=3');
     expect(output).toContain('D=3');
   });
+
+  it('WSTRING sized locals and struct field arguments', () => {
+    const result = compile(`
+      TYPE MyStruct :
+        STRUCT
+          w : WSTRING;
+        END_STRUCT
+      END_TYPE
+
+      FUNCTION TestFunc : INT
+        VAR
+          w80 : WSTRING(80) := "hello";
+          local : WSTRING;
+        END_VAR
+        local := CONCAT(w80, "!");
+        TestFunc := LEN(local);
+      END_FUNCTION
+
+      PROGRAM Main
+        VAR
+          s : MyStruct;
+          r1, r2 : WSTRING;
+          x : INT;
+        END_VAR
+        s.w := WSTRING#"abc";
+        r1 := CONCAT(s.w, "def");
+        r2 := DELETE(s.w, 1, 1);
+        x := TestFunc();
+      END_PROGRAM
+    `);
+    expect(result.success).toBe(true);
+
+    const output = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: 'wstring_sized_and_field',
+      mainCode: `
+#include <iostream>
+int main() {
+    using namespace strucpp;
+    Program_MAIN p;
+    p.run();
+    std::cout << "R1=" << WSTRING_TO_STRING(p.R1).c_str() << std::endl;
+    std::cout << "R2=" << WSTRING_TO_STRING(p.R2).c_str() << std::endl;
+    std::cout << "X=" << static_cast<INT_t>(p.X) << std::endl;
+    return 0;
+}
+`,
+    });
+
+    expect(output).toContain('R1=abcdef');
+    expect(output).toContain('R2=bc');
+    expect(output).toContain('X=6');
+  });
 });

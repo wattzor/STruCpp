@@ -375,6 +375,21 @@ public:
     IECWStringVar& operator=(const IECWStringVar&) = default;
     IECWStringVar& operator=(IECWStringVar&&) = default;
 
+    // Cross-size converting constructor (IEC 61131-3: WSTRING types are interoperable)
+    template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
+    IECWStringVar(const IECWStringVar<OtherLen>& other) noexcept
+        : value_(other.get().c_str()), forced_{false}, forced_value_{} {}
+
+    // Converting constructor from IECWString of any size
+    template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
+    IECWStringVar(const IECWString<OtherLen>& other) noexcept
+        : value_(other.c_str()), forced_{false}, forced_value_{} {}
+
+    // Converting constructor from IECVar<IECWString<N>> (struct field access returns this type)
+    template<size_t OtherLen>
+    IECWStringVar(const IECVar<IECWString<OtherLen>>& other) noexcept
+        : value_(static_cast<IECWString<OtherLen>>(other).c_str()), forced_{false}, forced_value_{} {}
+
     // Cross-size assignment (IEC 61131-3: WSTRING types are interoperable, truncation on overflow)
     template<size_t OtherLen>
     IECWStringVar& operator=(const IECWStringVar<OtherLen>& other) noexcept {
@@ -592,6 +607,61 @@ CONCAT(const IECWString<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2) noexcept
     return CONCAT(s1, s2.get());
 }
 
+// IECVar<IECWString<N>> overloads: struct field access returns this wrapper, and
+// implicit conversion to IECWString does not happen during template deduction.
+template<size_t MaxLen1, size_t MaxLen2>
+inline auto CONCAT(const IECVar<IECWString<MaxLen1>>& s1, const IECWString<MaxLen2>& s2) noexcept {
+    return CONCAT(static_cast<IECWString<MaxLen1>>(s1), s2);
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline auto CONCAT(const IECWString<MaxLen1>& s1, const IECVar<IECWString<MaxLen2>>& s2) noexcept {
+    return CONCAT(s1, static_cast<IECWString<MaxLen2>>(s2));
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline auto CONCAT(const IECVar<IECWString<MaxLen1>>& s1, const IECWStringVar<MaxLen2>& s2) noexcept {
+    return CONCAT(static_cast<IECWString<MaxLen1>>(s1), s2.get());
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline auto CONCAT(const IECWStringVar<MaxLen1>& s1, const IECVar<IECWString<MaxLen2>>& s2) noexcept {
+    return CONCAT(s1.get(), static_cast<IECWString<MaxLen2>>(s2));
+}
+
+template<size_t MaxLen1, size_t MaxLen2>
+inline auto CONCAT(const IECVar<IECWString<MaxLen1>>& s1, const IECVar<IECWString<MaxLen2>>& s2) noexcept {
+    return CONCAT(static_cast<IECWString<MaxLen1>>(s1), static_cast<IECWString<MaxLen2>>(s2));
+}
+
+// Variadic CONCAT overloads that accept an IECVar<IECWString<N>> first argument.
+// The first two arguments are resolved to an IECWString value, then recursion
+// continues with the existing value-based overloads.
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto CONCAT(const IECVar<IECWString<MaxLen1>>& s1, const IECWString<MaxLen2>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(static_cast<IECWString<MaxLen1>>(s1), s2), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto CONCAT(const IECWString<MaxLen1>& s1, const IECVar<IECWString<MaxLen2>>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(s1, static_cast<IECWString<MaxLen2>>(s2)), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto CONCAT(const IECVar<IECWString<MaxLen1>>& s1, const IECWStringVar<MaxLen2>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(static_cast<IECWString<MaxLen1>>(s1), s2.get()), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto CONCAT(const IECWStringVar<MaxLen1>& s1, const IECVar<IECWString<MaxLen2>>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(s1.get(), static_cast<IECWString<MaxLen2>>(s2)), rest...);
+}
+
+template<size_t MaxLen1, size_t MaxLen2, typename... Args>
+inline auto CONCAT(const IECVar<IECWString<MaxLen1>>& s1, const IECVar<IECWString<MaxLen2>>& s2, const Args&... rest) noexcept {
+    return CONCAT(CONCAT(static_cast<IECWString<MaxLen1>>(s1), static_cast<IECWString<MaxLen2>>(s2)), rest...);
+}
+
 template<size_t MaxLen>
 inline IECWString<MaxLen> INSERT(const IECWString<MaxLen>& s1, const IECWString<MaxLen>& s2, size_t pos) noexcept {
     IECWString<MaxLen> result(s1);
@@ -664,6 +734,52 @@ inline IECWString<MaxLen1> REPLACE(const IECWStringVar<MaxLen1>& s1, const IECWS
 template<size_t MaxLen1, size_t MaxLen2, std::enable_if_t<MaxLen1 != MaxLen2, int> = 0>
 inline IECWString<MaxLen1> INSERT(const IECWStringVar<MaxLen1>& s1, const IECWStringVar<MaxLen2>& s2, size_t pos) noexcept {
     return INSERT(s1.get(), IECWString<MaxLen1>(s2.get().c_str()), pos);
+}
+
+// IECVar<IECWString<N>> overloads for field/variable access.
+template<size_t MaxLen>
+inline IECWString<MaxLen> INSERT(const IECVar<IECWString<MaxLen>>& s1, const IECWString<MaxLen>& s2, size_t pos) noexcept {
+    return INSERT(static_cast<IECWString<MaxLen>>(s1), s2, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> INSERT(const IECWString<MaxLen>& s1, const IECVar<IECWString<MaxLen>>& s2, size_t pos) noexcept {
+    return INSERT(s1, static_cast<IECWString<MaxLen>>(s2), pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> INSERT(const IECVar<IECWString<MaxLen>>& s1, const IECWStringVar<MaxLen>& s2, size_t pos) noexcept {
+    return INSERT(static_cast<IECWString<MaxLen>>(s1), s2.get(), pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> INSERT(const IECWStringVar<MaxLen>& s1, const IECVar<IECWString<MaxLen>>& s2, size_t pos) noexcept {
+    return INSERT(s1.get(), static_cast<IECWString<MaxLen>>(s2), pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> DELETE_STR(const IECVar<IECWString<MaxLen>>& s, size_t len, size_t pos) noexcept {
+    return DELETE_STR(static_cast<IECWString<MaxLen>>(s), len, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> REPLACE(const IECVar<IECWString<MaxLen>>& s1, const IECWString<MaxLen>& s2, size_t len, size_t pos) noexcept {
+    return REPLACE(static_cast<IECWString<MaxLen>>(s1), s2, len, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> REPLACE(const IECWString<MaxLen>& s1, const IECVar<IECWString<MaxLen>>& s2, size_t len, size_t pos) noexcept {
+    return REPLACE(s1, static_cast<IECWString<MaxLen>>(s2), len, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> REPLACE(const IECVar<IECWString<MaxLen>>& s1, const IECWStringVar<MaxLen>& s2, size_t len, size_t pos) noexcept {
+    return REPLACE(static_cast<IECWString<MaxLen>>(s1), s2.get(), len, pos);
+}
+
+template<size_t MaxLen>
+inline IECWString<MaxLen> REPLACE(const IECWStringVar<MaxLen>& s1, const IECVar<IECWString<MaxLen>>& s2, size_t len, size_t pos) noexcept {
+    return REPLACE(s1.get(), static_cast<IECWString<MaxLen>>(s2), len, pos);
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
