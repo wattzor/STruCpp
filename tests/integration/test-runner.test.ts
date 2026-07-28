@@ -678,4 +678,52 @@ END_TEST
     expect(stdout).toContain("[PASS] FB instances equal");
     expect(stdout).toContain("1 test, 1 passed, 0 failed");
   });
+
+  it("should support VAR_EXTERNAL references to source VAR_GLOBALs", () => {
+    const source = `
+VAR_GLOBAL
+  g : INT := 10;
+END_VAR
+
+PROGRAM GlobalP
+  VAR_OUTPUT out : INT; END_VAR
+  out := g;
+END_PROGRAM
+`;
+    const test = `
+TEST 'external global read and write'
+  VAR_EXTERNAL g : INT; END_VAR
+  VAR uut : GlobalP; END_VAR
+  uut();
+  ASSERT_EQ(uut.out, 10);
+  g := 42;
+  uut();
+  ASSERT_EQ(uut.out, 42);
+END_TEST
+`;
+    const { stdout, exitCode } = runTest(source, test, "test_external.st");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("[PASS] external global read and write");
+    expect(stdout).toContain("1 test, 1 passed, 0 failed");
+  });
+
+  it("should support ASSERT_EQ on program VAR_OUTPUT variables", () => {
+    const source = `
+PROGRAM OutputP
+  VAR_OUTPUT out : INT; END_VAR
+  out := 7;
+END_PROGRAM
+`;
+    const test = `
+TEST 'program output equals expected'
+  VAR uut : OutputP; expected : INT := 7; END_VAR
+  uut();
+  ASSERT_EQ(uut.out, expected);
+END_TEST
+`;
+    const { stdout, exitCode } = runTest(source, test, "test_output.st");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("[PASS] program output equals expected");
+    expect(stdout).toContain("1 test, 1 passed, 0 failed");
+  });
 });

@@ -242,6 +242,7 @@ export function generateTestMain(
         testCodegen,
         testFile.fileName,
         astFunctionMap,
+        options.ast,
       );
       const structCode = gen.generateSetupStruct(
         setupStructName,
@@ -259,6 +260,7 @@ export function generateTestMain(
         testCodegen,
         testFile.fileName,
         astFunctionMap,
+        options.ast,
       );
       const code = gen.generateTestFunction(
         funcName,
@@ -354,6 +356,7 @@ function collectMockedFunctions(
 class TestFunctionGenerator {
   private testCodegen: TestCodeGenerator;
   private astFunctionMap: Map<string, FunctionDeclaration>;
+  private ast: CompilationUnit | undefined;
   private fileName: string;
   private indent = "    ";
   /** Names of variables from SETUP block (need s. prefix for mock paths) */
@@ -363,11 +366,13 @@ class TestFunctionGenerator {
     testCodegen: TestCodeGenerator,
     fileName: string,
     astFunctionMap?: Map<string, FunctionDeclaration>,
+    ast?: CompilationUnit,
   ) {
     this.testCodegen = testCodegen;
     this.fileName = fileName;
     this.astFunctionMap =
       astFunctionMap ?? new Map<string, FunctionDeclaration>();
+    this.ast = ast;
   }
 
   /**
@@ -474,15 +479,43 @@ class TestFunctionGenerator {
       }
     }
 
+    // Track VAR_EXTERNAL references to source VAR_GLOBALs separately; they
+    // are not local variables but references to the source global.
+    const externalVarNames = new Set<string>();
+
     for (const varBlock of tc.varBlocks) {
       for (const decl of varBlock.declarations) {
         for (const name of decl.names) {
           varTypes.set(name, decl.type.name);
+          if (varBlock.blockType === "VAR_EXTERNAL") {
+            externalVarNames.add(name);
+          }
         }
       }
     }
 
+    // Classify source globals: top-level VAR_GLOBAL blocks emit plain C++
+    // variables, while CONFIGURATION VAR_GLOBALs are wrapped in GlobalVar<V>.
+    const plainGlobalNames = new Set<string>();
+    for (const block of this.ast?.globalVarBlocks ?? []) {
+      for (const decl of block.declarations) {
+        for (const name of decl.names) plainGlobalNames.add(name.toUpperCase());
+      }
+    }
+    const externalPlainNames: string[] = [];
+    const externalGlobalVarNames: string[] = [];
+    for (const name of externalVarNames) {
+      (plainGlobalNames.has(name.toUpperCase())
+        ? externalPlainNames
+        : externalGlobalVarNames
+      ).push(name);
+    }
+
     this.testCodegen.setScopeFromVarTypes(varTypes);
+    this.testCodegen.setExternalVars(
+      externalPlainNames,
+      externalGlobalVarNames,
+    );
 
     // If there's a SETUP, create the struct instance and call setup()
     if (setupStructName) {
@@ -536,6 +569,9 @@ class TestFunctionGenerator {
   }
 
   private generateVarBlock(lines: string[], varBlock: VarBlock): void {
+    // VAR_EXTERNAL in a TEST block references a source VAR_GLOBAL. The generated
+    // code accesses it as GlobalVar<V>::value, so no local declaration is needed.
+    if (varBlock.blockType === "VAR_EXTERNAL") return;
     for (const decl of varBlock.declarations) {
       this.generateVarDeclaration(lines, decl);
     }
