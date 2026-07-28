@@ -689,4 +689,81 @@ describe("CLI Library Features", () => {
       expect(existsSync(join(extractDir, "flat.st"))).toBe(true);
     });
   });
+
+  describe("-o output path handling", () => {
+    it("writes header next to a custom .cpp output file", () => {
+      const workDir = freshDir("output-cpp-file");
+      const stFile = join(workDir, "main.st");
+      writeFileSync(
+        stFile,
+        `
+        PROGRAM Main
+          VAR x : INT; END_VAR
+        END_PROGRAM
+      `,
+      );
+      const outFile = join(workDir, "generated.cpp");
+      const stdout = runCLI([stFile, "-o", outFile]);
+      expect(stdout).toContain(`Output written to ${outFile}`);
+      expect(existsSync(outFile)).toBe(true);
+      expect(existsSync(join(workDir, "generated.hpp"))).toBe(true);
+    });
+
+    it("writes impl + header inside an existing directory", () => {
+      const workDir = freshDir("output-dir");
+      const stFile = join(workDir, "prog.st");
+      writeFileSync(
+        stFile,
+        `
+        PROGRAM Prog
+          VAR y : BOOL; END_VAR
+        END_PROGRAM
+      `,
+      );
+      const outDir = join(workDir, "outdir");
+      mkdirSync(outDir);
+      const outFile = join(outDir, "prog.cpp");
+      const stdout = runCLI([stFile, "-o", outDir]);
+      expect(stdout).toContain(`Output written to ${outFile}`);
+      expect(existsSync(outFile)).toBe(true);
+      expect(existsSync(join(outDir, "prog.hpp"))).toBe(true);
+    });
+
+    it("writes impl + header inside a directory specified with a trailing separator", () => {
+      const workDir = freshDir("output-dir-trailing");
+      const stFile = join(workDir, "prog.st");
+      writeFileSync(
+        stFile,
+        `
+        PROGRAM Prog
+          VAR y : BOOL; END_VAR
+        END_PROGRAM
+      `,
+      );
+      const outDir = join(workDir, "outdir") + "/";
+      const outFile = join(workDir, "outdir", "prog.cpp");
+      const stdout = runCLI([stFile, "-o", outDir]);
+      expect(stdout).toContain(`Output written to ${outFile}`);
+      expect(existsSync(outFile)).toBe(true);
+      expect(existsSync(join(workDir, "outdir", "prog.hpp"))).toBe(true);
+    });
+
+    it("appends .cpp to an extensionless -o path and writes .hpp beside it", () => {
+      const workDir = freshDir("output-no-ext");
+      const stFile = join(workDir, "sample.st");
+      writeFileSync(
+        stFile,
+        `
+        PROGRAM Sample
+          VAR z : REAL; END_VAR
+        END_PROGRAM
+      `,
+      );
+      const base = join(workDir, "target");
+      const stdout = runCLI([stFile, "-o", base]);
+      expect(stdout).toContain(`Output written to ${base}.cpp`);
+      expect(existsSync(`${base}.cpp`)).toBe(true);
+      expect(existsSync(`${base}.hpp`)).toBe(true);
+    });
+  });
 });

@@ -119,6 +119,13 @@ describe('Phase 3.6 - REPL Main Generator', () => {
             v_dword : DWORD;
             v_lword : LWORD;
             v_time : TIME;
+            v_ltime : LTIME;
+            v_date : DATE;
+            v_tod : TOD;
+            v_dt : DT;
+            v_string : STRING;
+            v_wstring : WSTRING;
+            v_arr : ARRAY[0..2] OF INT;
           END_VAR
           v_int := 0;
         END_PROGRAM
@@ -144,6 +151,13 @@ describe('Phase 3.6 - REPL Main Generator', () => {
       expect(mainCpp).toContain('VarTypeTag::DWORD');
       expect(mainCpp).toContain('VarTypeTag::LWORD');
       expect(mainCpp).toContain('VarTypeTag::TIME');
+      expect(mainCpp).toContain('VarTypeTag::LTIME');
+      expect(mainCpp).toContain('VarTypeTag::DATE');
+      expect(mainCpp).toContain('VarTypeTag::TOD');
+      expect(mainCpp).toContain('VarTypeTag::DT');
+      expect(mainCpp).toContain('VarTypeTag::STRING');
+      expect(mainCpp).toContain('VarTypeTag::WSTRING');
+      expect(mainCpp).toContain('VarTypeTag::ARRAY');
     });
 
     it('should handle program with no variables', () => {

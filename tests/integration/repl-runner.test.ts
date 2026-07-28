@@ -380,4 +380,26 @@ END_PROGRAM`;
     // C++ side should also show statement code
     expect(output).toContain('COUNT = COUNT + 1');
   });
+
+  it('should display WSTRING, DATE and array values instead of OTHER = <?>', () => {
+    const source = `
+      PROGRAM Repls
+        VAR
+          w : WSTRING := "Hi";
+          d : DATE := D#1970-01-01;
+          a : ARRAY[0..1] OF INT := [7, 8];
+        END_VAR
+      END_PROGRAM
+    `;
+    const commands = [
+      'vars REPLS',
+      'quit',
+    ].join('\n');
+    const output = buildAndRun(source, commands, 'repl_types');
+    expect(output).not.toContain('OTHER');
+    expect(output).not.toContain('<?>');
+    expect(output).toContain('WSTRING');
+    expect(output).toContain('DATE');
+    expect(output).toContain('ARRAY');
+  });
 });

@@ -51,7 +51,11 @@ enum class VarTypeTag {
     USINT, UINT, UDINT, ULINT,
     REAL, LREAL,
     BYTE, WORD, DWORD, LWORD,
-    TIME, STRING, OTHER
+    TIME, STRING, WSTRING,
+    CHAR, WCHAR,
+    DATE, TOD, DT,
+    LTIME, LDATE, LTOD, LDT,
+    ARRAY, OTHER
 };
 
 // =============================================================================
@@ -136,8 +140,64 @@ inline const char* var_type_name(VarTypeTag type) {
         case VarTypeTag::LWORD: return "LWORD";
         case VarTypeTag::TIME:  return "TIME";
         case VarTypeTag::STRING: return "STRING";
+        case VarTypeTag::WSTRING: return "WSTRING";
+        case VarTypeTag::CHAR:  return "CHAR";
+        case VarTypeTag::WCHAR: return "WCHAR";
+        case VarTypeTag::DATE:  return "DATE";
+        case VarTypeTag::TOD:   return "TOD";
+        case VarTypeTag::DT:    return "DT";
+        case VarTypeTag::LTIME: return "LTIME";
+        case VarTypeTag::LDATE: return "LDATE";
+        case VarTypeTag::LTOD:  return "LTOD";
+        case VarTypeTag::LDT:   return "LDT";
+        case VarTypeTag::ARRAY: return "ARRAY";
         default: return "OTHER";
     }
+}
+
+inline std::string format_duration_ns(int64_t ns, const char* prefix) {
+    if (ns == 0) return std::string(prefix) + "0s";
+    std::string r;
+    int64_t abs_ns = ns < 0 ? -ns : ns;
+    if (ns < 0) r = "-";
+    r += prefix;
+    if (abs_ns >= 1000000000LL) { r += std::to_string(abs_ns / 1000000000LL) + "s"; abs_ns %= 1000000000LL; }
+    if (abs_ns >= 1000000LL) { r += std::to_string(abs_ns / 1000000LL) + "ms"; abs_ns %= 1000000LL; }
+    if (abs_ns >= 1000LL) { r += std::to_string(abs_ns / 1000LL) + "us"; abs_ns %= 1000LL; }
+    if (abs_ns > 0) r += std::to_string(abs_ns) + "ns";
+    return r;
+}
+
+inline std::string utf16_to_utf8(const char16_t* str) {
+    std::string out;
+    out.push_back('\'');
+    for (const char16_t* p = str; *p; ++p) {
+        uint32_t cp = static_cast<uint32_t>(*p);
+        if (cp >= 0xD800 && cp <= 0xDBFF && *(p + 1)) {
+            uint32_t low = static_cast<uint32_t>(*(p + 1));
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                ++p;
+            }
+        }
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    out.push_back('\'');
+    return out;
 }
 
 inline std::string var_value_to_string(VarTypeTag type, void* ptr) {
@@ -158,17 +218,29 @@ inline std::string var_value_to_string(VarTypeTag type, void* ptr) {
         case VarTypeTag::WORD:  std::snprintf(buf, sizeof(buf), "16#%04X", static_cast<IECVar<WORD_t>*>(ptr)->get()); return buf;
         case VarTypeTag::DWORD: std::snprintf(buf, sizeof(buf), "16#%08X", static_cast<IECVar<DWORD_t>*>(ptr)->get()); return buf;
         case VarTypeTag::LWORD: std::snprintf(buf, sizeof(buf), "16#%016" PRIX64, static_cast<uint64_t>(static_cast<IECVar<LWORD_t>*>(ptr)->get())); return buf;
-        case VarTypeTag::TIME: {
-            int64_t ns = static_cast<IECVar<TIME_t>*>(ptr)->get();
-            if (ns == 0) return "T#0s";
-            std::string r = "T#";
-            int64_t abs_ns = ns < 0 ? -ns : ns;
-            if (ns < 0) r = "-T#";
-            if (abs_ns >= 1000000000LL) { r += std::to_string(abs_ns / 1000000000LL) + "s"; abs_ns %= 1000000000LL; }
-            if (abs_ns >= 1000000LL) { r += std::to_string(abs_ns / 1000000LL) + "ms"; abs_ns %= 1000000LL; }
-            if (abs_ns >= 1000LL) { r += std::to_string(abs_ns / 1000LL) + "us"; abs_ns %= 1000LL; }
-            if (abs_ns > 0) r += std::to_string(abs_ns) + "ns";
-            return r;
+        case VarTypeTag::TIME:  return format_duration_ns(static_cast<IECVar<TIME_t>*>(ptr)->get(), "T#");
+        case VarTypeTag::LTIME: return format_duration_ns(static_cast<IECVar<LTIME_t>*>(ptr)->get(), "LT#");
+        case VarTypeTag::TOD:   return format_duration_ns(static_cast<IECVar<TOD_t>*>(ptr)->get(), "TOD#");
+        case VarTypeTag::LTOD:  return format_duration_ns(static_cast<IECVar<LTOD_t>*>(ptr)->get(), "LTOD#");
+        case VarTypeTag::DATE: {
+            int64_t days = static_cast<IECVar<DATE_t>*>(ptr)->get();
+            std::snprintf(buf, sizeof(buf), "D#%" PRId64, days);
+            return buf;
+        }
+        case VarTypeTag::LDATE: {
+            int64_t days = static_cast<IECVar<LDATE_t>*>(ptr)->get();
+            std::snprintf(buf, sizeof(buf), "LD#%" PRId64, days);
+            return buf;
+        }
+        case VarTypeTag::DT: {
+            int64_t v = static_cast<IECVar<DT_t>*>(ptr)->get();
+            std::snprintf(buf, sizeof(buf), "DT#%" PRId64, v);
+            return buf;
+        }
+        case VarTypeTag::LDT: {
+            int64_t v = static_cast<IECVar<LDT_t>*>(ptr)->get();
+            std::snprintf(buf, sizeof(buf), "LDT#%" PRId64, v);
+            return buf;
         }
         case VarTypeTag::STRING: {
             // IECStringVar<N> starts with IECString<N> value_ whose layout is:
@@ -177,7 +249,28 @@ inline std::string var_value_to_string(VarTypeTag type, void* ptr) {
             const char* str_data = reinterpret_cast<const char*>(ptr);
             return std::string("'") + str_data + "'";
         }
-        default: return "<?>";
+        case VarTypeTag::WSTRING: {
+            const auto* wstr = static_cast<IEC_WSTRING*>(ptr);
+            return wstr ? utf16_to_utf8(wstr->c_str()) : "''";
+        }
+        case VarTypeTag::CHAR: {
+            char c = static_cast<IEC_CHAR*>(ptr)->get();
+            if (c >= 0x20 && c < 0x7F && c != '\'' && c != '\\') {
+                return std::string("'") + c + "'";
+            }
+            std::snprintf(buf, sizeof(buf), "16#%02X", static_cast<unsigned char>(c));
+            return buf;
+        }
+        case VarTypeTag::WCHAR: {
+            char16_t c = static_cast<IEC_WCHAR*>(ptr)->get();
+            if (c >= 0x20 && c < 0x7F && c != '\'' && c != '\\') {
+                return std::string("'") + static_cast<char>(c) + "'";
+            }
+            std::snprintf(buf, sizeof(buf), "16#%04X", static_cast<uint16_t>(c));
+            return buf;
+        }
+        case VarTypeTag::ARRAY: return "<array>";
+        default: return "<unsupported>";
     }
 }
 
@@ -199,8 +292,53 @@ inline bool var_is_forced(VarTypeTag type, void* ptr) {
         case VarTypeTag::DWORD: return static_cast<IECVar<DWORD_t>*>(ptr)->is_forced();
         case VarTypeTag::LWORD: return static_cast<IECVar<LWORD_t>*>(ptr)->is_forced();
         case VarTypeTag::TIME:  return static_cast<IECVar<TIME_t>*>(ptr)->is_forced();
+        case VarTypeTag::LTIME: return static_cast<IECVar<LTIME_t>*>(ptr)->is_forced();
+        case VarTypeTag::STRING: return static_cast<IEC_STRING*>(ptr)->is_forced();
+        case VarTypeTag::WSTRING: {
+            const auto* wstr = static_cast<IEC_WSTRING*>(ptr);
+            return wstr ? wstr->is_forced() : false;
+        }
+        case VarTypeTag::CHAR:  return static_cast<IEC_CHAR*>(ptr)->is_forced();
+        case VarTypeTag::WCHAR: return static_cast<IEC_WCHAR*>(ptr)->is_forced();
+        case VarTypeTag::DATE:  return static_cast<IECVar<DATE_t>*>(ptr)->is_forced();
+        case VarTypeTag::LDATE: return static_cast<IECVar<LDATE_t>*>(ptr)->is_forced();
+        case VarTypeTag::TOD:   return static_cast<IECVar<TOD_t>*>(ptr)->is_forced();
+        case VarTypeTag::LTOD:  return static_cast<IECVar<LTOD_t>*>(ptr)->is_forced();
+        case VarTypeTag::DT:    return static_cast<IECVar<DT_t>*>(ptr)->is_forced();
+        case VarTypeTag::LDT:   return static_cast<IECVar<LDT_t>*>(ptr)->is_forced();
         default: return false;
     }
+}
+
+inline std::u16string utf8_to_utf16(const std::string& s) {
+    std::u16string out;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        uint32_t cp = 0;
+        size_t n = 1;
+        if (c < 0x80) {
+            cp = c;
+            n = 1;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < s.size()) {
+            cp = ((c & 0x1F) << 6) | (s[i + 1] & 0x3F);
+            n = 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < s.size()) {
+            cp = ((c & 0x0F) << 12) | ((s[i + 1] & 0x3F) << 6) | (s[i + 2] & 0x3F);
+            n = 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < s.size()) {
+            cp = ((c & 0x07) << 18) | ((s[i + 1] & 0x3F) << 12) | ((s[i + 2] & 0x3F) << 6) | (s[i + 3] & 0x3F);
+            n = 4;
+        }
+        if (cp > 0xFFFF) {
+            cp -= 0x10000;
+            out.push_back(static_cast<char16_t>(0xD800 | (cp >> 10)));
+            out.push_back(static_cast<char16_t>(0xDC00 | (cp & 0x3FF)));
+        } else {
+            out.push_back(static_cast<char16_t>(cp));
+        }
+        i += n;
+    }
+    return out;
 }
 
 inline bool var_set_value(VarTypeTag type, void* ptr, const std::string& val) {
@@ -225,22 +363,43 @@ inline bool var_set_value(VarTypeTag type, void* ptr, const std::string& val) {
             case VarTypeTag::DWORD: static_cast<IECVar<DWORD_t>*>(ptr)->set(static_cast<DWORD_t>(std::stoul(val, nullptr, 0))); return true;
             case VarTypeTag::LWORD: static_cast<IECVar<LWORD_t>*>(ptr)->set(static_cast<LWORD_t>(std::stoull(val, nullptr, 0))); return true;
             case VarTypeTag::TIME:  static_cast<IECVar<TIME_t>*>(ptr)->set(static_cast<TIME_t>(std::stoll(val))); return true;
+            case VarTypeTag::LTIME: static_cast<IECVar<LTIME_t>*>(ptr)->set(static_cast<LTIME_t>(std::stoll(val))); return true;
+            case VarTypeTag::DATE:  static_cast<IECVar<DATE_t>*>(ptr)->set(static_cast<DATE_t>(std::stoll(val))); return true;
+            case VarTypeTag::LDATE: static_cast<IECVar<LDATE_t>*>(ptr)->set(static_cast<LDATE_t>(std::stoll(val))); return true;
+            case VarTypeTag::TOD:   static_cast<IECVar<TOD_t>*>(ptr)->set(static_cast<TOD_t>(std::stoll(val))); return true;
+            case VarTypeTag::LTOD:  static_cast<IECVar<LTOD_t>*>(ptr)->set(static_cast<LTOD_t>(std::stoll(val))); return true;
+            case VarTypeTag::DT:    static_cast<IECVar<DT_t>*>(ptr)->set(static_cast<DT_t>(std::stoll(val))); return true;
+            case VarTypeTag::LDT:   static_cast<IECVar<LDT_t>*>(ptr)->set(static_cast<LDT_t>(std::stoll(val))); return true;
+            case VarTypeTag::CHAR: {
+                if (val.size() >= 2 && val.front() == '\'' && val.back() == '\'') {
+                    static_cast<IEC_CHAR*>(ptr)->set(val[1]);
+                } else {
+                    static_cast<IEC_CHAR*>(ptr)->set(static_cast<CHAR_t>(std::stoi(val, nullptr, 0)));
+                }
+                return true;
+            }
+            case VarTypeTag::WCHAR: {
+                if (val.size() >= 2 && val.front() == '\'' && val.back() == '\'') {
+                    static_cast<IEC_WCHAR*>(ptr)->set(static_cast<WCHAR_t>(val[1]));
+                } else {
+                    static_cast<IEC_WCHAR*>(ptr)->set(static_cast<WCHAR_t>(std::stoul(val, nullptr, 0)));
+                }
+                return true;
+            }
             case VarTypeTag::STRING: {
-                // IECStringVar<N> → IECString<N> layout: char data_[N+1]; uint16_t length_;
-                // data_ is at offset 0, length_ follows after data_
-                // We don't know N at runtime, so we read current length to find its position
                 std::string s = val;
-                // Strip surrounding quotes if present
                 if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'') s = s.substr(1, s.size() - 2);
-                // Read existing length to locate the length_ field (at offset N+1 from start)
-                // Use strlen on the null-terminated data_ to find current string end
                 char* data_ptr = reinterpret_cast<char*>(ptr);
-                // Find where length_ is stored: we need to know N (max capacity)
-                // Since data_[N] should be '\0' for a shorter string, scan for the capacity
-                // For safety, cap at 254 (default STRING max)
                 uint16_t len = static_cast<uint16_t>(s.size() > 254 ? 254 : s.size());
                 std::memcpy(data_ptr, s.c_str(), len);
                 data_ptr[len] = '\0';
+                return true;
+            }
+            case VarTypeTag::WSTRING: {
+                std::string s = val;
+                if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'') s = s.substr(1, s.size() - 2);
+                std::u16string u16 = utf8_to_utf16(s);
+                static_cast<IEC_WSTRING*>(ptr)->set(u16.c_str());
                 return true;
             }
             default: return false;
@@ -270,6 +429,15 @@ inline bool var_force_value(VarTypeTag type, void* ptr, const std::string& val) 
             case VarTypeTag::DWORD: static_cast<IECVar<DWORD_t>*>(ptr)->force(static_cast<DWORD_t>(std::stoul(val, nullptr, 0))); return true;
             case VarTypeTag::LWORD: static_cast<IECVar<LWORD_t>*>(ptr)->force(static_cast<LWORD_t>(std::stoull(val, nullptr, 0))); return true;
             case VarTypeTag::TIME:  static_cast<IECVar<TIME_t>*>(ptr)->force(static_cast<TIME_t>(std::stoll(val))); return true;
+            case VarTypeTag::LTIME: static_cast<IECVar<LTIME_t>*>(ptr)->force(static_cast<LTIME_t>(std::stoll(val))); return true;
+            case VarTypeTag::DATE:  static_cast<IECVar<DATE_t>*>(ptr)->force(static_cast<DATE_t>(std::stoll(val))); return true;
+            case VarTypeTag::LDATE: static_cast<IECVar<LDATE_t>*>(ptr)->force(static_cast<LDATE_t>(std::stoll(val))); return true;
+            case VarTypeTag::TOD:   static_cast<IECVar<TOD_t>*>(ptr)->force(static_cast<TOD_t>(std::stoll(val))); return true;
+            case VarTypeTag::LTOD:  static_cast<IECVar<LTOD_t>*>(ptr)->force(static_cast<LTOD_t>(std::stoll(val))); return true;
+            case VarTypeTag::DT:    static_cast<IECVar<DT_t>*>(ptr)->force(static_cast<DT_t>(std::stoll(val))); return true;
+            case VarTypeTag::LDT:   static_cast<IECVar<LDT_t>*>(ptr)->force(static_cast<LDT_t>(std::stoll(val))); return true;
+            case VarTypeTag::CHAR:  static_cast<IEC_CHAR*>(ptr)->force(static_cast<CHAR_t>(std::stoi(val, nullptr, 0))); return true;
+            case VarTypeTag::WCHAR: static_cast<IEC_WCHAR*>(ptr)->force(static_cast<WCHAR_t>(std::stoul(val, nullptr, 0))); return true;
             default: return false;
         }
     } catch (...) { return false; }
@@ -293,6 +461,15 @@ inline void var_unforce(VarTypeTag type, void* ptr) {
         case VarTypeTag::DWORD: static_cast<IECVar<DWORD_t>*>(ptr)->unforce(); break;
         case VarTypeTag::LWORD: static_cast<IECVar<LWORD_t>*>(ptr)->unforce(); break;
         case VarTypeTag::TIME:  static_cast<IECVar<TIME_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::LTIME: static_cast<IECVar<LTIME_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::DATE:  static_cast<IECVar<DATE_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::LDATE: static_cast<IECVar<LDATE_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::TOD:   static_cast<IECVar<TOD_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::LTOD:  static_cast<IECVar<LTOD_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::DT:    static_cast<IECVar<DT_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::LDT:   static_cast<IECVar<LDT_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::CHAR:  static_cast<IEC_CHAR*>(ptr)->unforce(); break;
+        case VarTypeTag::WCHAR: static_cast<IEC_WCHAR*>(ptr)->unforce(); break;
         default: break;
     }
 }
