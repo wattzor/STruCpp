@@ -159,6 +159,7 @@ export function generateTestMain(
   }
 
   // Includes
+  lines.push("#define STRUCPP_TEST");
   lines.push(`#include "${options.headerFileName}"`);
   lines.push('#include "iec_test.hpp"');
   lines.push("#include <cstring>");

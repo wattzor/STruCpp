@@ -621,4 +621,61 @@ END_TEST
     expect(stdout).toContain("[PASS] WSTRING equals");
     expect(stdout).toContain("1 test, 1 passed, 0 failed");
   });
+
+  it("should support ASSERT_EQ on struct variables", () => {
+    const source = `
+TYPE MyStruct : STRUCT
+  x : INT;
+  y : INT;
+END_STRUCT END_TYPE
+
+PROGRAM StructP
+  VAR s : MyStruct; END_VAR
+  s.x := 10;
+  s.y := 20;
+END_PROGRAM
+`;
+    const test = `
+TEST 'Struct equals expected'
+  VAR uut : StructP; expected : MyStruct; END_VAR
+  expected.x := 10;
+  expected.y := 20;
+  uut();
+  ASSERT_EQ(uut.s, expected);
+END_TEST
+`;
+    const { stdout, exitCode } = runTest(source, test, "test_struct.st");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("[PASS] Struct equals expected");
+    expect(stdout).toContain("1 test, 1 passed, 0 failed");
+  });
+
+  it("should support ASSERT_EQ on function block instances", () => {
+    const source = `
+FUNCTION_BLOCK MyCounter
+  VAR count : INT := 0; END_VAR
+  METHOD run : INT
+    count := count + 1;
+    run := count;
+  END_METHOD
+END_FUNCTION_BLOCK
+
+PROGRAM FbP
+  VAR c : MyCounter; END_VAR
+  c.run();
+END_PROGRAM
+`;
+    const test = `
+TEST 'FB instances equal'
+  VAR uut : FbP; expected : MyCounter; END_VAR
+  uut();
+  expected.run();
+  ASSERT_EQ(uut.c, expected);
+END_TEST
+`;
+    const { stdout, exitCode } = runTest(source, test, "test_fb.st");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("[PASS] FB instances equal");
+    expect(stdout).toContain("1 test, 1 passed, 0 failed");
+  });
 });
