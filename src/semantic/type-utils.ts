@@ -966,3 +966,120 @@ export function describeType(t: IECType): string {
       return t.typeKind;
   }
 }
+
+// =============================================================================
+// Constant literal range validation
+// =============================================================================
+
+const REAL32_MAX = 3.4028234663852886e38;
+const REAL64_MAX = Number.MAX_VALUE;
+
+const NON_INTEGER_NUMERIC_TYPES = new Set([
+  "TIME",
+  "LTIME",
+  "DATE",
+  "LDATE",
+  "TIME_OF_DAY",
+  "TOD",
+  "DATE_AND_TIME",
+  "DT",
+  "LTOD",
+  "LDT",
+]);
+
+/**
+ * Return the inclusive numeric range for an IEC elementary type.
+ * Returns undefined for non-numeric types (STRING, TIME/date, etc.).
+ */
+export function getTypeNumericRange(
+  typeName: string,
+):
+  | { min: bigint; max: bigint; isInteger: true }
+  | { min: number; max: number; isInteger: false }
+  | undefined {
+  const meta = lookupBaseType(typeName);
+  if (!meta) return undefined;
+
+  const upper = meta.name.toUpperCase();
+  if (upper === "BOOL") {
+    return { min: 0n, max: 1n, isInteger: true };
+  }
+  if (upper === "REAL" || upper === "LREAL") {
+    const max = upper === "REAL" ? REAL32_MAX : REAL64_MAX;
+    return { min: -max, max, isInteger: false };
+  }
+  if (NON_INTEGER_NUMERIC_TYPES.has(upper)) {
+    return undefined;
+  }
+
+  const bits = BigInt(meta.bits);
+  if (meta.signed === false) {
+    const max = (1n << bits) - 1n;
+    return { min: 0n, max, isInteger: true };
+  }
+  if (meta.signed === true) {
+    const max = (1n << (bits - 1n)) - 1n;
+    const min = -(1n << (bits - 1n));
+    return { min, max, isInteger: true };
+  }
+
+  return undefined;
+}
+
+/**
+ * Parse an IEC integer literal string to a BigInt.
+ * Handles decimal, based (2#1010, 8#77, 16#FF), optional underscores
+ * and an optional leading sign.
+ * Returns undefined for malformed literals.
+ */
+export function parseIntegerLiteral(rawValue: string): bigint | undefined {
+  try {
+    let text = rawValue.replace(/_/g, "").trim();
+    if (text.length === 0) return undefined;
+
+    let sign = 1n;
+    if (text.startsWith("+")) {
+      text = text.slice(1);
+    } else if (text.startsWith("-")) {
+      sign = -1n;
+      text = text.slice(1);
+    }
+
+    let base = 10;
+    const hashIdx = text.indexOf("#");
+    if (hashIdx !== -1) {
+      const baseText = text.slice(0, hashIdx);
+      const valText = text.slice(hashIdx + 1);
+      base = parseInt(baseText, 10);
+      if (!Number.isFinite(base) || base < 2 || base > 36) return undefined;
+      text = valText.replace(/_/g, "");
+    }
+
+    if (text.length === 0) return undefined;
+
+    let unsigned: bigint;
+    switch (base) {
+      case 2:
+        unsigned = BigInt("0b" + text);
+        break;
+      case 8:
+        unsigned = BigInt("0o" + text);
+        break;
+      case 10:
+        unsigned = BigInt(text);
+        break;
+      case 16:
+        unsigned = BigInt("0x" + text);
+        break;
+      default: {
+        const parsed = parseInt(text, base);
+        if (!Number.isFinite(parsed)) return undefined;
+        unsigned = BigInt(parsed);
+      }
+    }
+
+    return sign * unsigned;
+  } catch {
+    return undefined;
+  }
+}
