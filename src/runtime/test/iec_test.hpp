@@ -103,17 +103,11 @@ inline std::string to_display_string(const strucpp::IECVar<strucpp::IECWString<N
     return iec_wstring_to_display(static_cast<strucpp::IECWString<N>>(value));
 }
 
-// Pointer display: show the pointed-to value for concrete types, or a descriptor
-// for abstract interface pointers / null pointers.
-template<typename T, typename std::enable_if<!std::is_abstract<T>::value, int>::type = 0>
-inline std::string to_display_string(const strucpp::IEC_Ptr<T>& value) {
-    if (!value) return "(null)";
-    return to_display_string(*value);
-}
-
-template<typename T, typename std::enable_if<std::is_abstract<T>::value, int>::type = 0>
-inline std::string to_display_string(const strucpp::IEC_Ptr<T>& value) {
-    return value ? "(interface pointer)" : "(null)";
+// Stream output for IEC pointers (used by the generic to_display_string fallback).
+template<typename T>
+inline std::ostream& operator<<(std::ostream& os, const strucpp::IEC_Ptr<T>& ptr) {
+    if (!ptr) return os << "(null)";
+    return os << "(ptr " << static_cast<const void*>(ptr.get()) << ")";
 }
 
 #include "iec_array.hpp"
