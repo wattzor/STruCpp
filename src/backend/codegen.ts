@@ -357,6 +357,14 @@ export class CodeGenerator {
   /** Current function name (for redirecting function name := to result variable) */
   private currentFunctionName: string | undefined;
 
+  /**
+   * Map of IEC generic type group names (ANY_NUM, etc.) to the C++ template
+   * parameter name used while emitting a generic FUNCTION.  Only set during
+   * function header/implementation generation; undefined everywhere else so
+   * generic type refs lower to strucpp::AnyType as before.
+   */
+  private genericTypeMap: Map<string, string> | undefined;
+
   /** True when the current method returns REFERENCE TO a user-defined type,
    *  so REF= on the method name lowers to a pointer assignment. */
   private currentFunctionReturnsReferenceToUserDefined: boolean = false;
@@ -553,10 +561,12 @@ export class CodeGenerator {
     typeName: string,
     maxLength?: number | string,
   ): string {
-    // CODESYS generic type groups (ANY, ANY_BIT, ANY_NUM, ...) lower to the
-    // runtime AnyType descriptor.
-    if (isGenericTypeName(typeName.toUpperCase())) {
-      return "strucpp::AnyType";
+    // CODESYS generic type groups (ANY, ANY_BIT, ANY_NUM, ...) lower to either
+    // a template parameter when emitting a generic FUNCTION, or the runtime
+    // AnyType descriptor everywhere else.
+    const upperTypeName = typeName.toUpperCase();
+    if (isGenericTypeName(upperTypeName)) {
+      return this.genericTypeMap?.get(upperTypeName) ?? "strucpp::AnyType";
     }
 
     // CODESYS __SYSTEM enum types: __SYSTEM.TYPE_CLASS → IEC_TYPE_CLASS
@@ -1994,17 +2004,91 @@ export class CodeGenerator {
   }
 
   /**
+   * Generic type groups that can be lowered to C++ function templates.
+   * `ANY` and `ANY_DERIVED` are excluded because they require the runtime
+   * `AnyType` descriptor (TYPECLASS, DISIZE, PVALUE, etc.) for introspection.
+   */
+  private static readonly TEMPLATABLE_GENERIC_GROUPS = new Set([
+    "ANY_NUM",
+    "ANY_REAL",
+    "ANY_INT",
+    "ANY_BIT",
+    "ANY_STRING",
+    "ANY_DATE",
+    "ANY_ELEMENTARY",
+    "ANY_MAGNITUDE",
+  ]);
+
+  /**
+   * Collect the distinct IEC generic type group names used by a FUNCTION's
+   * return type and parameter types, in declaration order.
+   */
+  private getGenericFunctionGroups(
+    func: CompilationUnit["functions"][0],
+  ): string[] {
+    const groups: string[] = [];
+    const seen = new Set<string>();
+    const add = (typeRef: { name?: string } | undefined) => {
+      if (!typeRef?.name) return;
+      const upper = typeRef.name.toUpperCase();
+      if (
+        isGenericTypeName(upper) &&
+        CodeGenerator.TEMPLATABLE_GENERIC_GROUPS.has(upper) &&
+        !seen.has(upper)
+      ) {
+        seen.add(upper);
+        groups.push(upper);
+      }
+    };
+    add(func.returnType);
+    for (const block of func.varBlocks) {
+      if (
+        block.blockType === "VAR_INPUT" ||
+        block.blockType === "VAR_IN_OUT" ||
+        block.blockType === "VAR_OUTPUT"
+      ) {
+        for (const decl of block.declarations) add(decl.type);
+      }
+    }
+    return groups;
+  }
+
+  /**
+   * Build a map from generic type group name to C++ template parameter name.
+   */
+  private buildGenericTypeMap(groups: string[]): Map<string, string> {
+    const map = new Map<string, string>();
+    for (const g of groups) map.set(g, `T_${g}`);
+    return map;
+  }
+
+  /**
+   * Return the C++ template prefix for a list of generic groups, or an empty
+   * string when there are none.
+   */
+  private generateGenericTemplatePrefix(groups: string[]): string {
+    if (groups.length === 0) return "";
+    const params = groups.map((g) => `typename T_${g}`).join(", ");
+    return `template<${params}> `;
+  }
+
+  /**
    * Generate header declaration for a function.
    */
   private generateFunctionHeaderDeclaration(
     func: CompilationUnit["functions"][0],
   ): void {
+    const groups = this.getGenericFunctionGroups(func);
+    this.genericTypeMap = this.buildGenericTypeMap(groups);
+    const templatePrefix = this.generateGenericTemplatePrefix(groups);
     const params = this.generateFunctionParams(func);
+    const retType = this.mapTypeRefToCpp(func.returnType);
+    this.genericTypeMap = undefined;
 
     this.emitHeaderLineDirective(func.sourceSpan.startLine);
     const declLine = this.currentHeaderLine;
     this.emitHeader(
-      `${this.mapTypeRefToCpp(func.returnType)} ${func.name}(${params.join(", ")});`,
+      `${templatePrefix}${retType} ${func.name}(${params.join(", ")});`,
     );
     this.recordHeaderLineMapping(func.sourceSpan.startLine, declLine);
   }
@@ -2767,8 +2851,12 @@ export class CodeGenerator {
   private generateFunctionImplementation(
     func: CompilationUnit["functions"][0],
   ): void {
+    const groups = this.getGenericFunctionGroups(func);
+    this.genericTypeMap = this.buildGenericTypeMap(groups);
+    const templatePrefix = this.generateGenericTemplatePrefix(groups);
     const params = this.generateFunctionParams(func);
     const retType = this.mapTypeRefToCpp(func.returnType);
+    const isGeneric = groups.length > 0;
 
     // Helper to emit local variable declarations (VAR/VAR_TEMP) and body
     const emitFunctionBody = (funcName: string) => {
@@ -2802,7 +2890,7 @@ export class CodeGenerator {
       this.emit(`    return ${funcName}_result;`);
     };
 
-    if (this.options.isTestBuild) {
+    if (this.options.isTestBuild && !isGeneric) {
       // Test build: generate _real, dispatch pointer, and wrapper
       // 1. _real implementation (original body with renamed function)
       this.emitLineDirective(func.sourceSpan.startLine);
@@ -2826,15 +2914,20 @@ export class CodeGenerator {
       this.emit("}");
       this.emit("");
     } else {
-      // Production build: normal function
+      // Production build or generic function: emit a normal (possibly
+      // templated) function definition.
       this.emitLineDirective(func.sourceSpan.startLine);
       const funcImplLine = this.currentLine;
-      this.emit(`${retType} ${func.name}(${params.join(", ")}) {`);
+      this.emit(
+        `${templatePrefix}${retType} ${func.name}(${params.join(", ")}) {`,
+      );
       emitFunctionBody(func.name);
       this.emit("}");
       this.emit("");
       this.recordLineMapping(func.sourceSpan.startLine, funcImplLine);
     }
+
+    this.genericTypeMap = undefined;
   }
 
   /**
@@ -6175,6 +6268,45 @@ export class CodeGenerator {
   }
 
   /**
+   * Look up a user-defined FUNCTION declaration by name (case-insensitive).
+   * Returns undefined if not found in the current AST.
+   */
+  private getFunctionDecl(
+    funcName: string,
+  ): CompilationUnit["functions"][0] | undefined {
+    if (!this.ast) return undefined;
+    const nameUpper = funcName.toUpperCase();
+    return this.ast.functions.find((f) => f.name.toUpperCase() === nameUpper);
+  }
+
+  /**
+   * For a call to a generic user-defined FUNCTION, ensure every concrete
+   * argument is cast to its IEC C++ wrapper type so the C++ template deduces
+   * T = IEC_INT / IEC_REAL / ... rather than a raw int/double.  Arguments that
+   * are themselves generic (a call from another generic FUNCTION) are left as-is.
+   */
+  private prepareGenericFunctionCallArgs(
+    args: string[],
+    argExprs: FunctionCallExpression["arguments"],
+    paramTypes: string[],
+  ): string[] {
+    const result = [...args];
+    const exprCount = argExprs.length;
+    for (let i = 0; i < result.length && i < paramTypes.length; i++) {
+      if (!isGenericTypeName(paramTypes[i]!.toUpperCase())) continue;
+      if (i >= exprCount) continue;
+      const expr = argExprs[i]!.value;
+      const argType = this.inferExprType(expr);
+      if (!argType) continue;
+      const argUpper = argType.toUpperCase();
+      if (isGenericTypeName(argUpper)) continue;
+      const cppType = this.mapVarTypeToCpp(argType);
+      result[i] = `static_cast<${cppType}>(${result[i]})`;
+    }
+    return result;
+  }
+
+  /**
    * Apply implicit widening casts to a list of argument strings for a
    * user-defined function call. Modifies `args` in place.
    */
@@ -6191,6 +6323,9 @@ export class CodeGenerator {
       if (!argType) continue;
       const paramType = paramTypes[i]!;
       if (argType === paramType) continue;
+      // Generic function parameters are lowered to C++ templates, so they
+      // must not be static_cast to a non-existent IEC_<ANY_...> type.
+      if (isGenericTypeName(paramType.toUpperCase())) continue;
       // Bare literals (no typePrefix) are untyped — always castable to param type
       if (isBareLiteral(expr) || this.canImplicitWiden(argType, paramType)) {
         args[i] = `static_cast<IEC_${paramType}>(${args[i]})`;
@@ -6623,13 +6758,24 @@ export class CodeGenerator {
 
     // Apply implicit widening casts for user-defined function args
     const paramTypes = this.getParamTypes(nameUpper);
-    if (paramTypes) {
-      this.coerceUserFuncArgs(args, expr.arguments, paramTypes);
+    const funcDecl = this.getFunctionDecl(nameUpper);
+    const isGenericUserFunc =
+      funcDecl && this.getGenericFunctionGroups(funcDecl).length > 0;
+
+    if (isGenericUserFunc && paramTypes) {
+      // Generic FUNCTIONs are emitted as C++ function templates.  Pass
+      // concrete arguments cast to their IEC C++ type so template deduction
+      // picks IEC_INT / IEC_REAL / ... instead of a raw int/double.
+      const genericArgs = this.prepareGenericFunctionCallArgs(
+        args,
+        expr.arguments,
+        paramTypes,
+      );
+      return `${expr.functionName}(${genericArgs.join(", ")})`;
     }
 
-    // Wrap arguments whose formal parameter is a generic ANY group in an
-    // AnyType runtime descriptor.
     if (paramTypes) {
+      this.coerceUserFuncArgs(args, expr.arguments, paramTypes);
       this.wrapAnyTypeArgs(args, expr.arguments, paramTypes);
     }
 
@@ -7699,6 +7845,12 @@ export class CodeGenerator {
         return `&${initialValue}`;
       }
       return "nullptr";
+    }
+    // Inside a generic FUNCTION, generic parameter/local types are template
+    // parameters, so their default value is a default-constructed instance of
+    // the corresponding C++ template argument.
+    if (isGenericTypeName(upperType) && this.genericTypeMap?.has(upperType)) {
+      return `${this.genericTypeMap.get(upperType)}()`;
     }
     if (initialValue) {
       // Convert enum dot-notation (TRAFFICSTATE.RED) to C++ scoped access (TRAFFICSTATE::RED)
