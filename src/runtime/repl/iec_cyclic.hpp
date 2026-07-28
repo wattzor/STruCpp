@@ -68,17 +68,18 @@ inline void cyclic_run(ProgramDescriptor* programs, size_t program_count,
     auto next_tick = std::chrono::steady_clock::now();
 
     while (g_cyclic_running) {
-        // Advance simulated time
-        __CURRENT_TIME_NS += common_ticktime;
-        ++cycle_count;
-
-        // Execute programs whose interval divides evenly into the current tick
+        // Execute the current scan at the current time (first scan is t = 0).
+        // Advance simulated time after the scan so timers see elapsed time only
+        // on subsequent cycles.
         for (size_t i = 0; i < program_count; ++i) {
             int64_t divisor = programs[i].interval_ns / common_ticktime;
             if (divisor <= 0 || (cycle_count % static_cast<unsigned long long>(divisor)) == 0) {
                 programs[i].instance->run();
             }
         }
+
+        __CURRENT_TIME_NS += common_ticktime;
+        ++cycle_count;
 
         // Periodic status output (only when --print-vars is passed)
         if (print_vars && status_cycles > 0 && (cycle_count % static_cast<unsigned long long>(status_cycles)) == 0) {
