@@ -851,4 +851,58 @@ inline bool NE_WSTRING(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>&
     return s1 != s2;
 }
 
+// Equality operators for IECWStringVar and IECVar<IECWString<N>>.
+// Member IECWString::operator== cannot deduce OtherLen from IECWStringVar,
+// so provide free-function overloads mirroring iec_string.hpp.
+
+template<size_t Len1, size_t Len2>
+inline bool operator==(const IECWString<Len1>& a, const IECWStringVar<Len2>& b) noexcept {
+    return a == b.get();
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator==(const IECWStringVar<Len1>& a, const IECWString<Len2>& b) noexcept {
+    return a.get() == b;
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator==(const IECWStringVar<Len1>& a, const IECWStringVar<Len2>& b) noexcept {
+    return a.get() == b.get();
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator==(const IECVar<IECWString<Len1>>& a, const IECWStringVar<Len2>& b) noexcept {
+    return static_cast<IECWString<Len1>>(a) == b.get();
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator==(const IECWStringVar<Len1>& a, const IECVar<IECWString<Len2>>& b) noexcept {
+    return a.get() == static_cast<IECWString<Len2>>(b);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator!=(const IECWString<Len1>& a, const IECWStringVar<Len2>& b) noexcept {
+    return !(a == b);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator!=(const IECWStringVar<Len1>& a, const IECWString<Len2>& b) noexcept {
+    return !(a == b);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator!=(const IECWStringVar<Len1>& a, const IECWStringVar<Len2>& b) noexcept {
+    return !(a == b);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator!=(const IECVar<IECWString<Len1>>& a, const IECWStringVar<Len2>& b) noexcept {
+    return !(a == b);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator!=(const IECWStringVar<Len1>& a, const IECVar<IECWString<Len2>>& b) noexcept {
+    return !(a == b);
+}
+
 } // namespace strucpp

@@ -599,4 +599,26 @@ END_TEST
     expect(stdout).toContain("[PASS] Array equals expected");
     expect(stdout).toContain("1 test, 1 passed, 0 failed");
   });
+
+  it("should support ASSERT_EQ on WSTRING variables", () => {
+    const source = `
+PROGRAM WStringP
+  VAR a, b : WSTRING; END_VAR
+  a := WSTRING#"hello";
+  b := WSTRING#"hello";
+END_PROGRAM
+`;
+    const test = `
+TEST 'WSTRING equals'
+  VAR uut : WStringP; expected : WSTRING := "hello"; END_VAR
+  uut();
+  ASSERT_EQ(uut.a, expected);
+  ASSERT_EQ(uut.b, uut.a);
+END_TEST
+`;
+    const { stdout, exitCode } = runTest(source, test, "test_wstring.st");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("[PASS] WSTRING equals");
+    expect(stdout).toContain("1 test, 1 passed, 0 failed");
+  });
 });

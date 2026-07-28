@@ -75,8 +75,36 @@ inline std::string to_display_string(const strucpp::IECStringVar<N>& value) {
     return std::string("'") + value.get().c_str() + "'";
 }
 
-#include "iec_array.hpp"
+// Helper: convert an IECWString to an ASCII-quoted display string.
+template<size_t N>
+inline std::string iec_wstring_to_display(const strucpp::IECWString<N>& value) {
+    std::string out = "'";
+    for (size_t i = 0; i < value.length(); ++i) {
+        const char16_t c = value.c_str()[i];
+        out += (c < 0x80 ? static_cast<char>(c) : '?');
+    }
+    out += "'";
+    return out;
+}
 
+// Overloads for WSTRING value and variable wrappers.
+template<size_t N>
+inline std::string to_display_string(const strucpp::IECWString<N>& value) {
+    return iec_wstring_to_display(value);
+}
+
+template<size_t N>
+inline std::string to_display_string(const strucpp::IECWStringVar<N>& value) {
+    return iec_wstring_to_display(value.get());
+}
+
+template<size_t N>
+inline std::string to_display_string(const strucpp::IECVar<strucpp::IECWString<N>>& value) {
+    return iec_wstring_to_display(static_cast<strucpp::IECWString<N>>(value));
+}
+
+#include "iec_array.hpp"
+#include "iec_wstring.hpp"
 // Stream output for IEC arrays (used by the generic to_display_string fallback).
 template<typename T, typename Bounds>
 inline std::ostream& operator<<(std::ostream& os, const strucpp::IEC_ARRAY_1D<T, Bounds>& arr) {
