@@ -613,4 +613,108 @@ int main() {
     });
     expect(stdout).toBe("5 1 3 4 2 6");
   });
+
+  it("does not run base FB_Init twice for a top-level inherited FB", () => {
+    const result = compile(`
+      FUNCTION_BLOCK Base
+      VAR_EXTERNAL
+        pos : INT;
+        hist : ARRAY[0..9] OF INT;
+      END_VAR
+
+      METHOD FB_Init : BOOL
+      VAR_INPUT
+        bInitRetains : BOOL;
+        bInCopyCode : BOOL;
+      END_VAR
+        hist[pos] := 1;
+        pos := pos + 1;
+        FB_Init := TRUE;
+      END_METHOD
+
+      METHOD FB_Exit : BOOL
+      VAR_INPUT
+        bInCopyCode : BOOL;
+      END_VAR
+        hist[pos] := 2;
+        pos := pos + 1;
+        FB_Exit := TRUE;
+      END_METHOD
+      END_FUNCTION_BLOCK
+
+      FUNCTION_BLOCK Derived EXTENDS Base
+      VAR_EXTERNAL
+        pos : INT;
+        hist : ARRAY[0..9] OF INT;
+      END_VAR
+
+      METHOD FB_Init : BOOL
+      VAR_INPUT
+        bInitRetains : BOOL;
+        bInCopyCode : BOOL;
+      END_VAR
+        hist[pos] := 3;
+        pos := pos + 1;
+        FB_Init := TRUE;
+      END_METHOD
+
+      METHOD FB_Exit : BOOL
+      VAR_INPUT
+        bInCopyCode : BOOL;
+      END_VAR
+        hist[pos] := 4;
+        pos := pos + 1;
+        FB_Exit := TRUE;
+      END_METHOD
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+      VAR_EXTERNAL
+        pos : INT;
+        hist : ARRAY[0..9] OF INT;
+      END_VAR
+      VAR
+        p : POINTER TO Derived;
+      END_VAR
+        p := __NEW(Derived);
+        __DELETE(p);
+      END_PROGRAM
+
+      CONFIGURATION MyConfig
+      VAR_GLOBAL
+        pos : INT;
+        hist : ARRAY[0..9] OF INT;
+      END_VAR
+      RESOURCE MyResource ON PLC
+        TASK MainTask(INTERVAL := T#100ms, PRIORITY := 1);
+        PROGRAM MainTask WITH MainTask : Main;
+      END_RESOURCE
+      END_CONFIGURATION
+    `);
+    expect(result.success).toBe(true);
+
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "fb_top_level_inherited_lifecycle",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog(&strucpp::POS, &strucpp::HIST);
+    prog.run();
+    strucpp::HIST.with_lock([](auto* arr) {
+        for (int i = 0; i < 4; i++) {
+            std::cout << static_cast<int>((*arr)[i].get());
+            if (i < 3) std::cout << " ";
+        }
+    });
+    std::cout << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("1 3 4 2");
+  });
 });
