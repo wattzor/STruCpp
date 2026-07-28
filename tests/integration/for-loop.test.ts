@@ -42,6 +42,76 @@ END_TEST
     expect(stdout).not.toContain("[FAIL]");
   });
 
+  it("evaluates the end value once at loop entry", () => {
+    const sourceST = `
+PROGRAM ForEndOnce
+VAR
+  i : INT;
+  endVal : INT := 5;
+  c : INT;
+END_VAR
+FOR i := 1 TO endVal BY 1 DO
+  c := c + 1;
+  endVal := 1;
+END_FOR
+END_PROGRAM
+`;
+
+    const testST = `
+TEST 'FOR end evaluated once'
+VAR uut : ForEndOnce; END_VAR
+uut();
+ASSERT_EQ(uut.c, 5);
+END_TEST
+`;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "test_for_end_once.st",
+      tempDirPrefix: "strucpp-for-end-once-",
+      isTestBuild: true,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("[FAIL]");
+  });
+
+  it("evaluates the BY step once at loop entry", () => {
+    const sourceST = `
+PROGRAM ForStepOnce
+VAR
+  i : INT;
+  stepVal : INT := 2;
+  c : INT;
+END_VAR
+FOR i := 0 TO 6 BY stepVal DO
+  c := c + 1;
+  stepVal := 10;
+END_FOR
+END_PROGRAM
+`;
+
+    const testST = `
+TEST 'FOR step evaluated once'
+VAR uut : ForStepOnce; END_VAR
+uut();
+ASSERT_EQ(uut.c, 4);
+END_TEST
+`;
+
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST,
+      testST,
+      testFileName: "test_for_step_once.st",
+      tempDirPrefix: "strucpp-for-step-once-",
+      isTestBuild: true,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("[FAIL]");
+  });
+
   it("runs an ascending loop when BY is a positive variable", () => {
     const sourceST = `
 PROGRAM ForPositiveVar

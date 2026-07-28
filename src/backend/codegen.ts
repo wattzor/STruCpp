@@ -3857,7 +3857,10 @@ export class CodeGenerator {
 
   /**
    * Generate code for a FOR statement.
-   * ST: FOR i := start TO end BY step DO → C++: for (i = start; i <= end; i += step)
+   *
+   * IEC 61131-3 evaluates the start, end and step expressions once at loop
+   * entry. The generated C++ captures end and step in temporaries so the loop
+   * condition and increment do not re-evaluate them on every iteration.
    */
   private generateForStatement(stmt: ForStatement, indent: string): void {
     // In function bodies, the control variable may be the function name (IEC ST return variable)
@@ -3869,42 +3872,50 @@ export class CodeGenerator {
       varName = `${this.currentFunctionName}_result`;
     }
     const start = this.generateExpression(stmt.start);
-    const end = this.generateExpression(stmt.end);
+    const endExpr = this.generateExpression(stmt.end);
+    const endVal = this.evaluateLiteralInt(stmt.end);
+
+    const stepExpr = stmt.step ? this.generateExpression(stmt.step) : "1";
+    const stepVal = stmt.step ? this.evaluateLiteralInt(stmt.step) : 1;
+
+    // IEC 61131-3 evaluates the end value and step once at loop entry.
+    // Capture non-constant expressions in temporaries so the C++ for-loop
+    // header does not re-evaluate them on every iteration.
+    let endRef = endExpr;
+    let stepRef = stepExpr;
+    const needsEndTemp = endVal === undefined;
+    const needsStepTemp = stepVal === undefined;
+    const needsScopeBlock = needsEndTemp || needsStepTemp;
+
+    const outerIndent = indent;
+    const innerIndent = needsScopeBlock ? indent + this.options.indent : indent;
+
+    if (needsScopeBlock) {
+      this.emit(`${outerIndent}{`);
+      if (needsEndTemp) {
+        endRef = `__strucpp_for_end_${this.tempVarCounter++}`;
+        this.emit(`${innerIndent}const auto ${endRef} = ${endExpr};`);
+      }
+      if (needsStepTemp) {
+        stepRef = `__strucpp_for_step_${this.tempVarCounter++}`;
+        this.emit(`${innerIndent}const auto ${stepRef} = ${stepExpr};`);
+      }
+    }
 
     const forLine = this.currentLine;
-    let needsStepBlock = false;
-    if (stmt.step) {
-      const stepExpr = this.generateExpression(stmt.step);
-      const stepVal = this.evaluateLiteralInt(stmt.step);
-      if (stepVal !== undefined) {
-        // Compile-time step direction: keep the simple form the test suite expects.
-        if (stepVal < 0) {
-          this.emit(
-            `${indent}for (${varName} = ${start}; ${varName} >= ${end}; ${varName} += ${stepExpr}) {`,
-          );
-        } else {
-          this.emit(
-            `${indent}for (${varName} = ${start}; ${varName} <= ${end}; ${varName} += ${stepExpr}) {`,
-          );
-        }
-      } else {
-        // Variable step: evaluate once and pick the direction at runtime.
-        needsStepBlock = true;
-        const stepTemp = `__strucpp_for_step_${this.tempVarCounter++}`;
-        this.emit(`${indent}{`);
-        this.emit(
-          `${indent}${this.options.indent}const auto ${stepTemp} = ${stepExpr};`,
-        );
-        this.emit(
-          `${indent}for (${varName} = ${start}; (${stepTemp} >= 0 ? ${varName} <= ${end} : ${varName} >= ${end}); ${varName} += ${stepTemp}) {`,
-        );
-        // The temp variable is scoped to the surrounding block; the body
-        // and loop increment use it.  The closing block is emitted below.
-      }
-    } else {
-      // Default step is 1, ascending
+    if (needsStepTemp) {
       this.emit(
-        `${indent}for (${varName} = ${start}; ${varName} <= ${end}; ${varName}++) {`,
+        `${innerIndent}for (${varName} = ${start}; (${stepRef} >= 0 ? ${varName} <= ${endRef} : ${varName} >= ${endRef}); ${varName} += ${stepRef}) {`,
+      );
+    } else if (stepVal !== undefined && stepVal < 0) {
+      this.emit(
+        `${innerIndent}for (${varName} = ${start}; ${varName} >= ${endRef}; ${varName} += ${stepRef}) {`,
+      );
+    } else {
+      const increment =
+        stepVal === 1 ? `${varName}++` : `${varName} += ${stepRef}`;
+      this.emit(
+        `${innerIndent}for (${varName} = ${start}; ${varName} <= ${endRef}; ${increment}) {`,
       );
     }
     this.recordLineMapping(stmt.sourceSpan.startLine, forLine);
@@ -3914,14 +3925,14 @@ export class CodeGenerator {
       used: false,
     };
     this.loopExitLabelStack.push(exitLabel);
-    this.generateStatements(stmt.body, indent + this.options.indent);
+    this.generateStatements(stmt.body, innerIndent + this.options.indent);
     this.loopExitLabelStack.pop();
     this.emitLineDirective(stmt.sourceSpan.endLine);
     const closingLine = this.currentLine;
-    this.emit(`${indent}}`);
-    if (exitLabel.used) this.emit(`${indent}${exitLabel.name}: ;`);
-    if (needsStepBlock) {
-      this.emit(`${indent}}`);
+    this.emit(`${innerIndent}}`);
+    if (exitLabel.used) this.emit(`${innerIndent}${exitLabel.name}: ;`);
+    if (needsScopeBlock) {
+      this.emit(`${outerIndent}}`);
     }
     this.recordLineMapping(stmt.sourceSpan.endLine, closingLine);
   }
