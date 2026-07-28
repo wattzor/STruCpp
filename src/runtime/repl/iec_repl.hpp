@@ -1023,7 +1023,9 @@ inline void repl_run(ProgramDescriptor* programs, size_t program_count,
                 if (n < 1) n = 1;
             }
             for (int c = 0; c < n; ++c) {
-                __CURRENT_TIME_NS += common_ticktime;
+                // Run the current cycle at the current time (first scan is t = 0).
+                // Advance the global clock after the scan completes so timers see
+                // elapsed time only on subsequent cycles.
                 for (size_t i = 0; i < program_count; ++i) {
                     int64_t divisor = programs[i].interval_ns / common_ticktime;
                     if (divisor <= 0 || (cycle_count % static_cast<unsigned long long>(divisor)) == 0) {
@@ -1031,6 +1033,7 @@ inline void repl_run(ProgramDescriptor* programs, size_t program_count,
                     }
                 }
                 cycle_count++;
+                __CURRENT_TIME_NS += common_ticktime;
             }
             ic_printf("[green]Executed %d cycle(s).[/] Total: [cyan]%llu[/]\n", n, cycle_count);
             // Show watch list after run/step if non-empty
