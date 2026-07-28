@@ -605,7 +605,9 @@ export const Ampersand = createToken({ name: "Ampersand", pattern: /&/ });
 // Located variable prefix
 export const DirectAddress = createToken({
   name: "DirectAddress",
-  pattern: /%[IQM][XBWDL]?[0-9]+(?:\.[0-9]+)*/i,
+  // Concrete address: %IX0.0, %QW10, %MD100, etc.
+  // Incomplete address (placeholder for VAR_CONFIG): %I*, %QX*, etc.
+  pattern: /%[IQM](?:[XBWDL]?\*|[XBWDL]?[0-9]+(?:\.[0-9]+)*)/i,
 });
 
 // Bit/byte/word/dword access suffix: var.%X0, var.%B1, var.%W0, var.%D0
