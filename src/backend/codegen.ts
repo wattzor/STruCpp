@@ -1510,6 +1510,19 @@ export class CodeGenerator {
       this.emitHeaderChunkMarker("end", "function", func.name);
     }
 
+    // Generic FUNCTIONs are lowered to C++ templates; their definitions must
+    // live in the shared header so every translation unit that calls them can
+    // instantiate the right specialization. Non-generic FUNCTIONs keep their
+    // definitions in the per-POU .cpp files.
+    for (const func of ast.functions) {
+      const groups = this.getGenericFunctionGroups(func);
+      if (groups.length === 0) continue;
+      this.emitHeader("");
+      this.emitHeaderChunkMarker("begin", "function", func.name);
+      this.emitIntoHeader(() => this.generateFunctionImplementation(func));
+      this.emitHeaderChunkMarker("end", "function", func.name);
+    }
+
     // Generate configuration class declarations
     if (this.projectModel) {
       for (const config of this.projectModel.configurations) {
@@ -1627,6 +1640,9 @@ export class CodeGenerator {
 
     // 4. One TU per function.
     for (const func of ast.functions) {
+      // Generic FUNCTIONs are emitted as C++ templates in the shared header
+      // so that every TU can instantiate them; they do not get a separate .cpp.
+      if (this.getGenericFunctionGroups(func).length > 0) continue;
       this.startTranslationUnit(this.pouFileName(func.name));
       this.emitCppChunkMarker("begin", "function", func.name);
       this.generateFunctionImplementation(func);
@@ -8517,6 +8533,32 @@ export class CodeGenerator {
         cppStartLine: headerStartLine,
         cppEndLine: lastEmittedHeaderLine,
       });
+    }
+  }
+
+  /**
+   * Run a generator function so that all emits, line directives, and line
+   * mappings are written to the header output instead of the implementation
+   * output. Used to lower generic C++ function templates into the shared
+   * header so every translation unit can instantiate them.
+   */
+  private emitIntoHeader<T>(fn: () => T): T {
+    const savedOutput = this.output;
+    const savedCurrentLine = this.currentLine;
+    const savedLineMap = this.lineMap;
+
+    this.output = this.headerOutput;
+    this.currentLine = this.currentHeaderLine;
+    this.lineMap = this.headerLineMap;
+
+    try {
+      return fn();
+    } finally {
+      this.currentHeaderLine = this.currentLine;
+      this.headerLineMap = this.lineMap;
+      this.output = savedOutput;
+      this.currentLine = savedCurrentLine;
+      this.lineMap = savedLineMap;
     }
   }
 }
