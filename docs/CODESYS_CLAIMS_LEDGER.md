@@ -46,6 +46,10 @@ https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_dataty
 Settles: `typeclass : __SYSTEM.TYPE_CLASS`, `pvalue : POINTER TO BYTE`, `diSize : DINT` (bytes).
 Also demonstrates `any1.pvalue[i]` subscripting and `ADR(anyParam)` — both are required
 capabilities, not optional.
+Settles: only `ANY`, `ANY_BIT`, `ANY_DATE`, `ANY_NUM`, `ANY_REAL`, `ANY_INT`, and `ANY_STRING`
+may be used as generic `VAR_INPUT` parameter types; `ANY_ELEMENTARY`, `ANY_MAGNITUDE`, and
+`ANY_DERIVED` are **not** valid parameter types, and no `ANY`/`ANY_*` group may be the return
+type of a `FUNCTION`.
 Used by: implementation spec §6; the P5 acceptance gate.
 
 ### A5. `__VARINFO` operator syntax and semantics
@@ -181,7 +185,11 @@ CODESYS source**. Every one needs either a documentation link or an oracle run.
 | C22 | `XSIZEOF` returns platform-width unsigned | Implemented and tested. CODESYS V3: `XSIZEOF` returns the number of bytes, always unsigned; return type is `ULINT` on 64-bit platforms and `UDINT` otherwise. STruCpp returns `IEC_XWORD` (`__XWORD`), which is pointer-width unsigned and resolves to the same platform-width type. `tests/integration/xsizeof.test.ts` covers variables and type names. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_xsizeof.html |
 | C23 | `INDEXOF` / `BITADR` semantics | Sourced. `INDEXOF` is deprecated in V3; use `ADR` instead. `BITADR` yields a `DWORD` bit offset; the top nibble encodes the memory range (`16#4` marker, `16#8` input, `16#C` output) and the rest encodes the bit offset, affected by the target's "Byte addressing" setting. Sources: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_indexof.html; https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_operator_bitadr.html |
 | C24 | `ANY_BIT` / `ANY_INT` / `ANY_NUM` / `ANY_REAL` / `ANY_DATE` / `ANY_STRING` membership sets | Sourced. `ANY` accepts `ANY_BIT` + `ANY_DATE` + `ANY_NUM` + `ANY_STRING`. `ANY_NUM` = `ANY_REAL` + `ANY_INT`. `ANY_BIT` = `BYTE`/`WORD`/`DWORD`/`LWORD`. `ANY_INT` = signed + unsigned integers. `ANY_DATE` includes `DATE`, `DT`, `TOD`, `LDATE`, `LDT`, `LTOD`. `ANY_STRING` = `STRING`/`WSTRING`. `ANY_REAL` = `REAL`/`LREAL`. Source: https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_datatype_any.html |
-| C25 | Struct packing and member offsets | No source. `{attribute 'pack_mode'}` exists but its exact effect is unverified. |
+| C25 | Valid generic `VAR_INPUT` parameter types | Sourced. Only `ANY`, `ANY_BIT`, `ANY_DATE`, `ANY_NUM`, `ANY_REAL`, `ANY_INT`, and `ANY_STRING` may be used as declared generic parameter types. `ANY_ELEMENTARY`, `ANY_MAGNITUDE`, and `ANY_DERIVED` are not valid. Source: A4 |
+| C26 | Generic `VAR_INPUT` arguments must be variable expressions | Sourced. `ANY`/`ANY_*` parameters are passed by pointer as an `AnyType` descriptor; the actual argument must be a variable location. Literals, function-call results, and other expressions are rejected. Source: A4 |
+| C27 | Generic values cannot be forwarded to standard functions | Sourced. A generic `ANY`/`ANY_*` value is an `AnyType` descriptor, not a concrete value, so it cannot be passed directly to standard functions such as `LIMIT` or `ADD`. `ADR`/`SIZEOF`/`XSIZEOF` are exceptions because they operate on the descriptor/variable. Source: A4 |
+| C28 | `FUNCTION`s cannot return an `ANY`/`ANY_*` type | Sourced. Generic groups are only permitted in `VAR_INPUT` parameters; user-defined functions must return a concrete type. Source: A4 |
+| C29 | Struct packing and member offsets | No source. `{attribute 'pack_mode'}` exists but its exact effect is unverified. |
 
 ### Environment claims used for process decisions
 These came from searches earlier in this work whose citations I did not retain. They informed

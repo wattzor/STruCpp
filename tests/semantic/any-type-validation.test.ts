@@ -22,15 +22,24 @@ describe("ANY generic parameter validation", () => {
       END_FUNCTION
       PROGRAM Main END_PROGRAM
     `);
-    expect(result.errors).not.toContainEqual(
-      expect.objectContaining({ message: expect.stringContaining("Generic type") }),
-    );
+    expect(result.errors).toHaveLength(0);
   });
 
   it("rejects ANY as a function return type", () => {
     const result = analyzeSource(`
       FUNCTION funGeneric : ANY
         VAR_INPUT any1 : INT; END_VAR
+      END_FUNCTION
+      PROGRAM Main END_PROGRAM
+    `);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain("Generic type");
+  });
+
+  it("rejects ANY_NUM as a function return type", () => {
+    const result = analyzeSource(`
+      FUNCTION MaxAny : ANY_NUM
+        VAR_INPUT x : ANY_NUM; END_VAR
       END_FUNCTION
       PROGRAM Main END_PROGRAM
     `);
@@ -82,20 +91,6 @@ describe("ANY generic parameter validation", () => {
     expect(result.errors[0].message).toContain("Generic type");
   });
 
-  it("allows ANY_NUM parameters to be forwarded to a standard function", () => {
-    const result = analyzeSource(`
-      FUNCTION MaxAny : ANY_NUM
-        VAR_INPUT mn, val, mx : ANY_NUM; END_VAR
-        MaxAny := LIMIT(mn, val, mx);
-      END_FUNCTION
-      PROGRAM Main END_PROGRAM
-    `);
-    const limitErrors = result.errors.filter((e) =>
-      e.message.includes("LIMIT") || e.message.includes("ANY_NUM"),
-    );
-    expect(limitErrors).toHaveLength(0);
-  });
-
   it("allows ANY_DATE as a function parameter type", () => {
     const result = analyzeSource(`
       FUNCTION funDate : BOOL
@@ -104,9 +99,45 @@ describe("ANY generic parameter validation", () => {
 
       PROGRAM Main END_PROGRAM
     `);
-    // ANY_DATE is a known generic group name and is allowed in VAR_INPUT
-    expect(result.errors).not.toContainEqual(
-      expect.objectContaining({ message: expect.stringContaining("Undefined type") }),
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("rejects ANY_ELEMENTARY as a parameter type", () => {
+    const result = analyzeSource(`
+      FUNCTION funGeneric : BOOL
+        VAR_INPUT x : ANY_ELEMENTARY; END_VAR
+      END_FUNCTION
+      PROGRAM Main END_PROGRAM
+    `);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain(
+      "not a valid CODESYS generic parameter type",
+    );
+  });
+
+  it("rejects ANY_MAGNITUDE as a parameter type", () => {
+    const result = analyzeSource(`
+      FUNCTION funGeneric : BOOL
+        VAR_INPUT x : ANY_MAGNITUDE; END_VAR
+      END_FUNCTION
+      PROGRAM Main END_PROGRAM
+    `);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain(
+      "not a valid CODESYS generic parameter type",
+    );
+  });
+
+  it("rejects ANY_DERIVED as a parameter type", () => {
+    const result = analyzeSource(`
+      FUNCTION funGeneric : BOOL
+        VAR_INPUT x : ANY_DERIVED; END_VAR
+      END_FUNCTION
+      PROGRAM Main END_PROGRAM
+    `);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain(
+      "not a valid CODESYS generic parameter type",
     );
   });
 });

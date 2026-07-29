@@ -44,6 +44,7 @@ import {
   buildEnumMemberMap,
   describeType,
   isGenericTypeName,
+  isValidGenericParameterType,
   type EnumMemberEntry,
 } from "./type-utils.js";
 import {
@@ -3013,6 +3014,23 @@ export class SemanticAnalyzer {
         const allowGeneric = block.blockType === "VAR_INPUT";
         for (const decl of block.declarations) {
           this.validateSingleTypeReference(decl.type, context, allowGeneric);
+
+          // Even inside VAR_INPUT, only the CODESYS-documented generic groups
+          // may be used as formal parameter types.
+          const genericName = decl.type.name?.toUpperCase();
+          if (
+            allowGeneric &&
+            genericName &&
+            isGenericTypeName(genericName) &&
+            !isValidGenericParameterType(genericName)
+          ) {
+            this.addError(
+              `Generic type '${decl.type.name}' is not a valid CODESYS generic parameter type`,
+              decl.type.sourceSpan.startLine,
+              decl.type.sourceSpan.startCol,
+              decl.type.sourceSpan.file,
+            );
+          }
         }
       }
     };
@@ -3027,16 +3045,14 @@ export class SemanticAnalyzer {
       validateVarBlocks(func.varBlocks, `FUNCTION '${func.name}'`);
       const returnName = func.returnType.name?.toUpperCase();
       if (returnName && isGenericTypeName(returnName)) {
-        // Generic function return types are allowed except for the
-        // catch-all ANY / ANY_DERIVED groups, which cannot be lowered.
-        if (returnName === "ANY" || returnName === "ANY_DERIVED") {
-          this.addError(
-            `Generic type '${func.returnType.name}' is only allowed in VAR_INPUT parameters in FUNCTION '${func.name}' return type`,
-            func.returnType.sourceSpan.startLine,
-            func.returnType.sourceSpan.startCol,
-            func.returnType.sourceSpan.file,
-          );
-        }
+        // CODESYS only permits ANY/ANY_* generic types in VAR_INPUT parameters.
+        // User-defined functions must return a concrete type.
+        this.addError(
+          `Generic type '${func.returnType.name}' is only allowed in VAR_INPUT parameters in FUNCTION '${func.name}' return type`,
+          func.returnType.sourceSpan.startLine,
+          func.returnType.sourceSpan.startCol,
+          func.returnType.sourceSpan.file,
+        );
       } else {
         this.validateSingleTypeReference(
           func.returnType,

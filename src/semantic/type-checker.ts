@@ -28,7 +28,7 @@ import type {
   VarBlock,
   MethodDeclaration,
 } from "../frontend/ast.js";
-import type { SymbolTables, Scope } from "./symbol-table.js";
+import type { SymbolTables, Scope, FunctionSymbol } from "./symbol-table.js";
 import type {
   StdFunctionRegistry,
   StdFunctionDescriptor,
@@ -804,6 +804,7 @@ export class TypeChecker {
     // Check user-defined functions in symbol tables
     const funcSymbol = this.symbolTables.lookupFunction(expr.functionName);
     if (funcSymbol !== undefined) {
+      this.validateUserFunctionGenericArgs(expr, funcSymbol);
       let returnType = funcSymbol.returnType;
       // Overloaded standard functions are published in the builtin stdlib
       // manifest with their generic return *constraint* (e.g. NOT -> ANY_BIT,
@@ -1611,6 +1612,24 @@ export class TypeChecker {
 
       const argTypeName = (argType as ElementaryType).name;
 
+      // Generic ANY/ANY_* values are AnyType descriptors, not concrete values,
+      // and cannot be passed to standard functions.  ADR / SIZEOF / XSIZEOF are
+      // exceptions: they operate on the descriptor/variable itself.
+      if (
+        isGenericTypeName(argTypeName.toUpperCase()) &&
+        nameUpper !== "ADR" &&
+        nameUpper !== "SIZEOF" &&
+        nameUpper !== "XSIZEOF"
+      ) {
+        this.addError(
+          `Cannot pass a value of generic type '${argTypeName}' to standard function '${nameUpper}' parameter '${param.name}'`,
+          arg.value.sourceSpan.startLine,
+          arg.value.sourceSpan.startCol,
+          arg.value.sourceSpan.file,
+        );
+        continue;
+      }
+
       // Check specific type constraint
       if (param.constraint === "specific" && param.specificType) {
         const specUpper = param.specificType.toUpperCase();
@@ -1704,6 +1723,89 @@ export class TypeChecker {
       );
     }
     return false;
+  }
+
+  /**
+   * Validate arguments to user-defined functions with generic VAR_INPUT parameters.
+   *
+   * CODESYS passes ANY/ANY_* parameters by pointer (as an AnyType descriptor), so
+   * only variable-locations may be supplied.  Literals, function-call results,
+   * and other expressions are rejected.
+   */
+  private validateUserFunctionGenericArgs(
+    expr: FunctionCallExpression,
+    funcSymbol: FunctionSymbol,
+  ): void {
+    // Build an ordered list of VAR_INPUT parameters from the declaration.
+    // (FunctionSymbol.parameters is only populated for library functions.)
+    type ParamInfo = { name: string; typeName: string; isInput: boolean };
+    const params: ParamInfo[] = [];
+    for (const block of funcSymbol.declaration.varBlocks) {
+      const isInput = block.blockType === "VAR_INPUT";
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          params.push({
+            name,
+            typeName: decl.type.name ?? "",
+            isInput,
+          });
+        }
+      }
+    }
+
+    // Separate positional and named arguments.
+    const positionalArgs: Expression[] = [];
+    const namedArgs = new Map<string, Expression>();
+    for (const arg of expr.arguments) {
+      if (arg.name !== undefined) {
+        namedArgs.set(arg.name.toUpperCase(), arg.value);
+      } else {
+        positionalArgs.push(arg.value);
+      }
+    }
+
+    // Walk parameters in declaration order; assign positional arguments to
+    // unclaimed slots, then fill named arguments.
+    let positionalIdx = 0;
+    for (const param of params) {
+      let argExpr: Expression | undefined;
+      if (namedArgs.has(param.name.toUpperCase())) {
+        argExpr = namedArgs.get(param.name.toUpperCase());
+      } else if (positionalIdx < positionalArgs.length) {
+        argExpr = positionalArgs[positionalIdx];
+        positionalIdx++;
+      }
+
+      if (!argExpr) continue;
+      if (!param.isInput) continue;
+      if (!isGenericTypeName(param.typeName.toUpperCase())) continue;
+
+      if (!this.isLvalueExpression(argExpr)) {
+        this.addError(
+          `Generic parameter '${param.name}' of '${funcSymbol.name}' requires a variable; literals and expressions cannot be passed to ANY/ANY_* inputs`,
+          argExpr.sourceSpan.startLine,
+          argExpr.sourceSpan.startCol,
+          argExpr.sourceSpan.file,
+        );
+      }
+    }
+  }
+
+  /**
+   * Whether an expression denotes a variable location that can be passed to an
+   * ANY/ANY_* VAR_INPUT parameter.
+   */
+  private isLvalueExpression(expr: Expression): boolean {
+    switch (expr.kind) {
+      case "VariableExpression":
+        return true;
+      case "DrefExpression":
+        return true;
+      case "ParenthesizedExpression":
+        return this.isLvalueExpression(expr.expression);
+      default:
+        return false;
+    }
   }
 
   // ===========================================================================

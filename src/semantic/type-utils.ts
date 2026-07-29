@@ -261,6 +261,32 @@ export function isGenericTypeName(typeName: string): boolean {
 }
 
 /**
+ * The IEC generic type groups that are permitted as declared VAR_INPUT parameter
+ * types according to CODESYS documentation.
+ *
+ * CODESYS allows: ANY, ANY_BIT, ANY_DATE, ANY_NUM, ANY_REAL, ANY_INT, ANY_STRING.
+ * Supergroup names like ANY_ELEMENTARY, ANY_MAGNITUDE, and ANY_DERIVED are not
+ * valid as formal parameter types.
+ */
+export const CODESYS_GENERIC_PARAMETER_TYPES: ReadonlySet<string> = new Set([
+  "ANY",
+  "ANY_BIT",
+  "ANY_DATE",
+  "ANY_NUM",
+  "ANY_REAL",
+  "ANY_INT",
+  "ANY_STRING",
+]);
+
+/**
+ * Whether an IEC generic type group name (uppercase) may be used as the type of a
+ * VAR_INPUT parameter in a function, function block, or method.
+ */
+export function isValidGenericParameterType(typeName: string): boolean {
+  return CODESYS_GENERIC_PARAMETER_TYPES.has(typeName.toUpperCase());
+}
+
+/**
  * Check if a type name matches a StdFunctionRegistry TypeConstraint.
  */
 export function matchesConstraint(
