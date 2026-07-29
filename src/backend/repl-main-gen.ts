@@ -152,6 +152,48 @@ function resolveArrayDefinition(
 }
 
 /**
+ * Resolve a type name to an elementary base type, following aliases and subranges.
+ * Returns the elementary type name and optional STRING/WSTRING max length, or
+ * undefined when the chain ends in a composite, enum, pointer/reference, or
+ * unknown type.
+ */
+function resolveElementaryType(
+  ast: CompilationUnit,
+  name: string,
+  visited = new Set<string>(),
+): { name: string; maxLength?: number | string } | undefined {
+  const upper = name.toUpperCase();
+  if (visited.has(upper)) return undefined;
+  visited.add(upper);
+
+  if (isElementaryType(upper)) {
+    return { name };
+  }
+
+  const decl = ast.types.find((t) => t.name.toUpperCase() === upper);
+  if (!decl) return undefined;
+
+  if (decl.definition.kind === "TypeReference") {
+    const ref = decl.definition;
+    if (ref.referenceKind && ref.referenceKind !== "none") {
+      return undefined;
+    }
+    const resolved = resolveElementaryType(ast, ref.name, visited);
+    if (!resolved) return undefined;
+    if (ref.maxLength !== undefined) {
+      return { ...resolved, maxLength: ref.maxLength };
+    }
+    return resolved;
+  }
+
+  if (decl.definition.kind === "SubrangeDefinition") {
+    return resolveElementaryType(ast, decl.definition.baseType.name, visited);
+  }
+
+  return undefined;
+}
+
+/**
  * Return a human-readable kind label for a composite (non-elementary) type.
  * Returns undefined for types that are not known composites.
  */
@@ -261,7 +303,6 @@ function resolveArrayInfo(
 function mapElementCppType(
   typeName: string,
   maxLength?: number | string,
-  enumNames?: Set<string>,
 ): string | undefined {
   const upper = typeName.toUpperCase();
 
@@ -279,11 +320,7 @@ function mapElementCppType(
     return `strucpp::IEC_${tag}`;
   }
 
-  if (enumNames?.has(upper)) {
-    return `IEC_${typeName}`;
-  }
-
-  // User-defined composites are not expanded at this level.
+  // User-defined composites (including enums) are not expanded at this level.
   return undefined;
 }
 
@@ -506,12 +543,6 @@ function emitToStringFunctions(
   programs: ProgramInfo[],
   ast: CompilationUnit,
 ): void {
-  const enumNames = new Set(
-    ast.types
-      .filter((t) => t.definition.kind === "EnumDefinition")
-      .map((t) => t.name.toUpperCase()),
-  );
-
   for (const prog of programs) {
     for (const v of prog.vars) {
       const fnName = `__strucpp_to_string_${safeIdent(prog.displayName)}_${safeIdent(v.name)}`;
@@ -530,22 +561,26 @@ function emitToStringFunctions(
         const elementCpp = mapElementCppType(
           info.elementTypeName,
           info.elementMaxLength,
-          enumNames,
         );
         if (!elementCpp) continue;
 
-        emitArrayToString(
+        const emitted = emitArrayToString(
           lines,
           fnName,
           elementCpp,
           elementTag,
           info.dimensions,
         );
-        v.toStringFn = fnName;
+        if (emitted) {
+          v.toStringFn = fnName;
+        }
       } else {
-        const upper = v.typeName.toUpperCase();
+        const resolved = resolveElementaryType(ast, v.typeName);
+        const tagName = resolved?.name ?? v.typeName;
+        const maxLength = resolved?.maxLength ?? v.maxLength;
+        const upper = tagName.toUpperCase();
         if (
-          getTypeTag(v.typeName, false, v.maxLength) === "OTHER" &&
+          getTypeTag(tagName, false, maxLength) === "OTHER" &&
           !isElementaryType(upper)
         ) {
           const label = getCompositeLabel(ast, v.typeName) ?? "FB";
@@ -576,10 +611,10 @@ function emitArrayToString(
   elementCpp: string,
   elementTag: string,
   dimensions: Array<{ start: number; end: number }>,
-): void {
+): boolean {
   if (dimensions.length === 1) {
     const d = dimensions[0];
-    if (!d) return;
+    if (!d) return false;
     lines.push(`static std::string ${fnName}(void* p) {`);
     lines.push(
       `    using Arr = strucpp::Array1D<${elementCpp}, ${d.start}LL, ${d.end}LL>;`,
@@ -598,10 +633,11 @@ function emitArrayToString(
     lines.push(`    return s;`);
     lines.push("}");
     lines.push("");
+    return true;
   } else if (dimensions.length === 2) {
     const d1 = dimensions[0];
     const d2 = dimensions[1];
-    if (!d1 || !d2) return;
+    if (!d1 || !d2) return false;
     lines.push(`static std::string ${fnName}(void* p) {`);
     lines.push(
       `    using Arr = strucpp::Array2D<${elementCpp}, ${d1.start}LL, ${d1.end}LL, ${d2.start}LL, ${d2.end}LL>;`,
@@ -627,11 +663,12 @@ function emitArrayToString(
     lines.push(`    return s;`);
     lines.push("}");
     lines.push("");
+    return true;
   } else if (dimensions.length === 3) {
     const d1 = dimensions[0];
     const d2 = dimensions[1];
     const d3 = dimensions[2];
-    if (!d1 || !d2 || !d3) return;
+    if (!d1 || !d2 || !d3) return false;
     lines.push(`static std::string ${fnName}(void* p) {`);
     lines.push(
       `    using Arr = strucpp::Array3D<${elementCpp}, ${d1.start}LL, ${d1.end}LL, ${d2.start}LL, ${d2.end}LL, ${d3.start}LL, ${d3.end}LL>;`,
@@ -664,18 +701,28 @@ function emitArrayToString(
     lines.push(`    return s;`);
     lines.push("}");
     lines.push("");
+    return true;
   }
+
+  return false;
 }
 
 /**
  * Emit VarDescriptor arrays for each program.
  */
-function emitVarDescriptors(lines: string[], programs: ProgramInfo[]): void {
+function emitVarDescriptors(
+  lines: string[],
+  programs: ProgramInfo[],
+  ast: CompilationUnit,
+): void {
   for (const prog of programs) {
     if (prog.vars.length > 0) {
       lines.push(`static VarDescriptor ${prog.varsDescName}[] = {`);
       for (const v of prog.vars) {
-        const tag = getTypeTag(v.typeName, v.isArray, v.maxLength);
+        const resolved = resolveElementaryType(ast, v.typeName);
+        const tagName = resolved?.name ?? v.typeName;
+        const maxLength = resolved?.maxLength ?? v.maxLength;
+        const tag = getTypeTag(tagName, v.isArray, maxLength);
         const toString = v.toStringFn ?? "nullptr";
         lines.push(
           `    {"${v.name}", VarTypeTag::${tag}, &${prog.instanceExpr}.${v.name}, ${toString}},`,
@@ -765,7 +812,7 @@ function generateStandalone(
   lines.push("");
 
   emitToStringFunctions(lines, programs, ast);
-  emitVarDescriptors(lines, programs);
+  emitVarDescriptors(lines, programs, ast);
   emitProgramDescriptorsAndMain(lines, programs);
 }
 
@@ -808,6 +855,6 @@ function generateWithConfiguration(
   }
 
   emitToStringFunctions(lines, programs, ast);
-  emitVarDescriptors(lines, programs);
+  emitVarDescriptors(lines, programs, ast);
   emitProgramDescriptorsAndMain(lines, programs);
 }
