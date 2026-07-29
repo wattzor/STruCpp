@@ -96,7 +96,7 @@ inline void cyclic_run(ProgramDescriptor* programs, size_t program_count,
                 auto& prog = programs[i];
                 for (size_t v = 0; v < prog.var_count; ++v) {
                     auto& var = prog.vars[v];
-                    std::string val = var_value_to_string(var.type, var.var_ptr);
+                    std::string val = var_value_to_string(var.type, var.var_ptr, var.to_string);
                     fprintf(stdout, "  %s.%s = %s\n", prog.name, var.name, val.c_str());
                 }
             }

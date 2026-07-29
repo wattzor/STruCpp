@@ -381,13 +381,20 @@ END_PROGRAM`;
     expect(output).toContain('COUNT = COUNT + 1');
   });
 
-  it('should display WSTRING, DATE and array values instead of OTHER = <?>', () => {
+  it('should display WSTRING, DATE, array and FB values instead of <?>', () => {
     const source = `
+      FUNCTION_BLOCK MyFB
+        VAR
+          x : INT := 42;
+        END_VAR
+      END_FUNCTION_BLOCK
+
       PROGRAM Repls
         VAR
           w : WSTRING := "Hi";
           d : DATE := D#1970-01-01;
           a : ARRAY[0..1] OF INT := [7, 8];
+          fb : MyFB;
         END_VAR
       END_PROGRAM
     `;
@@ -396,10 +403,12 @@ END_PROGRAM`;
       'quit',
     ].join('\n');
     const output = buildAndRun(source, commands, 'repl_types');
-    expect(output).not.toContain('OTHER');
     expect(output).not.toContain('<?>');
+    expect(output).not.toContain('<unsupported>');
     expect(output).toContain('WSTRING');
     expect(output).toContain('DATE');
     expect(output).toContain('ARRAY');
+    expect(output).toContain('(7, 8)');
+    expect(output).toContain('<FB: MYFB>');
   });
 });
