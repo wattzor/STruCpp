@@ -805,6 +805,10 @@ export class TypeChecker {
     const funcSymbol = this.symbolTables.lookupFunction(expr.functionName);
     if (funcSymbol !== undefined) {
       this.validateUserFunctionGenericArgs(expr, funcSymbol);
+      // Library-instantiated standard functions still need the standard-function
+      // argument checks (e.g., LIMIT loaded from iec-std-functions.stlib must not
+      // receive a generic ANY/ANY_* actual argument).
+      this.validateFunctionCallArgs(expr, scope);
       let returnType = funcSymbol.returnType;
       // Overloaded standard functions are published in the builtin stdlib
       // manifest with their generic return *constraint* (e.g. NOT -> ANY_BIT,
@@ -1613,13 +1617,14 @@ export class TypeChecker {
       const argTypeName = (argType as ElementaryType).name;
 
       // Generic ANY/ANY_* values are AnyType descriptors, not concrete values,
-      // and cannot be passed to standard functions.  ADR / SIZEOF / XSIZEOF are
-      // exceptions: they operate on the descriptor/variable itself.
+      // and cannot be passed to standard functions.  ADR / SIZEOF / XSIZEOF /
+      // __ISVALIDREF are exceptions: they operate on the descriptor/variable itself.
       if (
         isGenericTypeName(argTypeName.toUpperCase()) &&
         nameUpper !== "ADR" &&
         nameUpper !== "SIZEOF" &&
-        nameUpper !== "XSIZEOF"
+        nameUpper !== "XSIZEOF" &&
+        nameUpper !== "__ISVALIDREF"
       ) {
         this.addError(
           `Cannot pass a value of generic type '${argTypeName}' to standard function '${nameUpper}' parameter '${param.name}'`,
