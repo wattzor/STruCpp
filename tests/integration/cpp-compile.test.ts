@@ -1063,6 +1063,46 @@ describeIfGpp('C++ Compilation Tests', () => {
     const cpp = compileWithGpp(result.headerCode, result.cppCode, 'macro_collision');
     expect(cpp.success, cpp.error).toBe(true);
   });
+
+  it('compiles a user-defined ANY function called with named arguments', () => {
+    const source = `
+      FUNCTION SameType : BOOL
+      VAR_INPUT
+        any1 : ANY;
+        any2 : ANY;
+      END_VAR
+      VAR
+        iCount : DINT;
+      END_VAR
+      IF any1.typeclass <> any2.typeclass THEN
+        RETURN;
+      END_IF
+      IF any1.diSize <> any2.diSize THEN
+        RETURN;
+      END_IF
+      FOR iCount := 0 TO any1.diSize - 1 DO
+        IF any1.pvalue[iCount] <> any2.pvalue[iCount] THEN
+          RETURN;
+        END_IF
+      END_FOR
+      SameType := TRUE;
+      RETURN;
+      END_FUNCTION
+
+      PROGRAM Main
+      VAR
+        w1 : WORD := 16#00FF;
+        w2 : WORD := 16#00FF;
+        same : BOOL;
+      END_VAR
+        same := SameType(any2 := w2, any1 := w1);
+      END_PROGRAM
+    `;
+    const result = compile(source);
+    expect(result.errors).toHaveLength(0);
+    const cpp = compileWithGpp(result.headerCode, result.cppCode, 'generic_any_named_args');
+    expect(cpp.success, cpp.error).toBe(true);
+  });
 });
 
 /**

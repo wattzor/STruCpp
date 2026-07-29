@@ -6136,7 +6136,7 @@ export class CodeGenerator {
    */
   private wrapAnyTypeArgs(
     args: string[],
-    argExprs: FunctionCallExpression["arguments"],
+    argExprs: (Argument | undefined)[],
     paramTypes: string[],
   ): void {
     for (let i = 0; i < args.length && i < paramTypes.length; i++) {
@@ -6181,13 +6181,13 @@ export class CodeGenerator {
    */
   private coerceUserFuncArgs(
     args: string[],
-    argExprs: FunctionCallExpression["arguments"],
+    argExprs: (Argument | undefined)[],
     paramTypes: string[],
   ): void {
-    const exprCount = argExprs.length;
     for (let i = 0; i < args.length && i < paramTypes.length; i++) {
-      if (i >= exprCount) break; // padded temp vars have no expr to infer from
-      const expr = argExprs[i]!.value;
+      const argExpr = argExprs[i];
+      if (!argExpr) continue; // padded temp vars / defaults have no expr
+      const expr = argExpr.value;
       const argType = this.inferExprType(expr);
       if (!argType) continue;
       const paramType = paramTypes[i]!;
@@ -6570,7 +6570,14 @@ export class CodeGenerator {
     if (hasNamedArgs && this.ast) {
       const reordered = this.reorderNamedArguments(expr);
       if (reordered) {
-        return `${expr.functionName}(${reordered.join(", ")})`;
+        const args = reordered.map((r) => r.expr);
+        const argExprs = reordered.map((r) => r.arg);
+        const paramTypes = this.getParamTypes(nameUpper);
+        if (paramTypes) {
+          this.coerceUserFuncArgs(args, argExprs, paramTypes);
+          this.wrapAnyTypeArgs(args, argExprs, paramTypes);
+        }
+        return `${expr.functionName}(${args.join(", ")})`;
       }
     }
 
@@ -6642,7 +6649,9 @@ export class CodeGenerator {
    * then named args fill their declared slots. Unfilled parameters get default values.
    * Returns null if function not found in AST.
    */
-  private reorderNamedArguments(expr: FunctionCallExpression): string[] | null {
+  private reorderNamedArguments(
+    expr: FunctionCallExpression,
+  ): Array<{ expr: string; arg: Argument | undefined }> | null {
     if (!this.ast) return null;
 
     // Find the function declaration in the AST
@@ -6690,7 +6699,10 @@ export class CodeGenerator {
 
     // Build set of parameter slots claimed by named arguments
     // (skip implicit EN/ENO — handled separately by EN/ENO codegen logic)
-    const namedArgs = new Map<string, { expr: string; isOutput: boolean }>();
+    const namedArgs = new Map<
+      string,
+      { expr: string; arg: Argument; isOutput: boolean }
+    >();
     const claimedSlots = new Set<string>();
     for (const arg of expr.arguments) {
       if (arg.name !== undefined) {
@@ -6698,6 +6710,7 @@ export class CodeGenerator {
         if (upperName === "EN" || upperName === "ENO") continue;
         namedArgs.set(upperName, {
           expr: this.generateExpression(arg.value),
+          arg,
           isOutput: arg.isOutput,
         });
         claimedSlots.add(upperName);
@@ -6739,17 +6752,17 @@ export class CodeGenerator {
     }
 
     // Collect positional args (preserving source order)
-    const positionalArgs: string[] = [];
+    const positionalArgs: { expr: string; arg: Argument }[] = [];
     for (const arg of expr.arguments) {
       if (arg.name === undefined) {
-        positionalArgs.push(this.generateExpression(arg.value));
+        positionalArgs.push({ expr: this.generateExpression(arg.value), arg });
       }
     }
 
     // Assign positional args to unclaimed parameter slots (in declaration order)
-    const result: (string | undefined)[] = new Array<string | undefined>(
-      params.length,
-    );
+    const result: Array<
+      { expr: string; arg: Argument | undefined } | undefined
+    > = Array.from({ length: params.length }, () => undefined);
     let positionalIdx = 0;
     for (let i = 0; i < params.length; i++) {
       const param = params[i]!;
@@ -6768,7 +6781,7 @@ export class CodeGenerator {
       const param = params[i]!;
       const named = namedArgs.get(param.name);
       if (named !== undefined) {
-        result[i] = named.expr;
+        result[i] = { expr: named.expr, arg: named.arg };
       }
     }
 
@@ -6780,23 +6793,23 @@ export class CodeGenerator {
           param.blockType === "VAR_OUTPUT" ||
           param.blockType === "VAR_IN_OUT"
         ) {
-          result[i] = this.emitOutputTempVar(param.typeName);
+          result[i] = {
+            expr: this.emitOutputTempVar(param.typeName),
+            arg: undefined,
+          };
         } else {
-          result[i] = param.defaultExpr ?? this.getDefaultValue(param.typeName);
+          result[i] = {
+            expr: param.defaultExpr ?? this.getDefaultValue(param.typeName),
+            arg: undefined,
+          };
         }
       }
     }
 
-    return result.map((v, i) => {
+    return result.map((v) => {
       if (v !== undefined) return v;
-      const param = params[i]!;
-      if (
-        param.blockType === "VAR_OUTPUT" ||
-        param.blockType === "VAR_IN_OUT"
-      ) {
-        return this.emitOutputTempVar(param.typeName);
-      }
-      return param.defaultExpr ?? this.getDefaultValue(param.typeName);
+      // Should be unreachable; every slot is filled above.
+      return { expr: "", arg: undefined };
     });
   }
 
