@@ -67,6 +67,7 @@ struct VarDescriptor {
     const char* name;
     VarTypeTag type;
     void* var_ptr;
+    std::string (*to_string)(void*) = nullptr;
 };
 
 struct ProgramDescriptor {
@@ -201,7 +202,9 @@ inline std::string utf16_to_utf8(const char16_t* str) {
     return out;
 }
 
-inline std::string var_value_to_string(VarTypeTag type, void* ptr) {
+inline std::string var_value_to_string(VarTypeTag type, void* ptr,
+                                       std::string (*to_string)(void*) = nullptr) {
+    if (to_string) return to_string(ptr);
     char buf[64];
     switch (type) {
         case VarTypeTag::BOOL:  return static_cast<IECVar<BOOL_t>*>(ptr)->get() ? "TRUE" : "FALSE";
@@ -270,6 +273,10 @@ inline std::string var_value_to_string(VarTypeTag type, void* ptr) {
         case VarTypeTag::ARRAY: return "<array>";
         default: return "<unsupported>";
     }
+}
+
+inline std::string element_value_to_string(VarTypeTag type, void* raw_ptr) {
+    return var_value_to_string(type, raw_ptr);
 }
 
 inline bool var_is_forced(VarTypeTag type, void* ptr) {
@@ -547,7 +554,7 @@ inline std::string process_command(
         auto* var = find_var(prog, vn);
         if (!var) return "ERR: Unknown variable: " + vn + " in " + pn;
         bool forced = var_is_forced(var->type, var->var_ptr);
-        std::string val = var_value_to_string(var->type, var->var_ptr);
+        std::string val = var_value_to_string(var->type, var->var_ptr, var->to_string);
         return std::string("OK: ") + pn + "." + vn + " : " +
             var_type_name(var->type) + " = " + val + (forced ? " [FORCED]" : "");
     }
@@ -567,7 +574,7 @@ inline std::string process_command(
         auto* var = find_var(prog, vn);
         if (!var) return "ERR: Unknown variable: " + vn + " in " + pn;
         if (var_set_value(var->type, var->var_ptr, val)) {
-            return std::string("OK: ") + pn + "." + vn + " = " + var_value_to_string(var->type, var->var_ptr);
+            return std::string("OK: ") + pn + "." + vn + " = " + var_value_to_string(var->type, var->var_ptr, var->to_string);
         }
         return std::string("ERR: Invalid value for ") + var_type_name(var->type) + ": " + val;
     }
@@ -587,7 +594,7 @@ inline std::string process_command(
         auto* var = find_var(prog, vn);
         if (!var) return "ERR: Unknown variable: " + vn + " in " + pn;
         if (var_force_value(var->type, var->var_ptr, val)) {
-            return std::string("OK: ") + pn + "." + vn + " FORCED = " + var_value_to_string(var->type, var->var_ptr);
+            return std::string("OK: ") + pn + "." + vn + " FORCED = " + var_value_to_string(var->type, var->var_ptr, var->to_string);
         }
         return std::string("ERR: Invalid value for ") + var_type_name(var->type) + ": " + val;
     }
@@ -602,7 +609,7 @@ inline std::string process_command(
         auto* var = find_var(prog, vn);
         if (!var) return "ERR: Unknown variable: " + vn + " in " + pn;
         var_unforce(var->type, var->var_ptr);
-        return std::string("OK: ") + pn + "." + vn + " unforced. Value: " + var_value_to_string(var->type, var->var_ptr);
+        return std::string("OK: ") + pn + "." + vn + " unforced. Value: " + var_value_to_string(var->type, var->var_ptr, var->to_string);
     }
 
     // --- unforce_all ---
@@ -629,7 +636,7 @@ inline std::string process_command(
                 bool forced = var_is_forced(v.type, v.var_ptr);
                 result += std::string("\n") + programs[p].name + "." + v.name +
                     " : " + var_type_name(v.type) + " = " +
-                    var_value_to_string(v.type, v.var_ptr) +
+                    var_value_to_string(v.type, v.var_ptr, v.to_string) +
                     (forced ? " [FORCED]" : "");
             }
         }
@@ -645,7 +652,7 @@ inline std::string process_command(
                 if (var_is_forced(v.type, v.var_ptr)) {
                     result += std::string("\n") + programs[p].name + "." + v.name +
                         " : " + var_type_name(v.type) + " = " +
-                        var_value_to_string(v.type, v.var_ptr);
+                        var_value_to_string(v.type, v.var_ptr, v.to_string);
                 }
             }
         }
@@ -670,7 +677,7 @@ inline std::string process_command(
 // =============================================================================
 
 inline void print_var_line(ProgramDescriptor& prog, VarDescriptor& v) {
-    std::string val = var_value_to_string(v.type, v.var_ptr);
+    std::string val = var_value_to_string(v.type, v.var_ptr, v.to_string);
     bool forced = var_is_forced(v.type, v.var_ptr);
 
     // Format: "  Program.var : TYPE = value [FORCED]"
