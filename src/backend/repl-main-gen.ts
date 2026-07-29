@@ -551,17 +551,17 @@ function emitToStringFunctions(
         const info = resolveArrayInfo(v, ast);
         if (!info) continue;
 
-        const elementTag = getTypeTag(
-          info.elementTypeName,
-          false,
-          info.elementMaxLength,
-        );
+        const resolvedElement = info.elementTypeName
+          ? resolveElementaryType(ast, info.elementTypeName)
+          : undefined;
+        const elementTypeName = resolvedElement?.name ?? info.elementTypeName;
+        const elementMaxLength =
+          resolvedElement?.maxLength ?? info.elementMaxLength;
+
+        const elementTag = getTypeTag(elementTypeName, false, elementMaxLength);
         if (elementTag === "OTHER") continue;
 
-        const elementCpp = mapElementCppType(
-          info.elementTypeName,
-          info.elementMaxLength,
-        );
+        const elementCpp = mapElementCppType(elementTypeName, elementMaxLength);
         if (!elementCpp) continue;
 
         const emitted = emitArrayToString(

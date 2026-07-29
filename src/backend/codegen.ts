@@ -604,6 +604,20 @@ export class CodeGenerator {
       if (this.knownInterfaceTypes.has(typeName.toUpperCase())) {
         return `${typeName}*`;
       }
+      // TYPE aliases / subranges that resolve to an elementary base need the
+      // IECVar-wrapped storage type (e.g. MyInt -> IEC_INT), not the bare alias
+      // (INT_t), so REPL/forcing overlays line up.
+      const aliasBase = this.resolveElementaryAlias(typeName);
+      if (aliasBase) {
+        const baseUpper = aliasBase.name.toUpperCase();
+        if (baseUpper === "STRING" && aliasBase.maxLength !== undefined) {
+          return `IECStringVar<${aliasBase.maxLength}>`;
+        }
+        if (baseUpper === "WSTRING" && aliasBase.maxLength !== undefined) {
+          return `IECWStringVar<${aliasBase.maxLength}>`;
+        }
+        return IEC_TO_CPP_VAR_TYPE[baseUpper] ?? `IEC_${baseUpper}`;
+      }
       return typeName;
     }
     // Elementary types: use the canonical IECVar alias map so names whose
@@ -624,6 +638,49 @@ export class CodeGenerator {
     if (suffix === "TYPE_CLASS") return "IEC_TYPE_CLASS";
     if (suffix === "MEMORY_AREA") return "IEC_MEMORY_AREA";
     if (suffix === "VAR_INFO") return "strucpp::VAR_INFO";
+    return undefined;
+  }
+
+  /**
+   * Resolve a type name to an elementary base type, following aliases and
+   * subranges. Used so that `TYPE MyInt : INT` variables are stored with the
+   * IECVar wrapper (`IEC_INT`) instead of the bare alias (`INT_t`), which
+   * breaks REPL display, forcing, and `__VARINFO` overlays.
+   */
+  private resolveElementaryAlias(
+    typeName: string,
+    visited = new Set<string>(),
+  ): { name: string; maxLength?: number | string } | undefined {
+    const upper = typeName.toUpperCase();
+    if (visited.has(upper)) return undefined;
+    visited.add(upper);
+
+    if (isElementaryType(upper)) {
+      return { name: typeName };
+    }
+
+    const decl = this.ast?.types.find((t) => t.name.toUpperCase() === upper);
+    const def = decl?.definition;
+    if (!def) return undefined;
+
+    if (def.kind === "TypeReference") {
+      const ref = def;
+      if (ref.referenceKind && ref.referenceKind !== "none") {
+        return undefined;
+      }
+      const resolved = this.resolveElementaryAlias(ref.name, visited);
+      if (!resolved) return undefined;
+      if (ref.maxLength !== undefined) {
+        return { ...resolved, maxLength: ref.maxLength };
+      }
+      return resolved;
+    }
+
+    if (def.kind === "SubrangeDefinition") {
+      const sub = def;
+      return this.resolveElementaryAlias(sub.baseType.name, visited);
+    }
+
     return undefined;
   }
 
@@ -4855,7 +4912,17 @@ export class CodeGenerator {
     }
     const systemType = getSystemType(name);
     if (systemType) return systemType;
-    return this.symbolTables.lookupType(upper)?.resolvedType ?? undefined;
+    const resolved = this.symbolTables.lookupType(upper)?.resolvedType;
+    if (resolved?.typeKind === "elementary") {
+      // If the name is a TYPE alias to another elementary (e.g. MyInt : INT),
+      // resolve to the base elementary type so __VARINFO reports the correct
+      // TypeClass / BitSize instead of TYPE_USERDEF.
+      const aliasBase = this.resolveElementaryAlias(name);
+      if (aliasBase && aliasBase.name.toUpperCase() !== upper) {
+        return this.resolveTypeByName(aliasBase.name);
+      }
+    }
+    return resolved ?? undefined;
   }
 
   /**

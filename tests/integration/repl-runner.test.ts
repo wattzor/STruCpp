@@ -419,4 +419,28 @@ END_PROGRAM`;
     expect(output).toContain('<enum: MYENUM>');
     expect(output).toContain('<FB: MYFB>');
   });
+
+  it('should get, force and display alias-typed variables and arrays', () => {
+    const source = `
+      TYPE MyInt : INT; END_TYPE
+
+      PROGRAM AliasTest
+        VAR
+          x : MyInt := 42;
+          arr : ARRAY[0..1] OF MyInt := [1, 2];
+        END_VAR
+      END_PROGRAM
+    `;
+    const commands = [
+      'get ALIASTEST.X',
+      'force ALIASTEST.X 100',
+      'get ALIASTEST.X',
+      'get ALIASTEST.ARR',
+      'quit',
+    ].join('\n');
+    const output = buildAndRun(source, commands, 'alias_repl');
+    expect(output).toContain('ALIASTEST.X : INT = 42');
+    expect(output).toContain('FORCED = 100');
+    expect(output).toContain('ALIASTEST.ARR : ARRAY = (1, 2)');
+  });
 });

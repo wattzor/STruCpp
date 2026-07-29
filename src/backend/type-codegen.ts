@@ -136,6 +136,8 @@ export class TypeCodeGenerator {
   private knownEnumNames: Set<string> = new Set();
   /** Reverse map: enum member name (upper case) → owning enum type */
   private enumMemberToType: Map<string, EnumMemberEntry> = new Map();
+  /** Map of all type declarations (uppercase name → declaration) for alias resolution */
+  private typeMap: Map<string, TypeDeclaration> = new Map();
 
   constructor(options: Partial<TypeCodeGenOptions> = {}) {
     this.options = { ...defaultTypeCodeGenOptions, ...options };
@@ -158,6 +160,7 @@ export class TypeCodeGenerator {
   generateTypes(types: TypeDeclaration[]): string {
     this.output = [];
     this.knownEnumNames = new Set();
+    this.typeMap = new Map(types.map((t) => [t.name.toUpperCase(), t]));
 
     // Build reverse map for bare enum member qualification
     this.enumMemberToType = buildEnumMemberMap(
@@ -519,6 +522,48 @@ export class TypeCodeGenerator {
   }
 
   /**
+   * Resolve a type name to an elementary base, following aliases and subranges.
+   * Returns the elementary base name and any STRING/WSTRING maxLength, or
+   * undefined when the chain ends in a composite, enum, pointer, or unknown.
+   */
+  private resolveElementaryAlias(
+    typeName: string,
+    visited = new Set<string>(),
+  ): { name: string; maxLength?: number | string } | undefined {
+    const upper = typeName.toUpperCase();
+    if (visited.has(upper)) return undefined;
+    visited.add(upper);
+
+    if (isElementaryType(upper)) {
+      return { name: typeName };
+    }
+
+    const decl = this.typeMap.get(upper);
+    const def = decl?.definition;
+    if (!def) return undefined;
+
+    if (def.kind === "TypeReference") {
+      const ref = def;
+      if (ref.referenceKind && ref.referenceKind !== "none") {
+        return undefined;
+      }
+      const resolved = this.resolveElementaryAlias(ref.name, visited);
+      if (!resolved) return undefined;
+      if (ref.maxLength !== undefined) {
+        return { ...resolved, maxLength: ref.maxLength };
+      }
+      return resolved;
+    }
+
+    if (def.kind === "SubrangeDefinition") {
+      const sub = def;
+      return this.resolveElementaryAlias(sub.baseType.name, visited);
+    }
+
+    return undefined;
+  }
+
+  /**
    * Map a type name to its IECVar-wrapped C++ equivalent for struct fields
    * and array elements. Wraps elementary types with IECVar for per-field forcing.
    * Composites (structs, arrays, FBs) use bare names since their fields
@@ -530,19 +575,19 @@ export class TypeCodeGenerator {
   ): string {
     const upperName = typeName.toUpperCase();
 
-    // STRING/WSTRING with optional length → IECStringVar/IECWStringVar (forceable)
-    if (upperName === "STRING") {
-      const len = maxLength ?? 254;
-      return `IECStringVar<${len}>`;
-    }
-    if (upperName === "WSTRING") {
-      const len = maxLength ?? 254;
-      return `IECWStringVar<${len}>`;
-    }
-
-    // Elementary types → IEC_<TYPE> (IECVar-wrapped)
-    if (isElementaryType(upperName)) {
-      return IEC_TO_CPP_VAR_TYPE[upperName] ?? `IEC_${upperName}`;
+    // Resolve TYPE aliases / subranges to elementary (including STRING/WSTRING
+    // with maxLength) so fields like `field : MyInt` are stored as `IEC_INT`,
+    // not the bare alias `INT_t`.
+    const aliasBase = this.resolveElementaryAlias(typeName);
+    if (aliasBase) {
+      const baseUpper = aliasBase.name.toUpperCase();
+      if (baseUpper === "STRING" || baseUpper === "WSTRING") {
+        const len = aliasBase.maxLength ?? maxLength ?? 254;
+        return baseUpper === "STRING"
+          ? `IECStringVar<${len}>`
+          : `IECWStringVar<${len}>`;
+      }
+      return IEC_TO_CPP_VAR_TYPE[baseUpper] ?? `IEC_${baseUpper}`;
     }
 
     // Enum types → IEC_<Name> (resolves to IEC_ENUM<Name> via alias)
