@@ -44,15 +44,20 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 
 ### Generic Types
 
+CODESYS permits only `ANY`, `ANY_BIT`, `ANY_DATE`, `ANY_NUM`, `ANY_REAL`, `ANY_INT`, and `ANY_STRING` as declared `VAR_INPUT` parameter types.  `ANY_ELEMENTARY`, `ANY_MAGNITUDE`, and `ANY_DERIVED` are not valid parameter types, and no `ANY`/`ANY_*` group may be used as a `FUNCTION` return type.  Generic `VAR_INPUT` parameters are passed as an `AnyType` descriptor; only variable expressions may be supplied, and generic values cannot be forwarded to standard functions (except `ADR`/`SIZEOF`/`XSIZEOF`).
+
 | Type | Status | Notes |
 |------|--------|-------|
-| `ANY` | Partial | Allowed only in `VAR_INPUT` parameters; passed as `AnyType` descriptor |
-| `ANY_BIT` | Partial | Allowed only in `VAR_INPUT` parameters |
-| `ANY_DATE` | Partial | Allowed only in `VAR_INPUT` parameters |
-| `ANY_NUM` | Partial | Allowed only in `VAR_INPUT` parameters |
-| `ANY_REAL` | Partial | Allowed only in `VAR_INPUT` parameters |
-| `ANY_INT` | Partial | Allowed only in `VAR_INPUT` parameters |
-| `ANY_STRING` | Partial | Allowed only in `VAR_INPUT` parameters |
+| `ANY` | Implemented | `VAR_INPUT` only; `AnyType` descriptor; no generic return |
+| `ANY_BIT` | Implemented | `VAR_INPUT` only |
+| `ANY_DATE` | Implemented | `VAR_INPUT` only |
+| `ANY_NUM` | Implemented | `VAR_INPUT` only |
+| `ANY_REAL` | Implemented | `VAR_INPUT` only |
+| `ANY_INT` | Implemented | `VAR_INPUT` only |
+| `ANY_STRING` | Implemented | `VAR_INPUT` only |
+| `ANY_ELEMENTARY` | Rejected | Not a valid CODESYS parameter type |
+| `ANY_MAGNITUDE` | Rejected | Not a valid CODESYS parameter type |
+| `ANY_DERIVED` | Rejected | Not a valid CODESYS parameter type |
 
 ## Program Organization Units
 
@@ -199,7 +204,7 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 |----|---------|-------------------|-------------------|
 | D1 | `__VARINFO` address fields | `ByteAddress`, `ByteOffset`, `Area`, `BitAddress`, and `MemoryArea` reflect the real PLC memory layout | Fields are populated at compile time. `ByteAddress` is a stable synthetic descriptor id allocated per qualified symbol. `Area`, `ByteOffset`, and `BitAddress` are synthetic. `MemoryArea` is derived from the owning `VarBlock` and any `AT %I/%Q/%M` address (`MEM_LOCAL`, `MEM_GLOBAL`, `MEM_RETAIN`, `MEM_INPUT`, `MEM_OUTPUT`, or `MEM_MEMORY`) |
 | D2 | `__SYSTEM` enum emission | Enums defined per project or in the runtime as CODESYS sees fit | `__SYSTEM.TYPE_CLASS` and `__SYSTEM.MEMORY_AREA` are emitted as fixed `enum class` definitions in the runtime header (`iec_system.hpp`) and wrapped with `IEC_ENUM_Var<>` |
-| D3 | `ANY` / `ANY_*` generic parameters | CODESYS accepts `ANY`, `ANY_BIT`, `ANY_INT`, `ANY_REAL`, `ANY_NUM`, `ANY_DATE`, `ANY_STRING` only in `VAR_INPUT`; any variable expression may be passed and is exposed as an `AnyType` descriptor | STruCpp passes a `strucpp::AnyType` descriptor with `typeclass`, `pvalue`, `diSize`; generic parameters are rejected outside `VAR_INPUT`. `pvalue` points to the C++ object for the argument, so byte-level generic functions (e.g. `funGenericCompare`) work for elementary types but not yet for arrays/structs/strings whose in-memory layout is not byte-flat |
+| D3 | `ANY` / `ANY_*` generic parameters | CODESYS accepts `ANY`, `ANY_BIT`, `ANY_INT`, `ANY_REAL`, `ANY_NUM`, `ANY_DATE`, `ANY_STRING` only in `VAR_INPUT`; any variable expression may be passed and is exposed as an `AnyType` descriptor. `ANY_ELEMENTARY`, `ANY_MAGNITUDE`, and `ANY_DERIVED` are not valid parameter types, and `ANY`/`ANY_*` cannot be a `FUNCTION` return type | STruCpp passes a `strucpp::AnyType` descriptor with `typeclass`, `pvalue`, `diSize`; generic parameters are rejected outside `VAR_INPUT` and the invalid supergroup names are rejected at declaration time. Only variable expressions (not literals, function-call results, or other expressions) may be passed to a generic `VAR_INPUT`; generic values cannot be forwarded to standard functions except `ADR`/`SIZEOF`/`XSIZEOF`. `pvalue` points to the C++ object for the argument, so byte-level generic functions (e.g. `funGenericCompare`) work for elementary types but not yet for arrays/structs/strings whose in-memory layout is not byte-flat |
 | D4 | `__VARINFO` field population | `__VARINFO` returns a live view of the variable, including any runtime changes to values or location | The returned `VAR_INFO` descriptor is a compile-time constant. String fields (`TypeName`, `Symbol`, `Comment`) are baked into the binary. Numeric fields (`BitSize`, `TypeClass`, `NumElements`, `ElemBitSize`, `BaseTypeClass`, `MemoryArea`, etc.) are derived from the declaration type. The descriptor is still not a live runtime view |
 | D5 | Arithmetic temporary width | CODESYS computes integer temporaries with the native width of the target device (≥32-bit on x86/ARM, 64-bit on x64); truncation happens only on assignment or explicit `TO_*` | STruC++ uses the `STRUCPP_TARGET_WIDTH` macro (default 32 on the CLI, host pointer size in the raw headers) to set the native width. The CLI `--target-width 32|64` flag controls this for `--build` and `--test` binaries; users compiling generated `.cpp` manually must pass `-DSTRUCPP_TARGET_WIDTH=<32|64>` to match the PLC target |
 

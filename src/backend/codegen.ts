@@ -553,9 +553,11 @@ export class CodeGenerator {
     typeName: string,
     maxLength?: number | string,
   ): string {
-    // CODESYS generic type groups (ANY, ANY_BIT, ANY_NUM, ...) lower to the
-    // runtime AnyType descriptor.
-    if (isGenericTypeName(typeName.toUpperCase())) {
+    // CODESYS generic type groups (ANY, ANY_BIT, ANY_NUM, ...) are passed as the
+    // runtime AnyType descriptor (TYPECLASS, PVALUE, DISIZE) and manipulated
+    // through their fields inside the POU.
+    const upperTypeName = typeName.toUpperCase();
+    if (isGenericTypeName(upperTypeName)) {
       return "strucpp::AnyType";
     }
 
@@ -2000,12 +2002,11 @@ export class CodeGenerator {
     func: CompilationUnit["functions"][0],
   ): void {
     const params = this.generateFunctionParams(func);
+    const retType = this.mapTypeRefToCpp(func.returnType);
 
     this.emitHeaderLineDirective(func.sourceSpan.startLine);
     const declLine = this.currentHeaderLine;
-    this.emitHeader(
-      `${this.mapTypeRefToCpp(func.returnType)} ${func.name}(${params.join(", ")});`,
-    );
+    this.emitHeader(`${retType} ${func.name}(${params.join(", ")});`);
     this.recordHeaderLineMapping(func.sourceSpan.startLine, declLine);
   }
 
@@ -2826,7 +2827,7 @@ export class CodeGenerator {
       this.emit("}");
       this.emit("");
     } else {
-      // Production build: normal function
+      // Production build: emit a normal function definition.
       this.emitLineDirective(func.sourceSpan.startLine);
       const funcImplLine = this.currentLine;
       this.emit(`${retType} ${func.name}(${params.join(", ")}) {`);
@@ -6191,6 +6192,9 @@ export class CodeGenerator {
       if (!argType) continue;
       const paramType = paramTypes[i]!;
       if (argType === paramType) continue;
+      // Generic function parameters are lowered to C++ templates, so they
+      // must not be static_cast to a non-existent IEC_<ANY_...> type.
+      if (isGenericTypeName(paramType.toUpperCase())) continue;
       // Bare literals (no typePrefix) are untyped — always castable to param type
       if (isBareLiteral(expr) || this.canImplicitWiden(argType, paramType)) {
         args[i] = `static_cast<IEC_${paramType}>(${args[i]})`;
@@ -6621,15 +6625,11 @@ export class CodeGenerator {
       }
     }
 
-    // Apply implicit widening casts for user-defined function args
+    // Apply implicit widening casts and wrap ANY/ANY_* arguments with the
+    // CODESYS AnyType descriptor for user-defined function calls.
     const paramTypes = this.getParamTypes(nameUpper);
     if (paramTypes) {
       this.coerceUserFuncArgs(args, expr.arguments, paramTypes);
-    }
-
-    // Wrap arguments whose formal parameter is a generic ANY group in an
-    // AnyType runtime descriptor.
-    if (paramTypes) {
       this.wrapAnyTypeArgs(args, expr.arguments, paramTypes);
     }
 
@@ -7699,6 +7699,10 @@ export class CodeGenerator {
         return `&${initialValue}`;
       }
       return "nullptr";
+    }
+    // Generic ANY/ANY_* parameters are passed as strucpp::AnyType descriptors.
+    if (isGenericTypeName(upperType)) {
+      return "strucpp::AnyType()";
     }
     if (initialValue) {
       // Convert enum dot-notation (TRAFFICSTATE.RED) to C++ scoped access (TRAFFICSTATE::RED)
