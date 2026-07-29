@@ -381,8 +381,11 @@ END_PROGRAM`;
     expect(output).toContain('COUNT = COUNT + 1');
   });
 
-  it('should display WSTRING, DATE, array and FB values instead of <?>', () => {
+  it('should display WSTRING, DATE, array, alias and FB values instead of <?>', () => {
     const source = `
+      TYPE MyInt : INT; END_TYPE
+      TYPE MyEnum : (RED, GREEN); END_TYPE
+
       FUNCTION_BLOCK MyFB
         VAR
           x : INT := 42;
@@ -394,6 +397,8 @@ END_PROGRAM`;
           w : WSTRING := "Hi";
           d : DATE := D#1970-01-01;
           a : ARRAY[0..1] OF INT := [7, 8];
+          alias_x : MyInt := 5;
+          e : MyEnum;
           fb : MyFB;
         END_VAR
       END_PROGRAM
@@ -409,6 +414,9 @@ END_PROGRAM`;
     expect(output).toContain('DATE');
     expect(output).toContain('ARRAY');
     expect(output).toContain('(7, 8)');
+    expect(output).toContain('INT');
+    expect(output).toContain('5');
+    expect(output).toContain('<enum: MYENUM>');
     expect(output).toContain('<FB: MYFB>');
   });
 });
