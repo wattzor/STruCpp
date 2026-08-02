@@ -194,6 +194,43 @@ function resolveElementaryType(
 }
 
 /**
+ * Determine whether a type name refers to a user-defined C++ class/struct/FB
+ * for the purpose of detecting variable-name collisions. This mirrors
+ * CodeGenerator.isUserDefinedType used when emitting class members.
+ */
+function isUserDefinedTypeForMangling(
+  ast: CompilationUnit,
+  typeName: string,
+): boolean {
+  const upper = typeName.toUpperCase();
+  if (ast.types.some((t) => t.name.toUpperCase() === upper)) return true;
+  if (ast.functionBlocks.some((fb) => fb.name.toUpperCase() === upper))
+    return true;
+  if (ast.interfaces.some((iface) => iface.name.toUpperCase() === upper))
+    return true;
+  if (ast.programs.some((prog) => prog.name.toUpperCase() === upper))
+    return true;
+  return false;
+}
+
+/**
+ * If a member variable name collides with its user-defined C++ type name,
+ * append '_' to the member name, matching CodeGenerator.mangleMemberIfNeeded.
+ */
+function getMangledMemberName(
+  name: string,
+  typeName: string | undefined,
+  ast: CompilationUnit,
+): string {
+  if (typeName && isUserDefinedTypeForMangling(ast, typeName)) {
+    if (name.toUpperCase() === typeName.toUpperCase()) {
+      return `${name}_`;
+    }
+  }
+  return name;
+}
+
+/**
  * Return a human-readable kind label for a composite (non-elementary) type.
  * Returns undefined for types that are not known composites.
  */
@@ -326,6 +363,8 @@ function mapElementCppType(
 
 interface VarInfo {
   name: string;
+  /** C++ member name, possibly mangled to avoid collision with the type name */
+  memberName: string;
   typeName: string;
   isArray: boolean;
   maxLength?: number | string;
@@ -360,6 +399,7 @@ function collectVarsFromBlocks(
         for (const name of decl.names) {
           const entry: VarInfo = {
             name,
+            memberName: getMangledMemberName(name, decl.type.name, ast),
             typeName: decl.type.name,
             isArray,
           };
@@ -725,7 +765,7 @@ function emitVarDescriptors(
         const tag = getTypeTag(tagName, v.isArray, maxLength);
         const toString = v.toStringFn ?? "nullptr";
         lines.push(
-          `    {"${v.name}", VarTypeTag::${tag}, &${prog.instanceExpr}.${v.name}, ${toString}},`,
+          `    {"${v.name}", VarTypeTag::${tag}, &${prog.instanceExpr}.${v.memberName}, ${toString}},`,
         );
       }
       lines.push("};");

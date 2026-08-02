@@ -443,4 +443,21 @@ END_PROGRAM`;
     expect(output).toContain('FORCED = 100');
     expect(output).toContain('ALIASTEST.ARR : ARRAY = (1, 2)');
   });
+
+  it('should build the REPL when a variable name collides with a type name', () => {
+    const source = `
+      TYPE Pt : STRUCT x : INT := 7; END_STRUCT; END_TYPE
+
+      PROGRAM Main
+        VAR pt : Pt; END_VAR
+      END_PROGRAM
+    `;
+    const commands = [
+      'get MAIN.PT',
+      'quit',
+    ].join('\n');
+    const output = buildAndRun(source, commands, 'var_name_collision');
+    expect(output).toContain('MAIN.PT');
+    expect(output).not.toContain('error:');
+  });
 });
