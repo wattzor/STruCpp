@@ -16,6 +16,7 @@ import type {
   VarBlock,
 } from "../frontend/ast.js";
 import type { ProjectModel } from "../project-model.js";
+import type { StlibArchive } from "../library/library-manifest.js";
 import type { LineMapEntry } from "../types.js";
 import { getProjectNamespace } from "../project-model.js";
 import { isElementaryType } from "../semantic/type-registry.js";
@@ -194,6 +195,49 @@ function resolveElementaryType(
 }
 
 /**
+ * Build the set of user-defined type names that can collide with variable
+ * names when emitted as C++ class members. This mirrors the set consulted by
+ * CodeGenerator.mangleMemberIfNeeded and includes both source AST types and
+ * types/function blocks imported from library archives.
+ */
+function buildKnownUserDefinedTypes(
+  ast: CompilationUnit,
+  resolvedLibraries: StlibArchive[] = [],
+): Set<string> {
+  const known = new Set<string>();
+  for (const t of ast.types) known.add(t.name.toUpperCase());
+  for (const fb of ast.functionBlocks) known.add(fb.name.toUpperCase());
+  for (const iface of ast.interfaces) known.add(iface.name.toUpperCase());
+  for (const prog of ast.programs) known.add(prog.name.toUpperCase());
+  for (const archive of resolvedLibraries) {
+    for (const fb of archive.manifest.functionBlocks) {
+      known.add(fb.name.toUpperCase());
+    }
+    for (const t of archive.manifest.types) {
+      known.add(t.name.toUpperCase());
+    }
+  }
+  return known;
+}
+
+/**
+ * If a member variable name collides with a user-defined C++ type name,
+ * append '_' to the member name, matching CodeGenerator.mangleMemberIfNeeded.
+ */
+function getMangledMemberName(
+  name: string,
+  typeName: string | undefined,
+  knownUserDefinedTypes: Set<string>,
+): string {
+  if (typeName && knownUserDefinedTypes.has(typeName.toUpperCase())) {
+    if (name.toUpperCase() === typeName.toUpperCase()) {
+      return `${name}_`;
+    }
+  }
+  return name;
+}
+
+/**
  * Return a human-readable kind label for a composite (non-elementary) type.
  * Returns undefined for types that are not known composites.
  */
@@ -326,6 +370,8 @@ function mapElementCppType(
 
 interface VarInfo {
   name: string;
+  /** C++ member name, possibly mangled to avoid collision with the type name */
+  memberName: string;
   typeName: string;
   isArray: boolean;
   maxLength?: number | string;
@@ -341,6 +387,7 @@ interface VarInfo {
 function collectVarsFromBlocks(
   varBlocks: VarBlock[],
   ast: CompilationUnit,
+  knownUserDefinedTypes: Set<string>,
 ): VarInfo[] {
   const vars: VarInfo[] = [];
   for (const block of varBlocks) {
@@ -360,6 +407,11 @@ function collectVarsFromBlocks(
         for (const name of decl.names) {
           const entry: VarInfo = {
             name,
+            memberName: getMangledMemberName(
+              name,
+              decl.type.name,
+              knownUserDefinedTypes,
+            ),
             typeName: decl.type.name,
             isArray,
           };
@@ -401,6 +453,8 @@ export interface ReplMainGenOptions {
   lineMap?: Map<number, LineMapEntry>;
   /** Line mapping from ST to C++ header for side-by-side alignment */
   headerLineMap?: Map<number, LineMapEntry>;
+  /** Library archives resolved during compilation (for type-name collision detection) */
+  resolvedLibraries?: StlibArchive[] | undefined;
 }
 
 /**
@@ -508,12 +562,16 @@ export function generateReplMain(
   }
   lines.push("");
 
+  const knownUserDefinedTypes = buildKnownUserDefinedTypes(
+    ast,
+    options.resolvedLibraries,
+  );
   const hasConfigurations = projectModel.configurations.length > 0;
 
   if (hasConfigurations) {
-    generateWithConfiguration(lines, ast, projectModel);
+    generateWithConfiguration(lines, ast, projectModel, knownUserDefinedTypes);
   } else {
-    generateStandalone(lines, ast, projectModel);
+    generateStandalone(lines, ast, projectModel, knownUserDefinedTypes);
   }
 
   return lines.join("\n");
@@ -725,7 +783,7 @@ function emitVarDescriptors(
         const tag = getTypeTag(tagName, v.isArray, maxLength);
         const toString = v.toStringFn ?? "nullptr";
         lines.push(
-          `    {"${v.name}", VarTypeTag::${tag}, &${prog.instanceExpr}.${v.name}, ${toString}},`,
+          `    {"${v.name}", VarTypeTag::${tag}, &${prog.instanceExpr}.${v.memberName}, ${toString}},`,
         );
       }
       lines.push("};");
@@ -793,6 +851,7 @@ function generateStandalone(
   lines: string[],
   ast: CompilationUnit,
   _projectModel: ProjectModel,
+  knownUserDefinedTypes: Set<string>,
 ): void {
   const programs: ProgramInfo[] = ast.programs.map((prog) => {
     const instanceVar = `prog_${prog.name}`;
@@ -800,7 +859,7 @@ function generateStandalone(
       displayName: prog.name,
       instanceExpr: instanceVar,
       varsDescName: `${instanceVar}_vars`,
-      vars: collectVarsFromBlocks(prog.varBlocks, ast),
+      vars: collectVarsFromBlocks(prog.varBlocks, ast, knownUserDefinedTypes),
       intervalNs: 0,
     };
   });
@@ -824,6 +883,7 @@ function generateWithConfiguration(
   lines: string[],
   ast: CompilationUnit,
   projectModel: ProjectModel,
+  knownUserDefinedTypes: Set<string>,
 ): void {
   const config = projectModel.configurations[0];
   if (!config) return;
@@ -847,7 +907,13 @@ function generateWithConfiguration(
           displayName: inst.instanceName,
           instanceExpr: `${configInstanceVar}.${inst.instanceName}`,
           varsDescName: `vars_${inst.instanceName}`,
-          vars: astProg ? collectVarsFromBlocks(astProg.varBlocks, ast) : [],
+          vars: astProg
+            ? collectVarsFromBlocks(
+                astProg.varBlocks,
+                ast,
+                knownUserDefinedTypes,
+              )
+            : [],
           intervalNs,
         });
       }

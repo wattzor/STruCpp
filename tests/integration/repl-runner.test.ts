@@ -13,6 +13,8 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { StlibArchive } from '../../src/library/library-manifest.js';
+import { loadStlibFromFile } from '../../src/node/library-loader.js';
 import {
   hasGpp,
   hasCc,
@@ -46,8 +48,12 @@ describeIfCompilers('REPL Runner Integration Tests', () => {
     stSource: string,
     replCommands: string,
     testName: string,
+    libraries: StlibArchive[] = [],
   ): string {
-    const result = compile(stSource, { headerFileName: 'generated.hpp' });
+    const result = compile(stSource, {
+      headerFileName: 'generated.hpp',
+      libraries,
+    });
     if (!result.success) {
       throw new Error(`Compilation failed: ${result.errors.map(e => e.message).join(', ')}`);
     }
@@ -67,6 +73,7 @@ describeIfCompilers('REPL Runner Integration Tests', () => {
       headerCode: result.headerCode,
       lineMap: result.lineMap,
       headerLineMap: result.headerLineMap,
+      resolvedLibraries: result.resolvedLibraries,
     });
     fs.writeFileSync(mainPath, mainCpp);
 
@@ -442,5 +449,42 @@ END_PROGRAM`;
     expect(output).toContain('ALIASTEST.X : INT = 42');
     expect(output).toContain('FORCED = 100');
     expect(output).toContain('ALIASTEST.ARR : ARRAY = (1, 2)');
+  });
+
+  it('should build the REPL when a variable name collides with a type name', () => {
+    const source = `
+      TYPE Pt : STRUCT x : INT := 7; END_STRUCT; END_TYPE
+
+      PROGRAM Main
+        VAR pt : Pt; END_VAR
+      END_PROGRAM
+    `;
+    const commands = [
+      'get MAIN.PT',
+      'quit',
+    ].join('\n');
+    const output = buildAndRun(source, commands, 'var_name_collision');
+    expect(output).toContain('MAIN.PT');
+    expect(output).not.toContain('error:');
+  });
+
+  it('should build the REPL when a variable name collides with a library FB type name', () => {
+    const stdFbLib = loadStlibFromFile(
+      path.resolve('libs/iec-standard-fb.stlib'),
+    );
+    const source = `
+      PROGRAM Main
+        VAR ton : TON; END_VAR
+      END_PROGRAM
+    `;
+    const commands = [
+      'get MAIN.TON',
+      'quit',
+    ].join('\n');
+    const output = buildAndRun(source, commands, 'lib_fb_name_collision', [
+      stdFbLib,
+    ]);
+    expect(output).toContain('MAIN.TON');
+    expect(output).not.toContain('error:');
   });
 });

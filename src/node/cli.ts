@@ -1164,6 +1164,7 @@ async function main(): Promise<void> {
       headerCode: result.headerCode,
       lineMap: result.lineMap,
       headerLineMap: result.headerLineMap,
+      resolvedLibraries: result.resolvedLibraries,
     });
     writeFileSync(mainCppPath, mainCppCode, "utf-8");
     console.log(`REPL main written to ${mainCppPath}`);
