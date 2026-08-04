@@ -586,9 +586,9 @@ const ST_FILE_PATTERN = /\.(st|iecst|il)$/i;
 
 function uriToFilePath(uri: string): string {
   try {
-    return URI.parse(uri).fsPath;
+    return URI.parse(uri).fsPath.replace(/\\/g, "/");
   } catch {
-    return uri;
+    return uri.replace(/\\/g, "/");
   }
 }
 
