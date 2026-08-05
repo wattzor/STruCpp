@@ -1103,6 +1103,26 @@ describeIfGpp('C++ Compilation Tests', () => {
     const cpp = compileWithGpp(result.headerCode, result.cppCode, 'generic_any_named_args');
     expect(cpp.success, cpp.error).toBe(true);
   });
+
+  it('should compile programs using __XINT and __UXINT target-width pseudo-types', () => {
+    const source = `
+      PROGRAM Prog
+      VAR
+        a : __XINT := 5;
+        b : __UXINT := 7;
+        c : DINT;
+        d : UDINT;
+      END_VAR
+        c := a;
+        d := b;
+        a := a + c;
+      END_PROGRAM
+    `;
+    const result = compile(source);
+    expect(result.errors).toHaveLength(0);
+    const cpp = compileWithGpp(result.headerCode, result.cppCode, 'xint_uxint');
+    expect(cpp.success, cpp.error).toBe(true);
+  });
 });
 
 /**

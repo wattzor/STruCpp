@@ -48,8 +48,8 @@ namespace strucpp {
 // =============================================================================
 
 enum class VarTypeTag {
-    BOOL, SINT, INT, DINT, LINT,
-    USINT, UINT, UDINT, ULINT,
+    BOOL, SINT, INT, DINT, LINT, XINT,
+    USINT, UINT, UDINT, ULINT, UXINT,
     REAL, LREAL,
     BYTE, WORD, DWORD, LWORD,
     TIME, STRING, WSTRING,
@@ -130,10 +130,12 @@ inline const char* var_type_name(VarTypeTag type) {
         case VarTypeTag::INT:   return "INT";
         case VarTypeTag::DINT:  return "DINT";
         case VarTypeTag::LINT:  return "LINT";
+        case VarTypeTag::XINT:  return "__XINT";
         case VarTypeTag::USINT: return "USINT";
         case VarTypeTag::UINT:  return "UINT";
         case VarTypeTag::UDINT: return "UDINT";
         case VarTypeTag::ULINT: return "ULINT";
+        case VarTypeTag::UXINT: return "__UXINT";
         case VarTypeTag::REAL:  return "REAL";
         case VarTypeTag::LREAL: return "LREAL";
         case VarTypeTag::BYTE:  return "BYTE";
@@ -212,10 +214,12 @@ inline std::string var_value_to_string(VarTypeTag type, void* ptr,
         case VarTypeTag::INT:   return std::to_string(static_cast<IECVar<INT_t>*>(ptr)->get());
         case VarTypeTag::DINT:  return std::to_string(static_cast<IECVar<DINT_t>*>(ptr)->get());
         case VarTypeTag::LINT:  return std::to_string(static_cast<IECVar<LINT_t>*>(ptr)->get());
+        case VarTypeTag::XINT:  return std::to_string(static_cast<IECVar<XINT_t>*>(ptr)->get());
         case VarTypeTag::USINT: return std::to_string(static_cast<IECVar<USINT_t>*>(ptr)->get());
         case VarTypeTag::UINT:  return std::to_string(static_cast<IECVar<UINT_t>*>(ptr)->get());
         case VarTypeTag::UDINT: return std::to_string(static_cast<IECVar<UDINT_t>*>(ptr)->get());
         case VarTypeTag::ULINT: return std::to_string(static_cast<IECVar<ULINT_t>*>(ptr)->get());
+        case VarTypeTag::UXINT: return std::to_string(static_cast<IECVar<UXINT_t>*>(ptr)->get());
         case VarTypeTag::REAL:  std::snprintf(buf, sizeof(buf), "%.6g", static_cast<IECVar<REAL_t>*>(ptr)->get()); return buf;
         case VarTypeTag::LREAL: std::snprintf(buf, sizeof(buf), "%.10g", static_cast<IECVar<LREAL_t>*>(ptr)->get()); return buf;
         case VarTypeTag::BYTE:  std::snprintf(buf, sizeof(buf), "16#%02X", static_cast<IECVar<BYTE_t>*>(ptr)->get()); return buf;

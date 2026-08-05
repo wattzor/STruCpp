@@ -45,6 +45,31 @@
 namespace strucpp {
 
 // =============================================================================
+// Target-width pseudo-types (__XINT / __UXINT / __XWORD)
+// =============================================================================
+
+#ifndef STRUCPP_TARGET_WIDTH
+/** Default CODESYS target integer width (bits). Overridden at compile time
+ *  with -DSTRUCPP_TARGET_WIDTH=32 or =64 to match the actual PLC target. */
+#ifdef __SIZEOF_POINTER__
+#define STRUCPP_TARGET_WIDTH (__SIZEOF_POINTER__ * 8)
+#else
+#define STRUCPP_TARGET_WIDTH 64
+#endif
+#endif
+
+/** CODESYS __XWORD - unsigned integer sized to the target pointer/integer width. */
+#if STRUCPP_TARGET_WIDTH <= 32
+using XWORD_t = uint32_t;
+using XINT_t = int32_t;
+using UXINT_t = uint32_t;
+#else
+using XWORD_t = uint64_t;
+using XINT_t = int64_t;
+using UXINT_t = uint64_t;
+#endif
+
+// =============================================================================
 // Elementary Types - Bit Strings
 // =============================================================================
 
@@ -62,21 +87,6 @@ using DWORD_t = uint32_t;
 
 /** IEC LWORD - 64-bit bit string (IEC v3) */
 using LWORD_t = uint64_t;
-
-/**
- * CODESYS __XWORD - unsigned integer sized to the target pointer width.
- * Used for ADR()/REF() results and generic pointer-sized values, so an
- * address round-trips without truncation and without wasting space on
- * narrow targets (2 bytes on AVR, 8 on 64-bit hosts). `__SIZEOF_POINTER__`
- * is provided by GCC/Clang/avr-gcc.
- */
-#if __SIZEOF_POINTER__ <= 2
-using XWORD_t = uint16_t;
-#elif __SIZEOF_POINTER__ <= 4
-using XWORD_t = uint32_t;
-#else
-using XWORD_t = uint64_t;
-#endif
 
 // =============================================================================
 // Elementary Types - Signed Integers
