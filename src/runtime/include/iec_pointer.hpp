@@ -349,9 +349,10 @@ public:
     IEC_REFERENCE_TO() noexcept : ptr_(nullptr) {}
 
     /**
-     * Constructor - initialize bound to a variable (REFERENCE TO X := target)
+     * Constructor - initialize bound to a variable (REFERENCE TO X := target).
+     * Non-explicit so a variable can be passed directly to a REFERENCE TO parameter.
      */
-    explicit IEC_REFERENCE_TO(IECVar<T>& var) noexcept : ptr_(&var) {}
+    IEC_REFERENCE_TO(IECVar<T>& var) noexcept : ptr_(&var) {}
 
     // Copy/move - default is fine
     IEC_REFERENCE_TO(const IEC_REFERENCE_TO&) = default;

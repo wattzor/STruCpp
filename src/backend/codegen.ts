@@ -850,9 +850,14 @@ export class CodeGenerator {
           // REF_TO — explicit dereference (^), nullable, rebind via
           // `:= REF(x)` / `:= ADR(x)`.
           return `IEC_REF_TO<${refElemType}>`;
-        case "reference_to":
+        case "reference_to": {
           // REFERENCE TO — implicit dereference, rebind via `REF=`.
+          // STRING/WSTRING references must bind to variables of any size.
+          const upperRef = typeRef.name.toUpperCase();
+          if (upperRef === "STRING") return "IEC_STRING_REFERENCE";
+          if (upperRef === "WSTRING") return "IEC_WSTRING_REFERENCE";
           return `IEC_REFERENCE_TO<${refElemType}>`;
+        }
       }
     }
     // For STRING(CONSTANT_NAME), emit template with the constant name

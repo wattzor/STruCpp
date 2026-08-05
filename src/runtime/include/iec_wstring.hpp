@@ -362,8 +362,22 @@ private:
 
 using WSTRING = IECWString<254>;
 
+/**
+ * Non-template base for IECWStringVar<N>.  Lets a REFERENCE TO WSTRING bind to a
+ * wide-string variable of any declared maximum length and read/write through it.
+ */
+class IECWStringVarBase {
+public:
+    virtual ~IECWStringVarBase() = default;
+    virtual const char16_t* c_str() const noexcept = 0;
+    virtual size_t length() const noexcept = 0;
+    virtual size_t max_length() const noexcept = 0;
+    virtual void set_c_str(const char16_t* s) noexcept = 0;
+    virtual bool is_forced() const noexcept = 0;
+};
+
 template<size_t MaxLen>
-class IECWStringVar {
+class IECWStringVar : public IECWStringVarBase {
 public:
     using value_type = IECWString<MaxLen>;
 
@@ -374,6 +388,17 @@ public:
     IECWStringVar(IECWStringVar&&) = default;
     IECWStringVar& operator=(const IECWStringVar&) = default;
     IECWStringVar& operator=(IECWStringVar&&) = default;
+
+    // Overrides for IECWStringVarBase
+    const char16_t* c_str() const noexcept override {
+        return (forced_ ? forced_value_ : value_).c_str();
+    }
+    size_t length() const noexcept override {
+        return (forced_ ? forced_value_ : value_).length();
+    }
+    size_t max_length() const noexcept override { return MaxLen; }
+    void set_c_str(const char16_t* s) noexcept override { value_ = s; }
+    bool is_forced() const noexcept override { return forced_; }
 
     // Cross-size converting constructor (IEC 61131-3: WSTRING types are interoperable)
     template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
@@ -427,10 +452,6 @@ public:
         forced_ = false;
     }
 
-    bool is_forced() const noexcept {
-        return forced_;
-    }
-
     value_type get_forced_value() const noexcept {
         return forced_value_;
     }
@@ -455,12 +476,6 @@ public:
     // NOT proxied (free-function `==` / `!=` overloads already cover
     // every cross-class compare path, and adding member operators
     // would risk overload ambiguity at ST call sites).
-    constexpr size_t length() const noexcept {
-        return (forced_ ? forced_value_ : value_).length();
-    }
-    const char16_t* c_str() const noexcept {
-        return (forced_ ? forced_value_ : value_).c_str();
-    }
     char16_t operator[](size_t index) const noexcept {
         return (forced_ ? forced_value_ : value_)[index];
     }
@@ -483,6 +498,71 @@ inline IECWString<MaxLen> iec_unwrap(const IECWStringVar<MaxLen>& v) noexcept {
 // Non-template alias for codegen: IEC_WSTRING = IECWStringVar<254>
 // For parameterized WSTRING(N), codegen emits IECWStringVar<N> directly
 using IEC_WSTRING = IECWStringVar<254>;
+
+// =============================================================================
+// IEC WSTRING REFERENCE (CODESYS REFERENCE TO WSTRING of any size)
+// =============================================================================
+
+/**
+ * Non-template reference to any sized IEC WSTRING variable.
+ */
+class IEC_WSTRING_REFERENCE {
+public:
+    IEC_WSTRING_REFERENCE() noexcept : ptr_(nullptr) {}
+
+    IEC_WSTRING_REFERENCE(const IEC_WSTRING_REFERENCE&) = default;
+    IEC_WSTRING_REFERENCE& operator=(const IEC_WSTRING_REFERENCE& other) noexcept {
+        if (ptr_ && other.ptr_) set(other.c_str());
+        return *this;
+    }
+
+    template<size_t MaxLen>
+    IEC_WSTRING_REFERENCE(IECWStringVar<MaxLen>& var) noexcept : ptr_(&var) {}
+
+    template<size_t MaxLen>
+    void bind(IECWStringVar<MaxLen>& var) noexcept { ptr_ = &var; }
+
+    void bind(const IEC_WSTRING_REFERENCE& other) noexcept { ptr_ = other.ptr_; }
+    void bind(std::nullptr_t) noexcept { ptr_ = nullptr; }
+
+    bool is_bound() const noexcept { return ptr_ != nullptr; }
+
+    const char16_t* c_str() const noexcept { return ptr_ ? ptr_->c_str() : u""; }
+    size_t length() const noexcept { return ptr_ ? ptr_->length() : 0; }
+    size_t max_length() const noexcept { return ptr_ ? ptr_->max_length() : 0; }
+
+    IECWString<254> get() const noexcept {
+        return ptr_ ? IECWString<254>(c_str(), length()) : IECWString<254>();
+    }
+
+    operator IECWString<254>() const noexcept { return get(); }
+
+    void set(const char16_t* str) noexcept {
+        if (ptr_) ptr_->set_c_str(str ? str : u"");
+    }
+
+    void set(const IECWString<254>& s) noexcept {
+        if (ptr_) ptr_->set_c_str(s.c_str());
+    }
+
+    IEC_WSTRING_REFERENCE& operator=(const char16_t* str) noexcept {
+        set(str);
+        return *this;
+    }
+
+    IEC_WSTRING_REFERENCE& operator=(const IECWString<254>& s) noexcept {
+        set(s);
+        return *this;
+    }
+
+    IEC_WSTRING_REFERENCE& operator=(const IECWStringVarBase& var) noexcept {
+        if (ptr_) set(var.c_str());
+        return *this;
+    }
+
+private:
+    IECWStringVarBase* ptr_;
+};
 
 // Standard-function name overloads so ST calls like LEN(s), LEFT(s, n), etc.
 // dispatch to the wide-string helpers when the argument is a WSTRING.
@@ -903,6 +983,26 @@ inline bool operator!=(const IECVar<IECWString<Len1>>& a, const IECWStringVar<Le
 template<size_t Len1, size_t Len2>
 inline bool operator!=(const IECWStringVar<Len1>& a, const IECVar<IECWString<Len2>>& b) noexcept {
     return !(a == b);
+}
+
+// =============================================================================
+// IEC_WSTRING_REFERENCE overloads
+// =============================================================================
+
+inline IEC_INT LEN(const IEC_WSTRING_REFERENCE& s) noexcept {
+    return IEC_INT(static_cast<INT_t>(s.length()));
+}
+
+inline IECWString<254> LEFT(const IEC_WSTRING_REFERENCE& s, size_t len) noexcept {
+    return LEFT(s.get(), len);
+}
+
+inline IECWString<254> RIGHT(const IEC_WSTRING_REFERENCE& s, size_t len) noexcept {
+    return RIGHT(s.get(), len);
+}
+
+inline IECWString<254> MID(const IEC_WSTRING_REFERENCE& s, size_t len, size_t pos) noexcept {
+    return MID(s.get(), len, pos);
 }
 
 } // namespace strucpp

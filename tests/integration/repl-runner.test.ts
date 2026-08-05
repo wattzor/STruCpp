@@ -514,4 +514,61 @@ END_PROGRAM`;
     expect(output).toContain('MAIN.TON');
     expect(output).not.toContain('error:');
   });
+
+  it('should pass BYTE variables to REFERENCE TO BYTE function parameters', () => {
+    const source = `
+      FUNCTION SetByte : INT
+        VAR_INPUT b : REFERENCE TO BYTE; END_VAR
+        b := BYTE#16#2A;
+        SetByte := 0;
+      END_FUNCTION
+
+      PROGRAM Main
+        VAR b : BYTE; x : BYTE; END_VAR
+        SetByte(b);
+        x := b;
+      END_PROGRAM
+    `;
+    const commands = ['run', 'get MAIN.X', 'quit'].join('\n');
+    const output = buildAndRun(source, commands, 'ref_to_byte_param');
+    expect(output).toContain('MAIN.X : BYTE = 16#2A');
+  });
+
+  it('should pass sized STRING variables to REFERENCE TO STRING parameters', () => {
+    const source = `
+      FUNCTION SetString : INT
+        VAR_INPUT s : REFERENCE TO STRING; END_VAR
+        s := 'hello';
+        SetString := 0;
+      END_FUNCTION
+
+      PROGRAM Main
+        VAR name : STRING(80); x : INT; END_VAR
+        SetString(name);
+        x := LEN(name);
+      END_PROGRAM
+    `;
+    const commands = ['run', 'get MAIN.X', 'quit'].join('\n');
+    const output = buildAndRun(source, commands, 'ref_to_string_param');
+    expect(output).toContain('MAIN.X : INT = 5');
+  });
+
+  it('should pass sized WSTRING variables to REFERENCE TO WSTRING parameters', () => {
+    const source = `
+      FUNCTION SetWString : INT
+        VAR_INPUT s : REFERENCE TO WSTRING; END_VAR
+        s := WSTRING#"hello";
+        SetWString := 0;
+      END_FUNCTION
+
+      PROGRAM Main
+        VAR name : WSTRING(80); x : INT; END_VAR
+        SetWString(name);
+        x := LEN(name);
+      END_PROGRAM
+    `;
+    const commands = ['run', 'get MAIN.X', 'quit'].join('\n');
+    const output = buildAndRun(source, commands, 'ref_to_wstring_param');
+    expect(output).toContain('MAIN.X : INT = 5');
+  });
 });
