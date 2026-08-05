@@ -161,6 +161,33 @@ describeIfCompilers('REPL Runner Integration Tests', () => {
     expect(output).toContain('unforced');
   });
 
+  it('should get, set, and force __XINT and __UXINT variables', () => {
+    const source = `
+      PROGRAM Test
+        VAR x : __XINT; y : __UXINT; END_VAR
+        x := x + 1;
+        y := y + 1;
+      END_PROGRAM
+    `;
+    const commands = [
+      'set TEST.X 0',
+      'set TEST.Y 100',
+      'get TEST.Y',
+      'force TEST.X 200',
+      'run 3',
+      'get TEST.X',
+      'unforce TEST.X',
+      'run 1',
+      'get TEST.X',
+      'quit',
+    ].join('\n');
+    const output = buildAndRun(source, commands, 'xint_repl');
+    expect(output).toContain('TEST.Y : __UXINT = 100');
+    expect(output).toContain('TEST.X : __XINT = 200');
+    expect(output).toContain('FORCED = 200');
+    expect(output).toContain('TEST.X : __XINT = 201');
+  });
+
   it('should handle multiple programs', () => {
     const source = `
       PROGRAM Prog1
