@@ -942,6 +942,34 @@ describeIfGpp('C++ Compilation Tests', () => {
     expect(cppResult.success).toBe(true);
   });
 
+  it('compiles REFERENCE_TO variable assignment and function parameters', () => {
+    const source = `
+      FUNCTION IncRef : INT
+        VAR_INPUT r : REFERENCE TO INT; END_VAR
+        r := r + 1;
+        IncRef := 0;
+      END_FUNCTION
+
+      PROGRAM Main
+        VAR
+          a : INT := 5;
+          b : INT := 10;
+          myref : REFERENCE_TO INT;
+          x : INT;
+        END_VAR
+        myref REF= a;
+        myref := b;
+        myref := a + 1;
+        x := IncRef(a);
+      END_PROGRAM
+    `;
+    const result = compile(source);
+    expect(result.success).toBe(true);
+    expect(result.headerCode).toContain('IEC_REFERENCE_TO<INT_t>');
+    const cppResult = compileWithGpp(result.headerCode, result.cppCode, 'reference_to_assign_and_param');
+    expect(cppResult.success).toBe(true);
+  });
+
   it('compiles a FUNCTION_BLOCK with a REF_TO input rebound via REF= (link_reference)', () => {
     // Regression: a REF_TO target lowers REF= to `= REF(src)` (IEC_REF_TO has
     // no bind()), not `.bind()`. Previously emitted IEC_INT + .bind() -> error.

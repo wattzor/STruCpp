@@ -80,9 +80,11 @@ const IEC_NAME_TO_TAG: Record<string, TagName> = {
   WORD: "WORD",
   DWORD: "DWORD",
   LWORD: "LWORD",
-  // __XWORD is platform-width; the debug surface targets the native host
-  // (where pointers are 64-bit), so it reads as an LWORD-tagged 8-byte value.
+  // __XWORD / __XINT / __UXINT are platform-width; the debug surface targets
+  // the native host (where pointers are 64-bit), so they read as LWORD/LINT/ULINT.
   __XWORD: "LWORD",
+  __XINT: "LINT",
+  __UXINT: "ULINT",
   TIME: "TIME",
   LTIME: "TIME",
   DATE: "DATE",
@@ -115,6 +117,8 @@ const IEC_NAME_TO_SIZE: Record<string, number> = {
   DWORD: 4,
   LWORD: 8,
   __XWORD: 8,
+  __XINT: 8,
+  __UXINT: 8,
   TIME: 8,
   LTIME: 8,
   DATE: 8,

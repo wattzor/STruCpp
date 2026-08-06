@@ -59,7 +59,11 @@ namespace strucpp {
 #endif
 
 /** CODESYS __XWORD - unsigned integer sized to the target pointer/integer width. */
-#if STRUCPP_TARGET_WIDTH <= 32
+#if STRUCPP_TARGET_WIDTH <= 16
+using XWORD_t = uint16_t;
+using XINT_t = int16_t;
+using UXINT_t = uint16_t;
+#elif STRUCPP_TARGET_WIDTH <= 32
 using XWORD_t = uint32_t;
 using XINT_t = int32_t;
 using UXINT_t = uint32_t;

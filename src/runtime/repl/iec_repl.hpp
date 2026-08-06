@@ -290,10 +290,12 @@ inline bool var_is_forced(VarTypeTag type, void* ptr) {
         case VarTypeTag::INT:   return static_cast<IECVar<INT_t>*>(ptr)->is_forced();
         case VarTypeTag::DINT:  return static_cast<IECVar<DINT_t>*>(ptr)->is_forced();
         case VarTypeTag::LINT:  return static_cast<IECVar<LINT_t>*>(ptr)->is_forced();
+        case VarTypeTag::XINT:  return static_cast<IECVar<XINT_t>*>(ptr)->is_forced();
         case VarTypeTag::USINT: return static_cast<IECVar<USINT_t>*>(ptr)->is_forced();
         case VarTypeTag::UINT:  return static_cast<IECVar<UINT_t>*>(ptr)->is_forced();
         case VarTypeTag::UDINT: return static_cast<IECVar<UDINT_t>*>(ptr)->is_forced();
         case VarTypeTag::ULINT: return static_cast<IECVar<ULINT_t>*>(ptr)->is_forced();
+        case VarTypeTag::UXINT: return static_cast<IECVar<UXINT_t>*>(ptr)->is_forced();
         case VarTypeTag::REAL:  return static_cast<IECVar<REAL_t>*>(ptr)->is_forced();
         case VarTypeTag::LREAL: return static_cast<IECVar<LREAL_t>*>(ptr)->is_forced();
         case VarTypeTag::BYTE:  return static_cast<IECVar<BYTE_t>*>(ptr)->is_forced();
