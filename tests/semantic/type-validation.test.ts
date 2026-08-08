@@ -503,4 +503,91 @@ describe("Type Validation", () => {
       expect(typeErrors).toHaveLength(1);
     });
   });
+
+  describe("Union Type Validation", () => {
+    it("should allow a union with elementary and struct members", () => {
+      const { errors } = analyzeSource(`
+        TYPE
+          UBytes : STRUCT
+            b1 : BYTE;
+            b2 : BYTE;
+          END_STRUCT;
+
+          UWordOrBytes : UNION
+            asWord : WORD;
+            asBytes : UBytes;
+          END_UNION;
+        END_TYPE
+
+        PROGRAM main
+          VAR u : UWordOrBytes; END_VAR
+          u.asWord := WORD#16#AABB;
+        END_PROGRAM
+      `);
+      const unionErrors = errors.filter((e) => e.includes("UNION"));
+      expect(unionErrors).toHaveLength(0);
+    });
+
+    it("should error on a STRING union member", () => {
+      const { errors } = analyzeSource(`
+        TYPE
+          BadUnion : UNION
+            s : STRING;
+            n : INT;
+          END_UNION;
+        END_TYPE
+      `);
+      expect(errors.some((e) => e.includes("cannot contain STRING"))).toBe(true);
+    });
+
+    it("should error on an array union member", () => {
+      const { errors } = analyzeSource(`
+        TYPE
+          BadUnion : UNION
+            arr : ARRAY[0..3] OF INT;
+            n : INT;
+          END_UNION;
+        END_TYPE
+      `);
+      expect(errors.some((e) => e.includes("cannot contain an array"))).toBe(true);
+    });
+
+    it("should error on a POINTER TO union member", () => {
+      const { errors } = analyzeSource(`
+        TYPE
+          BadUnion : UNION
+            p : POINTER TO INT;
+            n : INT;
+          END_UNION;
+        END_TYPE
+      `);
+      expect(errors.some((e) => e.includes("cannot contain a pointer"))).toBe(true);
+    });
+
+    it("should error on a union member initializer", () => {
+      const { errors } = analyzeSource(`
+        TYPE
+          BadUnion : UNION
+            n : INT := 42;
+          END_UNION;
+        END_TYPE
+      `);
+      expect(errors.some((e) => e.includes("cannot have an initializer"))).toBe(true);
+    });
+
+    it("should error when a struct member of a union contains an invalid type", () => {
+      const { errors } = analyzeSource(`
+        TYPE
+          BadStruct : STRUCT
+            s : STRING;
+          END_STRUCT;
+
+          BadUnion : UNION
+            x : BadStruct;
+          END_UNION;
+        END_TYPE
+      `);
+      expect(errors.some((e) => e.includes("cannot contain STRING"))).toBe(true);
+    });
+  });
 });

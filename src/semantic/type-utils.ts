@@ -22,6 +22,9 @@ import type {
   StructType,
   EnumType,
   FunctionBlockType,
+  TypeDefinition,
+  StructDefinition,
+  UnionDefinition,
 } from "../frontend/ast.js";
 import type {
   TypeConstraint,
@@ -854,6 +857,20 @@ function resolveCommonTypeWith(
 }
 
 // =============================================================================
+// Composite Type Helpers
+// =============================================================================
+
+/**
+ * Return true if a type definition is a struct or union (they share field-list
+ * handling everywhere except codegen/validation).
+ */
+export function isCompositeDefinition(
+  def: TypeDefinition,
+): def is StructDefinition | UnionDefinition {
+  return def.kind === "StructDefinition" || def.kind === "UnionDefinition";
+}
+
+// =============================================================================
 // Member Resolution
 // =============================================================================
 
@@ -868,11 +885,11 @@ export function resolveFieldType(
   const typeUpper = typeName.toUpperCase();
   const fieldUpper = fieldName.toUpperCase();
 
-  // Check struct type definitions
+  // Check struct / union type definitions
   for (const td of ast.types) {
     if (
       td.name.toUpperCase() === typeUpper &&
-      td.definition.kind === "StructDefinition"
+      isCompositeDefinition(td.definition)
     ) {
       for (const field of td.definition.fields) {
         for (const name of field.names) {

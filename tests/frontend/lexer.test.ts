@@ -162,6 +162,20 @@ describe('STLexer', () => {
       expect(result.tokens[0]?.tokenType.name).toBe('VAR');
     });
 
+    it('should tokenize UNION keyword', () => {
+      const result = tokenize('UNION');
+      expect(result.errors).toHaveLength(0);
+      expect(result.tokens).toHaveLength(1);
+      expect(result.tokens[0]?.tokenType.name).toBe('UNION');
+    });
+
+    it('should tokenize END_UNION keyword', () => {
+      const result = tokenize('END_UNION');
+      expect(result.errors).toHaveLength(0);
+      expect(result.tokens).toHaveLength(1);
+      expect(result.tokens[0]?.tokenType.name).toBe('END_UNION');
+    });
+
     it('should be case-insensitive for keywords', () => {
       const result = tokenize('program Program PROGRAM');
       expect(result.errors).toHaveLength(0);

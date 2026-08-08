@@ -13,6 +13,7 @@ import { TypeRegistry } from '../../src/semantic/type-registry.js';
 import type {
   TypeDeclaration,
   StructDefinition,
+  UnionDefinition,
   EnumDefinition,
   ArrayDefinition,
   SubrangeDefinition,
@@ -130,6 +131,46 @@ describe('TypeCodeGenerator', () => {
       expect(result).toContain('IEC_INT x');
       expect(result).toContain('IEC_REAL y');
       expect(result).toContain('};');
+    });
+
+    it('should generate union type with raw members and inlined structs', () => {
+      const generator = new TypeCodeGenerator();
+      const bytesDef: StructDefinition = {
+        kind: 'StructDefinition',
+        sourceSpan: createSourceSpan(),
+        fields: [createVarDecl('b1', 'BYTE'), createVarDecl('b2', 'BYTE')],
+      };
+      const bytesType: TypeDeclaration = {
+        kind: 'TypeDeclaration',
+        sourceSpan: createSourceSpan(),
+        name: 'Bytes',
+        definition: bytesDef,
+      };
+
+      const unionDef: UnionDefinition = {
+        kind: 'UnionDefinition',
+        sourceSpan: createSourceSpan(),
+        fields: [
+          createVarDecl('asWord', 'WORD'),
+          createVarDecl('asBytes', 'Bytes'),
+        ],
+      };
+      const unionType: TypeDeclaration = {
+        kind: 'TypeDeclaration',
+        sourceSpan: createSourceSpan(),
+        name: 'Overlay',
+        definition: unionDef,
+      };
+
+      const result = generator.generateTypes([bytesType, unionType]);
+      expect(result).toContain('union Overlay {');
+      expect(result).toContain('WORD_t asWord;');
+      expect(result).toContain('struct {');
+      expect(result).toContain('BYTE_t b1;');
+      expect(result).toContain('BYTE_t b2;');
+      expect(result).toContain('} asBytes;');
+      expect(result).toContain('iec_byte_size = std::max({');
+      expect(result).toContain('using IEC_Overlay = Overlay;');
     });
 
     it('should generate simple enum type', () => {

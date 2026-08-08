@@ -54,6 +54,7 @@ import {
   resolveSystemAccess,
 } from "./system-types.js";
 import { isEnArgument, isEnoArgument, stripEnEno } from "../ast-utils.js";
+import { isBaseTypeName } from "./iec-types-data.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -3318,7 +3319,11 @@ export class SemanticAnalyzer {
 
     // Type definitions (struct fields, array element types, subrange base types, etc.)
     for (const typeDecl of ast.types) {
-      this.validateTypeDefinitionReferences(typeDecl.name, typeDecl.definition);
+      this.validateTypeDefinitionReferences(
+        typeDecl.name,
+        typeDecl.definition,
+        ast,
+      );
     }
   }
 
@@ -3328,11 +3333,32 @@ export class SemanticAnalyzer {
   private validateTypeDefinitionReferences(
     typeName: string,
     def: TypeDefinition,
+    ast: CompilationUnit,
   ): void {
     switch (def.kind) {
       case "StructDefinition":
         for (const field of def.fields) {
           this.validateSingleTypeReference(field.type, `STRUCT '${typeName}'`);
+        }
+        break;
+      case "UnionDefinition":
+        for (const field of def.fields) {
+          if (field.initialValue) {
+            this.addError(
+              `Union member '${field.names[0] ?? ""}' cannot have an initializer`,
+              field.sourceSpan.startLine,
+              field.sourceSpan.startCol,
+              field.sourceSpan.file,
+            );
+          }
+          for (const memberName of field.names) {
+            this.validateUnionMemberType(
+              field.type,
+              `UNION '${typeName}'.'${memberName}'`,
+              new Set<string>(),
+              ast,
+            );
+          }
         }
         break;
       case "ArrayDefinition":
@@ -3356,6 +3382,134 @@ export class SemanticAnalyzer {
         // Type alias — validate the target type
         this.validateSingleTypeReference(def, `type alias '${typeName}'`);
         break;
+    }
+  }
+
+  /**
+   * Validate that a type can be used as a UNION member.
+   * Allowed: elementary types (except STRING/WSTRING), enums, named unions,
+   * and named structs whose fields are themselves valid union members.
+   * Rejected: arrays, POINTER/REF_TO/REFERENCE_TO, FB instances, strings,
+   * and structs containing any rejected type.
+   */
+  private validateUnionMemberType(
+    typeRef: TypeReference,
+    context: string,
+    visited: Set<string>,
+    ast: CompilationUnit,
+  ): boolean {
+    const currentAst = ast;
+
+    const ref = typeRef.referenceKind ?? "none";
+    if (ref !== "none") {
+      this.addError(
+        `${context} cannot contain a pointer/reference ('${ref}')`,
+        typeRef.sourceSpan.startLine,
+        typeRef.sourceSpan.startCol,
+        typeRef.sourceSpan.file,
+      );
+      return false;
+    }
+
+    if (typeRef.arrayDimensions && typeRef.arrayDimensions.length > 0) {
+      this.addError(
+        `${context} cannot contain an array`,
+        typeRef.sourceSpan.startLine,
+        typeRef.sourceSpan.startCol,
+        typeRef.sourceSpan.file,
+      );
+      return false;
+    }
+
+    const upper = typeRef.name.toUpperCase();
+    if (upper === "STRING" || upper === "WSTRING") {
+      this.addError(
+        `${context} cannot contain STRING/WSTRING`,
+        typeRef.sourceSpan.startLine,
+        typeRef.sourceSpan.startCol,
+        typeRef.sourceSpan.file,
+      );
+      return false;
+    }
+
+    if (isBaseTypeName(upper)) {
+      return true;
+    }
+
+    const typeDecl = currentAst.types.find(
+      (t) => t.name.toUpperCase() === upper,
+    );
+    if (!typeDecl) {
+      this.addError(
+        `${context} references unknown or unsupported type '${typeRef.name}'`,
+        typeRef.sourceSpan.startLine,
+        typeRef.sourceSpan.startCol,
+        typeRef.sourceSpan.file,
+      );
+      return false;
+    }
+
+    switch (typeDecl.definition.kind) {
+      case "EnumDefinition":
+        return true;
+      case "UnionDefinition":
+        return true;
+      case "StructDefinition": {
+        if (visited.has(upper)) {
+          this.addError(
+            `${context} has recursive struct member '${typeRef.name}'`,
+            typeRef.sourceSpan.startLine,
+            typeRef.sourceSpan.startCol,
+            typeRef.sourceSpan.file,
+          );
+          return false;
+        }
+        visited.add(upper);
+        for (const field of typeDecl.definition.fields) {
+          for (const name of field.names) {
+            if (
+              !this.validateUnionMemberType(
+                field.type,
+                `${context}.'${name}'`,
+                visited,
+                currentAst,
+              )
+            ) {
+              return false;
+            }
+          }
+        }
+        return true;
+      }
+      case "TypeReference": {
+        // Resolve alias (STRING alias, elementary alias, etc.)
+        const aliased: TypeReference = {
+          ...typeRef,
+          name: typeDecl.definition.name,
+        };
+        const aliasMaxLength =
+          typeRef.maxLength ??
+          (typeof typeDecl.definition.maxLength === "number"
+            ? typeDecl.definition.maxLength
+            : undefined);
+        if (aliasMaxLength !== undefined) {
+          aliased.maxLength = aliasMaxLength;
+        }
+        return this.validateUnionMemberType(
+          aliased,
+          context,
+          visited,
+          currentAst,
+        );
+      }
+      default:
+        this.addError(
+          `${context} cannot contain type '${typeRef.name}'`,
+          typeRef.sourceSpan.startLine,
+          typeRef.sourceSpan.startCol,
+          typeRef.sourceSpan.file,
+        );
+        return false;
     }
   }
 

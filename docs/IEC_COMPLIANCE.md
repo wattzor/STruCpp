@@ -35,12 +35,12 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | REF_TO | Supported | IEC reference type (explicit dereference) |
 | REFERENCE_TO | Supported | CODESYS reference type (implicit dereference) |
 | POINTER TO | Supported | CODESYS pointer type with dereference via ^ |
+| UNION | Supported | CODESYS extension; all members share one storage region. Members must be elementary types, enums, named unions, or named structs containing only elementary/enum/union fields. STRING/WSTRING, arrays, references, pointers, and FB instances are rejected. Composite struct members are inlined with raw elementary fields so the generated C++ `union` remains trivially constructible and supports C-style type punning |
 
 ### Not Implemented
 
 | Type | Notes |
 |------|-------|
-| UNION | CODESYS extension |
 
 ### Generic Types
 
@@ -212,8 +212,6 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 
 | Feature | Notes |
 |---------|-------|
-| UNION | CODESYS union type |
-
 | ACTION blocks | Named action blocks |
 | TRY/CATCH/FINALLY | Exception handling |
 | Conditional compilation | Preprocessor-style conditionals |

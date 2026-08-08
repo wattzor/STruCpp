@@ -20,6 +20,7 @@ import type {
   TypeDeclaration,
   TypeDefinition,
   StructDefinition,
+  UnionDefinition,
   EnumDefinition,
   EnumMember,
   ArrayDefinition,
@@ -989,6 +990,12 @@ export class ASTBuilder {
       return this.buildStructDefinition(structNode);
     }
 
+    // Check for union type
+    const unionNode = getFirstNode(children.unionType);
+    if (unionNode) {
+      return this.buildUnionDefinition(unionNode);
+    }
+
     // Check for simple enum type: (RED, YELLOW, GREEN)
     const simpleEnumNode = getFirstNode(children.simpleEnumType);
     if (simpleEnumNode) {
@@ -1027,6 +1034,28 @@ export class ASTBuilder {
    * Build a StructDefinition from a structType CST node.
    */
   buildStructDefinition(node: CstNode): StructDefinition {
+    return {
+      kind: "StructDefinition",
+      sourceSpan: nodeToSourceSpan(node),
+      fields: this.buildFieldList(node),
+    };
+  }
+
+  /**
+   * Build a UnionDefinition from a unionType CST node.
+   */
+  buildUnionDefinition(node: CstNode): UnionDefinition {
+    return {
+      kind: "UnionDefinition",
+      sourceSpan: nodeToSourceSpan(node),
+      fields: this.buildFieldList(node),
+    };
+  }
+
+  /**
+   * Extract the field list from a structType or unionType CST node.
+   */
+  private buildFieldList(node: CstNode): VarDeclaration[] {
     const children = node.children as CstChildren;
     const fields: VarDeclaration[] = [];
 
@@ -1034,11 +1063,7 @@ export class ASTBuilder {
       fields.push(this.buildVarDeclaration(varDeclNode));
     }
 
-    return {
-      kind: "StructDefinition",
-      sourceSpan: nodeToSourceSpan(node),
-      fields,
-    };
+    return fields;
   }
 
   /**

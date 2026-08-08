@@ -25,6 +25,7 @@ import type {
   ProgramDeclaration,
   TypeReference,
   StructDefinition,
+  UnionDefinition,
   VarDeclaration,
 } from "../frontend/ast.js";
 import type { ProjectModel } from "../project-model.js";
@@ -288,6 +289,10 @@ export function generateDebugTable(
         visitStructFields(path, cppExpr, def);
         return;
       }
+      if (def.kind === "UnionDefinition") {
+        visitUnionFields(path, cppExpr, def);
+        return;
+      }
       if (def.kind === "ArrayDefinition") {
         // TYPE MyArr: ARRAY[0..9] OF INT; END_TYPE
         const dims = def.dimensions
@@ -418,6 +423,22 @@ export function generateDebugTable(
     path: string,
     cppExpr: string,
     def: StructDefinition,
+  ): void => {
+    for (const fieldDecl of def.fields) {
+      for (const fieldName of fieldDecl.names) {
+        visitTypeRef(
+          `${path}.${fieldName.toUpperCase()}`,
+          `${cppExpr}.${fieldName}`,
+          fieldDecl.type,
+        );
+      }
+    }
+  };
+
+  const visitUnionFields = (
+    path: string,
+    cppExpr: string,
+    def: UnionDefinition,
   ): void => {
     for (const fieldDecl of def.fields) {
       for (const fieldName of fieldDecl.names) {
