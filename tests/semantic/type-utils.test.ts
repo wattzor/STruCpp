@@ -38,10 +38,11 @@ function parseAST(source: string) {
 
 describe("type-utils", () => {
   describe("ELEMENTARY_TYPES", () => {
-    it("should define all 30 types (26 canonical + 4 time/date aliases)", () => {
-      // 26 canonical = 21 standard elementary types + __XWORD + LTIME/LDATE/LTOD/LDT;
-      // plus TOD, DT, LONG_TIME_OF_DAY, and LONG_DATE_AND_TIME alias entries.
-      expect(Object.keys(ELEMENTARY_TYPES)).toHaveLength(30);
+    it("should define all 32 types (28 canonical + 4 time/date aliases)", () => {
+      // 28 canonical = 21 standard elementary types + __XWORD/__XINT/__UXINT
+      // + LTIME/LDATE/LTOD/LDT; plus TOD, DT, LONG_TIME_OF_DAY, and
+      // LONG_DATE_AND_TIME alias entries.
+      expect(Object.keys(ELEMENTARY_TYPES)).toHaveLength(32);
     });
 
     it("should have correct sizes for integer types", () => {
@@ -49,6 +50,8 @@ describe("type-utils", () => {
       expect(ELEMENTARY_TYPES["INT"]!.sizeBits).toBe(16);
       expect(ELEMENTARY_TYPES["DINT"]!.sizeBits).toBe(32);
       expect(ELEMENTARY_TYPES["LINT"]!.sizeBits).toBe(64);
+      expect(ELEMENTARY_TYPES["__XINT"]!.sizeBits).toBe(64);
+      expect(ELEMENTARY_TYPES["__UXINT"]!.sizeBits).toBe(64);
     });
 
     it("should have correct sizes for real types", () => {
@@ -95,6 +98,11 @@ describe("type-utils", () => {
     it("should return UINT for unsigned integers", () => {
       expect(getTypeCategory("UINT")).toBe("UINT");
       expect(getTypeCategory("UDINT")).toBe("UINT");
+    });
+
+    it("should return SINT/UINT for target-width __XINT/__UXINT", () => {
+      expect(getTypeCategory("__XINT")).toBe("SINT");
+      expect(getTypeCategory("__UXINT")).toBe("UINT");
     });
 
     it("should return REAL for real types", () => {
@@ -261,6 +269,13 @@ describe("type-utils", () => {
       expect(isImplicitlyConvertible("LREAL", "REAL")).toBe(false);
     });
 
+    it("should allow __XINT/__UXINT to convert freely with integer/bit types", () => {
+      expect(isImplicitlyConvertible("__XINT", "DINT")).toBe(true);
+      expect(isImplicitlyConvertible("__UXINT", "UDINT")).toBe(true);
+      expect(isImplicitlyConvertible("__XINT", "__UXINT")).toBe(true);
+      expect(isImplicitlyConvertible("DWORD", "__UXINT")).toBe(true);
+    });
+
     it("should be case insensitive", () => {
       expect(isImplicitlyConvertible("int", "dint")).toBe(true);
     });
@@ -285,6 +300,12 @@ describe("type-utils", () => {
     it("should detect signed↔unsigned narrowing", () => {
       expect(isNarrowingConversion("UINT", "INT")).toBe(true);
       expect(isNarrowingConversion("INT", "UINT")).toBe(true);
+    });
+
+    it("should not flag __XINT/__UXINT conversions as narrowing", () => {
+      expect(isNarrowingConversion("DINT", "__XINT")).toBe(false);
+      expect(isNarrowingConversion("UDINT", "__UXINT")).toBe(false);
+      expect(isNarrowingConversion("__XINT", "DINT")).toBe(false);
     });
   });
 
@@ -319,6 +340,12 @@ describe("type-utils", () => {
       const result = getCommonType(elem("BYTE"), elem("INT"));
       expect(result).toBeDefined();
       expect((result as ElementaryType).name).toBe("INT");
+    });
+
+    it("should promote DINT to __XINT", () => {
+      const result = getCommonType(elem("DINT"), elem("__XINT"));
+      expect(result).toBeDefined();
+      expect((result as ElementaryType).name).toBe("__XINT");
     });
   });
 

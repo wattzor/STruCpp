@@ -48,8 +48,8 @@ namespace strucpp {
 // =============================================================================
 
 enum class VarTypeTag {
-    BOOL, SINT, INT, DINT, LINT,
-    USINT, UINT, UDINT, ULINT,
+    BOOL, SINT, INT, DINT, LINT, XINT,
+    USINT, UINT, UDINT, ULINT, UXINT,
     REAL, LREAL,
     BYTE, WORD, DWORD, LWORD,
     TIME, STRING, WSTRING,
@@ -130,10 +130,12 @@ inline const char* var_type_name(VarTypeTag type) {
         case VarTypeTag::INT:   return "INT";
         case VarTypeTag::DINT:  return "DINT";
         case VarTypeTag::LINT:  return "LINT";
+        case VarTypeTag::XINT:  return "__XINT";
         case VarTypeTag::USINT: return "USINT";
         case VarTypeTag::UINT:  return "UINT";
         case VarTypeTag::UDINT: return "UDINT";
         case VarTypeTag::ULINT: return "ULINT";
+        case VarTypeTag::UXINT: return "__UXINT";
         case VarTypeTag::REAL:  return "REAL";
         case VarTypeTag::LREAL: return "LREAL";
         case VarTypeTag::BYTE:  return "BYTE";
@@ -212,10 +214,12 @@ inline std::string var_value_to_string(VarTypeTag type, void* ptr,
         case VarTypeTag::INT:   return std::to_string(static_cast<IECVar<INT_t>*>(ptr)->get());
         case VarTypeTag::DINT:  return std::to_string(static_cast<IECVar<DINT_t>*>(ptr)->get());
         case VarTypeTag::LINT:  return std::to_string(static_cast<IECVar<LINT_t>*>(ptr)->get());
+        case VarTypeTag::XINT:  return std::to_string(static_cast<IECVar<XINT_t>*>(ptr)->get());
         case VarTypeTag::USINT: return std::to_string(static_cast<IECVar<USINT_t>*>(ptr)->get());
         case VarTypeTag::UINT:  return std::to_string(static_cast<IECVar<UINT_t>*>(ptr)->get());
         case VarTypeTag::UDINT: return std::to_string(static_cast<IECVar<UDINT_t>*>(ptr)->get());
         case VarTypeTag::ULINT: return std::to_string(static_cast<IECVar<ULINT_t>*>(ptr)->get());
+        case VarTypeTag::UXINT: return std::to_string(static_cast<IECVar<UXINT_t>*>(ptr)->get());
         case VarTypeTag::REAL:  std::snprintf(buf, sizeof(buf), "%.6g", static_cast<IECVar<REAL_t>*>(ptr)->get()); return buf;
         case VarTypeTag::LREAL: std::snprintf(buf, sizeof(buf), "%.10g", static_cast<IECVar<LREAL_t>*>(ptr)->get()); return buf;
         case VarTypeTag::BYTE:  std::snprintf(buf, sizeof(buf), "16#%02X", static_cast<IECVar<BYTE_t>*>(ptr)->get()); return buf;
@@ -286,10 +290,12 @@ inline bool var_is_forced(VarTypeTag type, void* ptr) {
         case VarTypeTag::INT:   return static_cast<IECVar<INT_t>*>(ptr)->is_forced();
         case VarTypeTag::DINT:  return static_cast<IECVar<DINT_t>*>(ptr)->is_forced();
         case VarTypeTag::LINT:  return static_cast<IECVar<LINT_t>*>(ptr)->is_forced();
+        case VarTypeTag::XINT:  return static_cast<IECVar<XINT_t>*>(ptr)->is_forced();
         case VarTypeTag::USINT: return static_cast<IECVar<USINT_t>*>(ptr)->is_forced();
         case VarTypeTag::UINT:  return static_cast<IECVar<UINT_t>*>(ptr)->is_forced();
         case VarTypeTag::UDINT: return static_cast<IECVar<UDINT_t>*>(ptr)->is_forced();
         case VarTypeTag::ULINT: return static_cast<IECVar<ULINT_t>*>(ptr)->is_forced();
+        case VarTypeTag::UXINT: return static_cast<IECVar<UXINT_t>*>(ptr)->is_forced();
         case VarTypeTag::REAL:  return static_cast<IECVar<REAL_t>*>(ptr)->is_forced();
         case VarTypeTag::LREAL: return static_cast<IECVar<LREAL_t>*>(ptr)->is_forced();
         case VarTypeTag::BYTE:  return static_cast<IECVar<BYTE_t>*>(ptr)->is_forced();
@@ -357,10 +363,12 @@ inline bool var_set_value(VarTypeTag type, void* ptr, const std::string& val) {
             case VarTypeTag::INT:   static_cast<IECVar<INT_t>*>(ptr)->set(static_cast<INT_t>(std::stoi(val))); return true;
             case VarTypeTag::DINT:  static_cast<IECVar<DINT_t>*>(ptr)->set(static_cast<DINT_t>(std::stol(val))); return true;
             case VarTypeTag::LINT:  static_cast<IECVar<LINT_t>*>(ptr)->set(static_cast<LINT_t>(std::stoll(val))); return true;
+            case VarTypeTag::XINT:  static_cast<IECVar<XINT_t>*>(ptr)->set(static_cast<XINT_t>(std::stoll(val))); return true;
             case VarTypeTag::USINT: static_cast<IECVar<USINT_t>*>(ptr)->set(static_cast<USINT_t>(std::stoul(val))); return true;
             case VarTypeTag::UINT:  static_cast<IECVar<UINT_t>*>(ptr)->set(static_cast<UINT_t>(std::stoul(val))); return true;
             case VarTypeTag::UDINT: static_cast<IECVar<UDINT_t>*>(ptr)->set(static_cast<UDINT_t>(std::stoul(val))); return true;
             case VarTypeTag::ULINT: static_cast<IECVar<ULINT_t>*>(ptr)->set(static_cast<ULINT_t>(std::stoull(val))); return true;
+            case VarTypeTag::UXINT: static_cast<IECVar<UXINT_t>*>(ptr)->set(static_cast<UXINT_t>(std::stoull(val))); return true;
             case VarTypeTag::REAL:  static_cast<IECVar<REAL_t>*>(ptr)->set(std::stof(val)); return true;
             case VarTypeTag::LREAL: static_cast<IECVar<LREAL_t>*>(ptr)->set(std::stod(val)); return true;
             case VarTypeTag::BYTE:  static_cast<IECVar<BYTE_t>*>(ptr)->set(static_cast<BYTE_t>(std::stoul(val, nullptr, 0))); return true;
@@ -420,10 +428,12 @@ inline bool var_force_value(VarTypeTag type, void* ptr, const std::string& val) 
             case VarTypeTag::INT:   static_cast<IECVar<INT_t>*>(ptr)->force(static_cast<INT_t>(std::stoi(val))); return true;
             case VarTypeTag::DINT:  static_cast<IECVar<DINT_t>*>(ptr)->force(static_cast<DINT_t>(std::stol(val))); return true;
             case VarTypeTag::LINT:  static_cast<IECVar<LINT_t>*>(ptr)->force(static_cast<LINT_t>(std::stoll(val))); return true;
+            case VarTypeTag::XINT:  static_cast<IECVar<XINT_t>*>(ptr)->force(static_cast<XINT_t>(std::stoll(val))); return true;
             case VarTypeTag::USINT: static_cast<IECVar<USINT_t>*>(ptr)->force(static_cast<USINT_t>(std::stoul(val))); return true;
             case VarTypeTag::UINT:  static_cast<IECVar<UINT_t>*>(ptr)->force(static_cast<UINT_t>(std::stoul(val))); return true;
             case VarTypeTag::UDINT: static_cast<IECVar<UDINT_t>*>(ptr)->force(static_cast<UDINT_t>(std::stoul(val))); return true;
             case VarTypeTag::ULINT: static_cast<IECVar<ULINT_t>*>(ptr)->force(static_cast<ULINT_t>(std::stoull(val))); return true;
+            case VarTypeTag::UXINT: static_cast<IECVar<UXINT_t>*>(ptr)->force(static_cast<UXINT_t>(std::stoull(val))); return true;
             case VarTypeTag::REAL:  static_cast<IECVar<REAL_t>*>(ptr)->force(std::stof(val)); return true;
             case VarTypeTag::LREAL: static_cast<IECVar<LREAL_t>*>(ptr)->force(std::stod(val)); return true;
             case VarTypeTag::BYTE:  static_cast<IECVar<BYTE_t>*>(ptr)->force(static_cast<BYTE_t>(std::stoul(val, nullptr, 0))); return true;
@@ -465,10 +475,12 @@ inline void var_unforce(VarTypeTag type, void* ptr) {
         case VarTypeTag::INT:   static_cast<IECVar<INT_t>*>(ptr)->unforce(); break;
         case VarTypeTag::DINT:  static_cast<IECVar<DINT_t>*>(ptr)->unforce(); break;
         case VarTypeTag::LINT:  static_cast<IECVar<LINT_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::XINT:  static_cast<IECVar<XINT_t>*>(ptr)->unforce(); break;
         case VarTypeTag::USINT: static_cast<IECVar<USINT_t>*>(ptr)->unforce(); break;
         case VarTypeTag::UINT:  static_cast<IECVar<UINT_t>*>(ptr)->unforce(); break;
         case VarTypeTag::UDINT: static_cast<IECVar<UDINT_t>*>(ptr)->unforce(); break;
         case VarTypeTag::ULINT: static_cast<IECVar<ULINT_t>*>(ptr)->unforce(); break;
+        case VarTypeTag::UXINT: static_cast<IECVar<UXINT_t>*>(ptr)->unforce(); break;
         case VarTypeTag::REAL:  static_cast<IECVar<REAL_t>*>(ptr)->unforce(); break;
         case VarTypeTag::LREAL: static_cast<IECVar<LREAL_t>*>(ptr)->unforce(); break;
         case VarTypeTag::BYTE:  static_cast<IECVar<BYTE_t>*>(ptr)->unforce(); break;

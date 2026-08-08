@@ -161,6 +161,33 @@ describeIfCompilers('REPL Runner Integration Tests', () => {
     expect(output).toContain('unforced');
   });
 
+  it('should get, set, and force __XINT and __UXINT variables', () => {
+    const source = `
+      PROGRAM Test
+        VAR x : __XINT; y : __UXINT; END_VAR
+        x := x + 1;
+        y := y + 1;
+      END_PROGRAM
+    `;
+    const commands = [
+      'set TEST.X 0',
+      'set TEST.Y 100',
+      'get TEST.Y',
+      'force TEST.X 200',
+      'run 3',
+      'get TEST.X',
+      'unforce TEST.X',
+      'run 1',
+      'get TEST.X',
+      'quit',
+    ].join('\n');
+    const output = buildAndRun(source, commands, 'xint_repl');
+    expect(output).toContain('TEST.Y : __UXINT = 100');
+    expect(output).toContain('TEST.X : __XINT = 200');
+    expect(output).toContain('FORCED = 200');
+    expect(output).toContain('TEST.X : __XINT = 201');
+  });
+
   it('should handle multiple programs', () => {
     const source = `
       PROGRAM Prog1
@@ -486,5 +513,62 @@ END_PROGRAM`;
     ]);
     expect(output).toContain('MAIN.TON');
     expect(output).not.toContain('error:');
+  });
+
+  it('should pass BYTE variables to REFERENCE TO BYTE function parameters', () => {
+    const source = `
+      FUNCTION SetByte : INT
+        VAR_INPUT b : REFERENCE TO BYTE; END_VAR
+        b := BYTE#16#2A;
+        SetByte := 0;
+      END_FUNCTION
+
+      PROGRAM Main
+        VAR b : BYTE; x : BYTE; END_VAR
+        SetByte(b);
+        x := b;
+      END_PROGRAM
+    `;
+    const commands = ['run', 'get MAIN.X', 'quit'].join('\n');
+    const output = buildAndRun(source, commands, 'ref_to_byte_param');
+    expect(output).toContain('MAIN.X : BYTE = 16#2A');
+  });
+
+  it('should pass sized STRING variables to REFERENCE TO STRING parameters', () => {
+    const source = `
+      FUNCTION SetString : INT
+        VAR_INPUT s : REFERENCE TO STRING; END_VAR
+        s := 'hello';
+        SetString := 0;
+      END_FUNCTION
+
+      PROGRAM Main
+        VAR name : STRING(80); x : INT; END_VAR
+        SetString(name);
+        x := LEN(name);
+      END_PROGRAM
+    `;
+    const commands = ['run', 'get MAIN.X', 'quit'].join('\n');
+    const output = buildAndRun(source, commands, 'ref_to_string_param');
+    expect(output).toContain('MAIN.X : INT = 5');
+  });
+
+  it('should pass sized WSTRING variables to REFERENCE TO WSTRING parameters', () => {
+    const source = `
+      FUNCTION SetWString : INT
+        VAR_INPUT s : REFERENCE TO WSTRING; END_VAR
+        s := WSTRING#"hello";
+        SetWString := 0;
+      END_FUNCTION
+
+      PROGRAM Main
+        VAR name : WSTRING(80); x : INT; END_VAR
+        SetWString(name);
+        x := LEN(name);
+      END_PROGRAM
+    `;
+    const commands = ['run', 'get MAIN.X', 'quit'].join('\n');
+    const output = buildAndRun(source, commands, 'ref_to_wstring_param');
+    expect(output).toContain('MAIN.X : INT = 5');
   });
 });

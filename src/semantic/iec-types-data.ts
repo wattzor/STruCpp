@@ -187,6 +187,36 @@ export const IEC_BASE_TYPES: readonly IECTypeMetadata[] = [
     xml: { elementName: "__XWORD", plcopenStandard: false },
   },
 
+  // CODESYS __XINT: target-width signed integer. The byteSize/bits here are
+  // NOMINAL (max width); the type-checker exempts __XINT from width-narrowing
+  // checks since its real width is target-dependent.
+  {
+    name: "__XINT",
+    aliases: [],
+    byteSize: 8,
+    bits: 64,
+    signed: true,
+    typeClass: 28,
+    cppType: "XINT_t",
+    wireFormat: "int64",
+    xml: { elementName: "__XINT", plcopenStandard: false },
+  },
+
+  // CODESYS __UXINT: target-width unsigned integer. The byteSize/bits here are
+  // NOMINAL (max width); the type-checker exempts __UXINT from width-narrowing
+  // checks since its real width is target-dependent.
+  {
+    name: "__UXINT",
+    aliases: [],
+    byteSize: 8,
+    bits: 64,
+    signed: false,
+    typeClass: 28,
+    cppType: "UXINT_t",
+    wireFormat: "uint64",
+    xml: { elementName: "__UXINT", plcopenStandard: false },
+  },
+
   // ── Signed integers ──────────────────────────────────────────────
   {
     name: "SINT",

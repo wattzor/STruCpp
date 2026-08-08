@@ -343,8 +343,22 @@ private:
 
 using STRING = IECString<254>;
 
+/**
+ * Non-template base for IECStringVar<N>.  Lets a REFERENCE TO STRING bind to a
+ * string variable of any declared maximum length and read/write through it.
+ */
+class IECStringVarBase {
+public:
+    virtual ~IECStringVarBase() = default;
+    virtual const char* c_str() const noexcept = 0;
+    virtual size_t length() const noexcept = 0;
+    virtual size_t max_length() const noexcept = 0;
+    virtual void set_c_str(const char* s) noexcept = 0;
+    virtual bool is_forced() const noexcept = 0;
+};
+
 template<size_t MaxLen>
-class IECStringVar {
+class IECStringVar : public IECStringVarBase {
 public:
     using value_type = IECString<MaxLen>;
 
@@ -355,6 +369,17 @@ public:
     IECStringVar(IECStringVar&&) = default;
     IECStringVar& operator=(const IECStringVar&) = default;
     IECStringVar& operator=(IECStringVar&&) = default;
+
+    // Overrides for IECStringVarBase
+    const char* c_str() const noexcept override {
+        return (forced_ ? forced_value_ : value_).c_str();
+    }
+    size_t length() const noexcept override {
+        return (forced_ ? forced_value_ : value_).length();
+    }
+    size_t max_length() const noexcept override { return MaxLen; }
+    void set_c_str(const char* s) noexcept override { value_ = s; }
+    bool is_forced() const noexcept override { return forced_; }
 
     // Cross-size converting constructor (IEC 61131-3: STRING types are interoperable)
     template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
@@ -422,10 +447,6 @@ public:
         forced_ = false;
     }
 
-    bool is_forced() const noexcept {
-        return forced_;
-    }
-
     value_type get_forced_value() const noexcept {
         return forced_value_;
     }
@@ -462,12 +483,6 @@ public:
     // and converse) already handle every cross-class compare path,
     // and adding member operators would risk overload ambiguity at
     // ST call sites that previously bound to the free functions.
-    constexpr size_t length() const noexcept {
-        return (forced_ ? forced_value_ : value_).length();
-    }
-    const char* c_str() const noexcept {
-        return (forced_ ? forced_value_ : value_).c_str();
-    }
     char operator[](size_t index) const noexcept {
         return (forced_ ? forced_value_ : value_)[index];
     }
@@ -486,6 +501,73 @@ template<size_t MaxLen>
 inline IECString<MaxLen> iec_unwrap(const IECStringVar<MaxLen>& v) noexcept {
     return v.get();
 }
+
+// =============================================================================
+// IEC STRING REFERENCE (CODESYS REFERENCE TO STRING of any size)
+// =============================================================================
+
+/**
+ * Non-template reference to any sized IEC string variable.
+ * Binds via the IECStringVarBase interface so `REFERENCE TO STRING` parameters
+ * accept STRING(80), STRING(254), etc. without a compile-time length.
+ */
+class IEC_STRING_REFERENCE {
+public:
+    IEC_STRING_REFERENCE() noexcept : ptr_(nullptr) {}
+
+    IEC_STRING_REFERENCE(const IEC_STRING_REFERENCE&) = default;
+    IEC_STRING_REFERENCE& operator=(const IEC_STRING_REFERENCE& other) noexcept {
+        if (ptr_ && other.ptr_) set(other.c_str());
+        return *this;
+    }
+
+    template<size_t MaxLen>
+    IEC_STRING_REFERENCE(IECStringVar<MaxLen>& var) noexcept : ptr_(&var) {}
+
+    template<size_t MaxLen>
+    void bind(IECStringVar<MaxLen>& var) noexcept { ptr_ = &var; }
+
+    void bind(const IEC_STRING_REFERENCE& other) noexcept { ptr_ = other.ptr_; }
+    void bind(std::nullptr_t) noexcept { ptr_ = nullptr; }
+
+    bool is_bound() const noexcept { return ptr_ != nullptr; }
+
+    const char* c_str() const noexcept { return ptr_ ? ptr_->c_str() : ""; }
+    size_t length() const noexcept { return ptr_ ? ptr_->length() : 0; }
+    size_t max_length() const noexcept { return ptr_ ? ptr_->max_length() : 0; }
+
+    IECString<254> get() const noexcept {
+        return ptr_ ? IECString<254>(c_str(), length()) : IECString<254>();
+    }
+
+    operator IECString<254>() const noexcept { return get(); }
+
+    void set(const char* str) noexcept {
+        if (ptr_) ptr_->set_c_str(str ? str : "");
+    }
+
+    void set(const IECString<254>& s) noexcept {
+        if (ptr_) ptr_->set_c_str(s.c_str());
+    }
+
+    IEC_STRING_REFERENCE& operator=(const char* str) noexcept {
+        set(str);
+        return *this;
+    }
+
+    IEC_STRING_REFERENCE& operator=(const IECString<254>& s) noexcept {
+        set(s);
+        return *this;
+    }
+
+    IEC_STRING_REFERENCE& operator=(const IECStringVarBase& var) noexcept {
+        if (ptr_) set(var.c_str());
+        return *this;
+    }
+
+private:
+    IECStringVarBase* ptr_;
+};
 
 // Deferred definition: IECString::operator=(const IECStringVar<OtherLen>&)
 // Template deduction doesn't consider user-defined conversions, so we need
@@ -1225,6 +1307,66 @@ inline IEC_BOOL TO_BOOL(const IECString<N>& s) noexcept {
 template<size_t N>
 inline IEC_BOOL TO_BOOL(const IECStringVar<N>& s) noexcept {
     return TO_BOOL(s.get());
+}
+
+// =============================================================================
+// IEC_STRING_REFERENCE overloads
+// =============================================================================
+
+inline IEC_INT LEN(const IEC_STRING_REFERENCE& s) noexcept {
+    return IEC_INT(static_cast<INT_t>(s.length()));
+}
+
+inline IEC_STRING LEFT(const IEC_STRING_REFERENCE& s, size_t len) noexcept {
+    return LEFT(s.get(), len);
+}
+
+inline IEC_STRING RIGHT(const IEC_STRING_REFERENCE& s, size_t len) noexcept {
+    return RIGHT(s.get(), len);
+}
+
+inline IEC_STRING MID(const IEC_STRING_REFERENCE& s, size_t len, size_t pos) noexcept {
+    return MID(s.get(), len, pos);
+}
+
+inline IEC_STRING CONCAT(const IEC_STRING_REFERENCE& s1, const char* s2) noexcept {
+    return CONCAT(s1.get(), s2);
+}
+
+inline IEC_STRING CONCAT(const char* s1, const IEC_STRING_REFERENCE& s2) noexcept {
+    return CONCAT(s1, s2.get());
+}
+
+inline IEC_STRING CONCAT(const IEC_STRING_REFERENCE& s1, const IEC_STRING_REFERENCE& s2) noexcept {
+    return CONCAT(s1.get(), s2.get());
+}
+
+inline IEC_STRING CONCAT(const IEC_STRING_REFERENCE& s1, const IEC_STRING& s2) noexcept {
+    return CONCAT(s1.get(), s2);
+}
+
+inline IEC_STRING CONCAT(const IEC_STRING& s1, const IEC_STRING_REFERENCE& s2) noexcept {
+    return CONCAT(s1, s2.get());
+}
+
+template<size_t N>
+inline IEC_STRING CONCAT(const IEC_STRING_REFERENCE& s1, const IECString<N>& s2) noexcept {
+    return CONCAT(s1.get(), s2);
+}
+
+template<size_t N>
+inline IEC_STRING CONCAT(const IECString<N>& s1, const IEC_STRING_REFERENCE& s2) noexcept {
+    return CONCAT(s1, s2.get());
+}
+
+template<size_t N>
+inline IEC_STRING CONCAT(const IEC_STRING_REFERENCE& s1, const IECStringVar<N>& s2) noexcept {
+    return CONCAT(s1.get(), s2.get());
+}
+
+template<size_t N>
+inline IEC_STRING CONCAT(const IECStringVar<N>& s1, const IEC_STRING_REFERENCE& s2) noexcept {
+    return CONCAT(s1.get(), s2.get());
 }
 
 } // namespace strucpp

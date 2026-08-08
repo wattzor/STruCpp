@@ -39,6 +39,7 @@ import type {
   ElementaryType,
   ArrayType,
   VarBlock,
+  TypeReference,
 } from "../frontend/ast.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry } from "../types.js";
@@ -850,9 +851,14 @@ export class CodeGenerator {
           // REF_TO — explicit dereference (^), nullable, rebind via
           // `:= REF(x)` / `:= ADR(x)`.
           return `IEC_REF_TO<${refElemType}>`;
-        case "reference_to":
+        case "reference_to": {
           // REFERENCE TO — implicit dereference, rebind via `REF=`.
+          // STRING/WSTRING references must bind to variables of any size.
+          const upperRef = typeRef.name.toUpperCase();
+          if (upperRef === "STRING") return "IEC_STRING_REFERENCE";
+          if (upperRef === "WSTRING") return "IEC_WSTRING_REFERENCE";
           return `IEC_REFERENCE_TO<${refElemType}>`;
+        }
       }
     }
     // For STRING(CONSTANT_NAME), emit template with the constant name
@@ -6210,10 +6216,15 @@ export class CodeGenerator {
   private wrapAnyTypeArgs(
     args: string[],
     argExprs: (Argument | undefined)[],
-    paramTypes: string[],
+    paramInfos: Array<{
+      name: string;
+      typeName: string;
+      typeRef: TypeReference;
+      blockType: string;
+    }>,
   ): void {
-    for (let i = 0; i < args.length && i < paramTypes.length; i++) {
-      if (!isGenericTypeName(paramTypes[i]!.toUpperCase())) continue;
+    for (let i = 0; i < args.length && i < paramInfos.length; i++) {
+      if (!isGenericTypeName(paramInfos[i]!.typeName.toUpperCase())) continue;
       const argExpr = argExprs[i]?.value;
       if (!argExpr) continue; // omitted/default argument
       args[i] = this.buildAnyTypeDescriptor(argExpr, args[i]!);
@@ -6221,17 +6232,66 @@ export class CodeGenerator {
   }
 
   /**
-   * Extract ordered parameter types from a user-defined function declaration.
-   * Returns undefined if function not found.
+   * Wrap arguments passed to REFERENCE TO parameters with the correct C++
+   * reference wrapper. String/WSTRING references use the dedicated polymorphic
+   * wrapper and do not need an explicit wrap. Elementary non-string references
+   * must be explicitly constructed because IEC_REFERENCE_TO's binding
+   * constructor is explicit.
+   * Modifies `args` in place.
    */
-  private getParamTypes(funcName: string): string[] | undefined {
+  private wrapReferenceArgs(
+    args: string[],
+    argExprs: (Argument | undefined)[],
+    paramInfos: Array<{
+      name: string;
+      typeName: string;
+      typeRef: TypeReference;
+      blockType: string;
+    }>,
+  ): void {
+    for (let i = 0; i < args.length && i < paramInfos.length; i++) {
+      const argExpr = argExprs[i];
+      if (!argExpr) continue; // padded defaults / omitted args
+      if (paramInfos[i]!.typeRef.referenceKind !== "reference_to") continue;
+
+      const paramName = paramInfos[i]!.typeRef.name;
+      const resolved = this.resolveElementaryAlias(paramName);
+      const baseName = (resolved?.name ?? paramName).toUpperCase();
+
+      // STRING / WSTRING references already use the dedicated polymorphic
+      // wrapper whose constructor accepts any sized string variable.
+      if (baseName === "STRING" || baseName === "WSTRING") continue;
+
+      if (!isElementaryType(baseName)) continue;
+
+      const refElemType = this.typeCodeGen.mapTypeToCpp(baseName);
+      args[i] = `IEC_REFERENCE_TO<${refElemType}>(${args[i]})`;
+    }
+  }
+
+  /**
+   * Ordered parameter metadata for a user-defined function declaration.
+   */
+  private getFunctionParamInfo(funcName: string):
+    | Array<{
+        name: string;
+        typeName: string;
+        typeRef: TypeReference;
+        blockType: string;
+      }>
+    | undefined {
     if (!this.ast) return undefined;
     const nameUpper = funcName.toUpperCase();
     const funcDecl = this.ast.functions.find(
       (f) => f.name.toUpperCase() === nameUpper,
     );
     if (!funcDecl) return undefined;
-    const types: string[] = [];
+    const infos: Array<{
+      name: string;
+      typeName: string;
+      typeRef: TypeReference;
+      blockType: string;
+    }> = [];
     for (const block of funcDecl.varBlocks) {
       if (
         block.blockType === "VAR_INPUT" ||
@@ -6239,35 +6299,50 @@ export class CodeGenerator {
         block.blockType === "VAR_OUTPUT"
       ) {
         for (const decl of block.declarations) {
-          for (let i = 0; i < decl.names.length; i++) {
-            types.push(decl.type.name.toUpperCase());
+          for (const name of decl.names) {
+            infos.push({
+              name: name,
+              typeName: decl.type.name.toUpperCase(),
+              typeRef: decl.type,
+              blockType: block.blockType,
+            });
           }
         }
       }
     }
-    return types.length > 0 ? types : undefined;
+    return infos.length > 0 ? infos : undefined;
   }
 
   /**
    * Apply implicit widening casts to a list of argument strings for a
    * user-defined function call. Modifies `args` in place.
+   * Reference parameters are skipped because they must bind to the original
+   * argument variable, not to a temporary produced by a static_cast.
    */
   private coerceUserFuncArgs(
     args: string[],
     argExprs: (Argument | undefined)[],
-    paramTypes: string[],
+    paramInfos: Array<{
+      name: string;
+      typeName: string;
+      typeRef: TypeReference;
+      blockType: string;
+    }>,
   ): void {
-    for (let i = 0; i < args.length && i < paramTypes.length; i++) {
+    for (let i = 0; i < args.length && i < paramInfos.length; i++) {
       const argExpr = argExprs[i];
       if (!argExpr) continue; // padded temp vars / defaults have no expr
       const expr = argExpr.value;
       const argType = this.inferExprType(expr);
       if (!argType) continue;
-      const paramType = paramTypes[i]!;
+      const paramInfo = paramInfos[i]!;
+      const paramType = paramInfo.typeName;
       if (argType === paramType) continue;
       // Generic function parameters are lowered to C++ templates, so they
       // must not be static_cast to a non-existent IEC_<ANY_...> type.
       if (isGenericTypeName(paramType.toUpperCase())) continue;
+      // Reference parameters must bind to a variable, not a temporary.
+      if (paramInfo.typeRef.referenceKind === "reference_to") continue;
       // Bare literals (no typePrefix) are untyped — always castable to param type
       if (isBareLiteral(expr) || this.canImplicitWiden(argType, paramType)) {
         args[i] = `static_cast<IEC_${paramType}>(${args[i]})`;
@@ -6645,10 +6720,11 @@ export class CodeGenerator {
       if (reordered) {
         const args = reordered.map((r) => r.expr);
         const argExprs = reordered.map((r) => r.arg);
-        const paramTypes = this.getParamTypes(nameUpper);
-        if (paramTypes) {
-          this.coerceUserFuncArgs(args, argExprs, paramTypes);
-          this.wrapAnyTypeArgs(args, argExprs, paramTypes);
+        const paramInfos = this.getFunctionParamInfo(nameUpper);
+        if (paramInfos) {
+          this.coerceUserFuncArgs(args, argExprs, paramInfos);
+          this.wrapAnyTypeArgs(args, argExprs, paramInfos);
+          this.wrapReferenceArgs(args, argExprs, paramInfos);
         }
         return `${expr.functionName}(${args.join(", ")})`;
       }
@@ -6669,48 +6745,27 @@ export class CodeGenerator {
     });
 
     // Pad missing trailing VAR_OUTPUT/VAR_IN_OUT params with temp variables
-    if (this.ast) {
-      const funcDecl = this.ast.functions.find(
-        (f) => f.name.toUpperCase() === nameUpper,
-      );
-      if (funcDecl) {
-        const paramInfo: Array<{ blockType: string; typeName: string }> = [];
-        for (const block of funcDecl.varBlocks) {
-          if (
-            block.blockType === "VAR_INPUT" ||
-            block.blockType === "VAR_IN_OUT" ||
-            block.blockType === "VAR_OUTPUT"
-          ) {
-            for (const decl of block.declarations) {
-              for (let ni = 0; ni < decl.names.length; ni++) {
-                paramInfo.push({
-                  blockType: block.blockType,
-                  typeName: decl.type.name,
-                });
-              }
-            }
-          }
-        }
-        while (args.length < paramInfo.length) {
-          const param = paramInfo[args.length]!;
-          if (
-            param.blockType === "VAR_OUTPUT" ||
-            param.blockType === "VAR_IN_OUT"
-          ) {
-            args.push(this.emitOutputTempVar(param.typeName));
-          } else {
-            args.push(this.getDefaultValue(param.typeName));
-          }
+    const paramInfos = this.getFunctionParamInfo(nameUpper);
+    if (paramInfos) {
+      while (args.length < paramInfos.length) {
+        const param = paramInfos[args.length]!;
+        if (
+          param.blockType === "VAR_OUTPUT" ||
+          param.blockType === "VAR_IN_OUT"
+        ) {
+          args.push(this.emitOutputTempVar(param.typeName));
+        } else {
+          args.push(this.getDefaultValue(param.typeName));
         }
       }
     }
 
-    // Apply implicit widening casts and wrap ANY/ANY_* arguments with the
-    // CODESYS AnyType descriptor for user-defined function calls.
-    const paramTypes = this.getParamTypes(nameUpper);
-    if (paramTypes) {
-      this.coerceUserFuncArgs(args, expr.arguments, paramTypes);
-      this.wrapAnyTypeArgs(args, expr.arguments, paramTypes);
+    // Apply implicit widening casts and wrap ANY/ANY_* arguments, then wrap
+    // REFERENCE TO arguments with explicit reference constructors.
+    if (paramInfos) {
+      this.coerceUserFuncArgs(args, expr.arguments, paramInfos);
+      this.wrapAnyTypeArgs(args, expr.arguments, paramInfos);
+      this.wrapReferenceArgs(args, expr.arguments, paramInfos);
     }
 
     return `${expr.functionName}(${args.join(", ")})`;

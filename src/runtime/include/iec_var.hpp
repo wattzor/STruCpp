@@ -890,12 +890,16 @@ using IEC_SINT = IECVar<SINT_t>;
 using IEC_INT = IECVar<INT_t>;
 using IEC_DINT = IECVar<DINT_t>;
 using IEC_LINT = IECVar<LINT_t>;
+// CODESYS __XINT — target-width signed integer (see XINT_t in iec_types.hpp).
+using IEC_XINT = IECVar<XINT_t>;
 
 // Unsigned integers
 using IEC_USINT = IECVar<USINT_t>;
 using IEC_UINT = IECVar<UINT_t>;
 using IEC_UDINT = IECVar<UDINT_t>;
 using IEC_ULINT = IECVar<ULINT_t>;
+// CODESYS __UXINT — target-width unsigned integer (see UXINT_t in iec_types.hpp).
+using IEC_UXINT = IECVar<UXINT_t>;
 
 // Real numbers
 using IEC_REAL = IECVar<REAL_t>;

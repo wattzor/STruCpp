@@ -349,14 +349,25 @@ public:
     IEC_REFERENCE_TO() noexcept : ptr_(nullptr) {}
 
     /**
-     * Constructor - initialize bound to a variable (REFERENCE TO X := target)
+     * Constructor - initialize bound to a variable (REFERENCE TO X := target).
+     * Explicit so a normal value assignment `ref := var` does not become
+     * ambiguous with operator=(const T&). Call sites that pass a variable to a
+     * REFERENCE TO parameter wrap the argument explicitly.
      */
     explicit IEC_REFERENCE_TO(IECVar<T>& var) noexcept : ptr_(&var) {}
 
     // Copy/move - default is fine
     IEC_REFERENCE_TO(const IEC_REFERENCE_TO&) = default;
     IEC_REFERENCE_TO(IEC_REFERENCE_TO&&) = default;
-    IEC_REFERENCE_TO& operator=(const IEC_REFERENCE_TO&) = default;
+
+    /**
+     * Assignment from another reference writes through to the current target,
+     * matching IEC `refA := refB` semantics (copy value, not rebind pointer).
+     */
+    IEC_REFERENCE_TO& operator=(const IEC_REFERENCE_TO& other) noexcept {
+        if (ptr_ && other.ptr_) set(other.get());
+        return *this;
+    }
     IEC_REFERENCE_TO& operator=(IEC_REFERENCE_TO&&) = default;
 
     /**

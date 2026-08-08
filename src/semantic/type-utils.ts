@@ -108,10 +108,12 @@ export const TYPE_CATEGORIES: Record<string, TypeCategory[]> = {
   INT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
   DINT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
   LINT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
+  __XINT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
   USINT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
   UINT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
   UDINT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
   ULINT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
+  __UXINT: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_INT"],
   REAL: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_REAL"],
   LREAL: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_REAL"],
   TIME: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_DATE"],
@@ -153,10 +155,16 @@ const WIDENING_CATEGORY: Record<string, string> = {
   INT: "SINT",
   DINT: "SINT",
   LINT: "SINT",
+  // __XINT is a target-width signed integer; like __XWORD its real width is
+  // target-dependent, so the type-checker treats it as freely convertible
+  // with other integer/bit types.
+  __XINT: "SINT",
   USINT: "UINT",
   UINT: "UINT",
   UDINT: "UINT",
   ULINT: "UINT",
+  // __UXINT is a target-width unsigned integer.
+  __UXINT: "UINT",
   REAL: "REAL",
   LREAL: "REAL",
 };
@@ -411,6 +419,16 @@ export function isImplicitlyConvertible(
       return true;
   }
 
+  // __XINT / __UXINT are target-width signed/unsigned integers. Their real
+  // width is selected by the C++ target-width macro, so the type checker treats
+  // them as freely convertible with any integer or bit-string type.
+  if (s === "__XINT" || s === "__UXINT" || t === "__XINT" || t === "__UXINT") {
+    const other = s === "__XINT" || s === "__UXINT" ? t : s;
+    const otherCat = WIDENING_CATEGORY[other];
+    if (otherCat === "BIT" || otherCat === "SINT" || otherCat === "UINT")
+      return true;
+  }
+
   const sBits = ELEMENTARY_TYPES[s]?.sizeBits;
   const tBits = ELEMENTARY_TYPES[t]?.sizeBits;
   const sCat = WIDENING_CATEGORY[s];
@@ -449,6 +467,16 @@ export function isNarrowingConversion(target: string, source: string): boolean {
   const s = source.toUpperCase();
   const t = target.toUpperCase();
   if (s === t) return false;
+
+  // __XINT / __UXINT widths are target-dependent; do not emit narrowing
+  // warnings to/from integer or bit types (the C++ type resolves correctly).
+  if (
+    (s === "__XINT" || s === "__UXINT" || t === "__XINT" || t === "__UXINT") &&
+    ((WIDENING_CATEGORY[s] ?? "").match(/^(BIT|SINT|UINT)$/) ||
+      (WIDENING_CATEGORY[t] ?? "").match(/^(BIT|SINT|UINT)$/))
+  ) {
+    return false;
+  }
 
   const sBits = ELEMENTARY_TYPES[s]?.sizeBits;
   const tBits = ELEMENTARY_TYPES[t]?.sizeBits;

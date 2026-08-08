@@ -299,6 +299,8 @@ export class SymbolTables {
       "UDINT",
       "ULINT",
       "__XWORD",
+      "__XINT",
+      "__UXINT",
       "REAL",
       "LREAL",
       "TIME",
