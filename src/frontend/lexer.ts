@@ -276,6 +276,11 @@ export const END_STRUCT = createToken({
   name: "END_STRUCT",
   pattern: /END_STRUCT/i,
 });
+export const UNION = createToken({ name: "UNION", pattern: /UNION/i });
+export const END_UNION = createToken({
+  name: "END_UNION",
+  pattern: /END_UNION/i,
+});
 export const ARRAY = createToken({ name: "ARRAY", pattern: /ARRAY/i });
 export const OF = createToken({ name: "OF", pattern: /OF/i });
 
@@ -683,6 +688,8 @@ const keywordTokens = [
   END_TYPE,
   STRUCT,
   END_STRUCT,
+  UNION,
+  END_UNION,
   ARRAY,
   OF,
   CONFIGURATION,
@@ -797,6 +804,7 @@ export const allTokens = [
   END_FUNCTION,
   END_CONFIGURATION,
   END_RESOURCE,
+  END_UNION,
   END_STRUCT,
   END_TYPE,
   END_VAR,
@@ -821,6 +829,7 @@ export const allTokens = [
   CONSTANT,
   RETAIN,
   TYPE,
+  UNION,
   STRUCT,
   ARRAY,
   OF,

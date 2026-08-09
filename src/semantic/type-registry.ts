@@ -170,7 +170,8 @@ export class TypeRegistry {
   private collectDependencies(def: TypeDefinition, deps: string[]): void {
     switch (def.kind) {
       case "StructDefinition":
-        this.collectStructDependencies(def, deps);
+      case "UnionDefinition":
+        this.collectCompositeDependencies(def, deps);
         break;
       case "EnumDefinition":
         this.collectEnumDependencies(def, deps);
@@ -187,8 +188,8 @@ export class TypeRegistry {
     }
   }
 
-  private collectStructDependencies(
-    def: StructDefinition,
+  private collectCompositeDependencies(
+    def: StructDefinition | { fields: VarDeclaration[] },
     deps: string[],
   ): void {
     for (const field of def.fields) {
@@ -294,6 +295,14 @@ export class TypeRegistry {
           errors.push({
             typeName,
             message: "Structure has no fields",
+          });
+        }
+        break;
+      case "UnionDefinition":
+        if (def.fields.length === 0) {
+          errors.push({
+            typeName,
+            message: "Union has no fields",
           });
         }
         break;

@@ -325,6 +325,24 @@ describe('STParser', () => {
       expect(result.errors).toHaveLength(0);
     });
 
+    it('should parse a union type', () => {
+      const source = `
+        TYPE
+          Bytes : STRUCT
+            b1 : BYTE;
+            b2 : BYTE;
+          END_STRUCT;
+
+          WordOrBytes : UNION
+            asWord : WORD;
+            asBytes : Bytes;
+          END_UNION;
+        END_TYPE
+      `;
+      const result = parse(source);
+      expect(result.errors).toHaveLength(0);
+    });
+
     it('should parse an array type', () => {
       const source = `
         TYPE

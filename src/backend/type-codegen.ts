@@ -10,10 +10,12 @@
 import type {
   TypeDeclaration,
   StructDefinition,
+  UnionDefinition,
   EnumDefinition,
   ArrayDefinition,
   SubrangeDefinition,
   TypeReference,
+  VarDeclaration,
   Expression,
   LiteralExpression,
   VariableExpression,
@@ -211,6 +213,12 @@ export class TypeCodeGenerator {
         this.emit(`using IEC_${type.name} = ${type.name};`);
         this.emit("");
         break;
+      case "UnionDefinition":
+        this.generateUnionType(type.name, def);
+        // Union variables are not IECVar-wrapped; identity alias
+        this.emit(`using IEC_${type.name} = ${type.name};`);
+        this.emit("");
+        break;
       case "EnumDefinition":
         this.knownEnumNames.add(type.name.toUpperCase());
         this.generateEnumType(type.name, def);
@@ -373,6 +381,153 @@ export class TypeCodeGenerator {
 
     this.emit("};");
     this.emit("");
+  }
+
+  /**
+   * Generate a union type definition.
+   *
+   * Union members are emitted as raw (unwrapped) C++ types so the generated
+   * `union` is trivially constructible. Composite struct members are inlined
+   * with raw elementary fields — this keeps all members trivial and permits
+   * C-style type punning. Strings, arrays, references, pointers, FB instances,
+   * and non-trivial composite members are rejected by the analyzer.
+   */
+  private generateUnionType(name: string, def: UnionDefinition): void {
+    this.emit(`union ${name} {`);
+
+    const memberNames: string[] = [];
+    for (const field of def.fields) {
+      const emitted = this.emitUnionField(field, this.options.indent);
+      memberNames.push(...emitted);
+    }
+
+    if (memberNames.length > 0) {
+      const sizeArgs = memberNames.map((n) => `sizeof(${n})`).join(", ");
+      this.emit(
+        `${this.options.indent}static constexpr std::size_t iec_byte_size = std::max({${sizeArgs}});`,
+      );
+    }
+
+    this.emit("};");
+    this.emit("");
+  }
+
+  /**
+   * Emit a single union field declaration. Returns the C++ names that were emitted.
+   */
+  private emitUnionField(field: VarDeclaration, indent: string): string[] {
+    const emittedNames: string[] = [];
+    const resolved = this.resolveUnionMemberType(field.type, new Set<string>());
+
+    if (resolved.kind === "inline") {
+      // Anonymous inline struct; emit a fresh anonymous struct per declared name
+      for (const fieldName of field.names) {
+        const emitName = this.mangleUnionFieldName(fieldName, field.type.name);
+        this.emit(`${indent}struct {`);
+        for (const sf of resolved.def.fields) {
+          // Recursively emit each sub-field (including nested inline structs)
+          this.emitUnionField(sf, `${indent}    `);
+        }
+        this.emit(`${indent}} ${emitName};`);
+        emittedNames.push(emitName);
+      }
+      return emittedNames;
+    }
+
+    const cppType = resolved.cpp;
+    for (const fieldName of field.names) {
+      const emitName = this.mangleUnionFieldName(fieldName, field.type.name);
+      this.emit(`${indent}${cppType} ${emitName};`);
+      emittedNames.push(emitName);
+    }
+    return emittedNames;
+  }
+
+  /**
+   * Resolve the C++ representation for a union member.
+   * - Elementary types and enums → raw C++ scalar type string.
+   * - Named unions → bare union name.
+   * - Named structs (and aliases to structs) → inline definition.
+   */
+  private resolveUnionMemberType(
+    typeRef: TypeReference,
+    visited: Set<string>,
+  ):
+    | { kind: "scalar"; cpp: string }
+    | { kind: "inline"; def: StructDefinition } {
+    const upper = typeRef.name.toUpperCase();
+
+    if (typeRef.arrayDimensions && typeRef.arrayDimensions.length > 0) {
+      return { kind: "scalar", cpp: this.mapTypeToCpp(typeRef.name) };
+    }
+
+    if (upper === "STRING") {
+      return { kind: "scalar", cpp: `IECString<${typeRef.maxLength ?? 254}>` };
+    }
+    if (upper === "WSTRING") {
+      return {
+        kind: "scalar",
+        cpp: `IECWString<${typeRef.maxLength ?? 254}>`,
+      };
+    }
+
+    if (isElementaryType(upper)) {
+      return { kind: "scalar", cpp: IEC_TO_CPP_TYPE[upper] ?? typeRef.name };
+    }
+
+    if (this.knownEnumNames.has(upper)) {
+      return { kind: "scalar", cpp: typeRef.name };
+    }
+
+    const decl = this.typeMap.get(upper);
+    if (!decl) {
+      // Unknown type — analyzer should have caught this; fallback to bare name.
+      return { kind: "scalar", cpp: typeRef.name };
+    }
+
+    const def = decl.definition;
+
+    if (def.kind === "TypeReference") {
+      if (visited.has(upper)) {
+        return { kind: "scalar", cpp: typeRef.name };
+      }
+      visited.add(upper);
+      const aliased: TypeReference = { ...typeRef, name: def.name };
+      const aliasMaxLength =
+        typeRef.maxLength ??
+        (typeof def.maxLength === "number" ? def.maxLength : undefined);
+      if (aliasMaxLength !== undefined) {
+        aliased.maxLength = aliasMaxLength;
+      }
+      return this.resolveUnionMemberType(aliased, visited);
+    }
+
+    if (def.kind === "EnumDefinition") {
+      return { kind: "scalar", cpp: typeRef.name };
+    }
+
+    if (def.kind === "UnionDefinition") {
+      return { kind: "scalar", cpp: typeRef.name };
+    }
+
+    if (def.kind === "StructDefinition") {
+      return { kind: "inline", def };
+    }
+
+    return { kind: "scalar", cpp: typeRef.name };
+  }
+
+  /**
+   * Mangle a union field name when it matches its user-defined type name,
+   * matching the struct-field mangling convention.
+   */
+  private mangleUnionFieldName(fieldName: string, typeName: string): string {
+    const fieldUpper = fieldName.toUpperCase();
+    const typeUpper = typeName.toUpperCase();
+    if (!isElementaryType(typeUpper) && fieldUpper === typeUpper) {
+      return `${fieldName}_`;
+    }
+    return fieldName;
   }
 
   /**

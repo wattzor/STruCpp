@@ -260,10 +260,11 @@ export interface TypeDeclaration extends ASTNode {
 }
 
 /**
- * Type definition (struct, enum, array, subrange, or alias)
+ * Type definition (struct, union, enum, array, subrange, or alias)
  */
 export type TypeDefinition =
   | StructDefinition
+  | UnionDefinition
   | EnumDefinition
   | ArrayDefinition
   | SubrangeDefinition
@@ -274,6 +275,14 @@ export type TypeDefinition =
  */
 export interface StructDefinition extends ASTNode {
   kind: "StructDefinition";
+  fields: VarDeclaration[];
+}
+
+/**
+ * Union definition
+ */
+export interface UnionDefinition extends ASTNode {
+  kind: "UnionDefinition";
   fields: VarDeclaration[];
 }
 

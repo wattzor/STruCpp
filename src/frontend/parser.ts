@@ -569,6 +569,10 @@ export class STParser extends CstParser {
     this.OR({
       DEF: [
         { ALT: () => this.SUBRULE(this.structType) },
+        {
+          ALT: () => this.SUBRULE(this.unionType),
+          GATE: () => this.LA(1).tokenType === tokens.UNION,
+        },
         { ALT: () => this.SUBRULE(this.simpleEnumType) },
         {
           // POINTER TO ARRAY[...] OF T (must come before bare arrayType)
@@ -605,6 +609,17 @@ export class STParser extends CstParser {
       this.SUBRULE(this.varDeclaration);
     });
     this.CONSUME(tokens.END_STRUCT);
+  });
+
+  /**
+   * Union type definition
+   */
+  public unionType = this.RULE("unionType", () => {
+    this.CONSUME(tokens.UNION);
+    this.MANY(() => {
+      this.SUBRULE(this.varDeclaration);
+    });
+    this.CONSUME(tokens.END_UNION);
   });
 
   /**

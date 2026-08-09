@@ -417,6 +417,9 @@ export class CodeGenerator {
   /** Set of known struct/UDT type names (upper case) */
   protected knownStructTypes: Set<string> = new Set();
 
+  /** Set of known union type names (upper case) */
+  protected knownUnionTypes: Set<string> = new Set();
+
   /** Map of enum type name (upper case) → set of member names (upper case) for :: emission */
   protected enumTypeMembers: Map<string, Set<string>> = new Map();
 
@@ -1256,6 +1259,9 @@ export class CodeGenerator {
     const enumDescriptors: Array<{ name: string; members: string[] }> = [];
     for (const td of ast.types) {
       this.knownStructTypes.add(td.name.toUpperCase());
+      if (td.definition.kind === "UnionDefinition") {
+        this.knownUnionTypes.add(td.name.toUpperCase());
+      }
       if (td.definition.kind === "EnumDefinition") {
         const memberNames = td.definition.members.map((m) => m.name);
         const members = new Set(memberNames.map((m) => m.toUpperCase()));
@@ -7050,6 +7056,7 @@ export class CodeGenerator {
     // disambiguation here because the member is already mangled (name_).
     if (this.enumTypeMembers.has(u)) return "";
     if (this.knownFBTypes.has(u)) return "class ";
+    if (this.knownUnionTypes.has(u)) return "union ";
     if (this.knownStructTypes.has(u)) return "struct ";
     return "";
   }

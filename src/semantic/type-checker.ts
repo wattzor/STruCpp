@@ -54,6 +54,7 @@ import {
   stdFuncReturnsCommonType,
   getTypeNumericRange,
   parseIntegerLiteral,
+  isCompositeDefinition,
 } from "./type-utils.js";
 import {
   getSystemType,
@@ -1544,7 +1545,7 @@ export class TypeChecker {
       this.ast.types.some(
         (td) =>
           td.name.toUpperCase() === upper &&
-          td.definition.kind === "StructDefinition",
+          isCompositeDefinition(td.definition),
       )
     ) {
       return true;
