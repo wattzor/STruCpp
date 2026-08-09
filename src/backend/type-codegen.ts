@@ -406,6 +406,21 @@ export class TypeCodeGenerator {
       this.emit(
         `${this.options.indent}static constexpr std::size_t iec_byte_size = std::max({${sizeArgs}});`,
       );
+
+      // Equality: unions share storage, so compare the raw IEC bytes.
+      this.emit(
+        `${this.options.indent}bool operator==(const ${name}& other) const noexcept { return std::memcmp(this, &other, iec_byte_size) == 0; }`,
+      );
+      this.emit(
+        `${this.options.indent}bool operator!=(const ${name}& other) const noexcept { return !(*this == other); }`,
+      );
+
+      // Stream output is only needed when building test diagnostics.
+      this.emit(`${this.options.indent}#ifdef STRUCPP_TEST`);
+      this.emit(
+        `${this.options.indent}friend std::ostream& operator<<(std::ostream& os, const ${name}&) { return os << "<union: ${name}>"; }`,
+      );
+      this.emit(`${this.options.indent}#endif`);
     }
 
     this.emit("};");

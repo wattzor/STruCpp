@@ -170,6 +170,9 @@ describe('TypeCodeGenerator', () => {
       expect(result).toContain('BYTE_t b2;');
       expect(result).toContain('} asBytes;');
       expect(result).toContain('iec_byte_size = std::max({');
+      expect(result).toContain('bool operator==(const Overlay& other) const noexcept');
+      expect(result).toContain('bool operator!=(const Overlay& other) const noexcept');
+      expect(result).toContain('friend std::ostream& operator<<(std::ostream& os, const Overlay&)');
       expect(result).toContain('using IEC_Overlay = Overlay;');
     });
 
