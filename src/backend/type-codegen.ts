@@ -408,6 +408,35 @@ export class TypeCodeGenerator {
       );
     }
 
+    if (def.fields.length > 0) {
+      const eqClauses: string[] = [];
+      const displayParts: string[] = [];
+      const displayFirst = { first: true };
+      for (const field of def.fields) {
+        eqClauses.push(
+          ...this.collectUnionEqualityClauses("(*this)", "other", field),
+        );
+        displayParts.push(
+          ...this.collectUnionDisplayFragments("u", field, displayFirst),
+        );
+      }
+      const eqExpr = eqClauses.length ? eqClauses.join(" && ") : "true";
+      this.emit(
+        `${this.options.indent}bool operator==(const ${name}& other) const noexcept { return ${eqExpr}; }`,
+      );
+      this.emit(
+        `${this.options.indent}bool operator!=(const ${name}& other) const noexcept { return !(*this == other); }`,
+      );
+      this.emit(`${this.options.indent}#ifdef STRUCPP_TEST`);
+      const displayBody = displayParts.length
+        ? ` ${displayParts.join(" ")} `
+        : " ";
+      this.emit(
+        `${this.options.indent}friend std::ostream& operator<<(std::ostream& os, const ${name}& u) { os << "{";${displayBody}os << "}"; return os; }`,
+      );
+      this.emit(`${this.options.indent}#endif`);
+    }
+
     this.emit("};");
     this.emit("");
   }
@@ -528,6 +557,82 @@ export class TypeCodeGenerator {
       return `${fieldName}_`;
     }
     return fieldName;
+  }
+
+  /**
+   * Collect leaf equality clauses for a union field. Inline anonymous structs
+   * are flattened so each elementary/enum/named-union leaf is compared.
+   */
+  private collectUnionEqualityClauses(
+    thisExpr: string,
+    otherExpr: string,
+    field: VarDeclaration,
+  ): string[] {
+    const resolved = this.resolveUnionMemberType(field.type, new Set<string>());
+    if (resolved.kind === "inline") {
+      const clauses: string[] = [];
+      for (const fieldName of field.names) {
+        const emitName = this.mangleUnionFieldName(fieldName, field.type.name);
+        for (const subField of resolved.def.fields) {
+          clauses.push(
+            ...this.collectUnionEqualityClauses(
+              `${thisExpr}.${emitName}`,
+              `${otherExpr}.${emitName}`,
+              subField,
+            ),
+          );
+        }
+      }
+      return clauses;
+    }
+
+    return field.names.map((fieldName) => {
+      const emitName = this.mangleUnionFieldName(fieldName, field.type.name);
+      return `${thisExpr}.${emitName} == ${otherExpr}.${emitName}`;
+    });
+  }
+
+  /**
+   * Collect `os << ...` fragments for displaying a union field under
+   * `STRUCPP_TEST`. Inline anonymous structs are recursively expanded.
+   * `firstState` is mutated so separators are inserted correctly across all
+   * emitted fragments.
+   */
+  private collectUnionDisplayFragments(
+    uExpr: string,
+    field: VarDeclaration,
+    firstState: { first: boolean },
+  ): string[] {
+    const resolved = this.resolveUnionMemberType(field.type, new Set<string>());
+    const parts: string[] = [];
+
+    for (const fieldName of field.names) {
+      const emitName = this.mangleUnionFieldName(fieldName, field.type.name);
+      const prefix = firstState.first ? "" : `os << ", "; `;
+
+      if (resolved.kind === "inline") {
+        parts.push(`${prefix}os << "${emitName}={";`);
+        firstState.first = false;
+        const subFirst = { first: true };
+        for (const subField of resolved.def.fields) {
+          parts.push(
+            ...this.collectUnionDisplayFragments(
+              `${uExpr}.${emitName}`,
+              subField,
+              subFirst,
+            ),
+          );
+        }
+        parts.push(`os << "}";`);
+      } else {
+        parts.push(
+          `${prefix}os << "${emitName}=" << to_display_string(${uExpr}.${emitName});`,
+        );
+        firstState.first = false;
+      }
+    }
+
+    return parts;
   }
 
   /**
