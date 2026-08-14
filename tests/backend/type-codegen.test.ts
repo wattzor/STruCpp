@@ -22,6 +22,9 @@ import type {
   VarDeclaration,
   ArrayDimension,
   LiteralExpression,
+  BinaryExpression,
+  UnaryExpression,
+  VariableExpression,
 } from '../../src/frontend/ast.js';
 
 const createSourceSpan = () => ({
@@ -282,6 +285,99 @@ describe('TypeCodeGenerator', () => {
       const result = generator.generateTypes([type]);
       // Uses Array1D with preserved non-zero bounds (3..7), element type is IECVar-wrapped
       expect(result).toContain('using OffsetArray = Array1D<IEC_INT, 3, 7>;');
+    });
+
+    it('should evaluate constant expressions in array dimensions', () => {
+      const generator = new TypeCodeGenerator();
+      const binary = (
+        op: BinaryExpression['operator'],
+        left: number,
+        right: number,
+      ): BinaryExpression => ({
+        kind: 'BinaryExpression',
+        sourceSpan: createSourceSpan(),
+        operator: op,
+        left: createLiteral(left),
+        right: createLiteral(right),
+        type: { kind: 'TypeReference', sourceSpan: createSourceSpan(), name: 'INT', isReference: false },
+        resultTypeName: 'INT',
+      });
+      const unary = (operand: number): UnaryExpression => ({
+        kind: 'UnaryExpression',
+        sourceSpan: createSourceSpan(),
+        operator: '-',
+        operand: createLiteral(operand),
+        type: { kind: 'TypeReference', sourceSpan: createSourceSpan(), name: 'INT', isReference: false },
+      });
+
+      const arrayDef: ArrayDefinition = {
+        kind: 'ArrayDefinition',
+        sourceSpan: createSourceSpan(),
+        dimensions: [
+          { kind: 'ArrayDimension', sourceSpan: createSourceSpan(), isVariableLength: false, start: unary(5), end: binary('+', 2, 3) },
+          { kind: 'ArrayDimension', sourceSpan: createSourceSpan(), isVariableLength: false, start: createLiteral(0), end: binary('/', 10, 2) },
+          { kind: 'ArrayDimension', sourceSpan: createSourceSpan(), isVariableLength: false, start: createLiteral(0), end: binary('MOD', 10, 3) },
+        ],
+        elementType: createTypeRef('INT'),
+      };
+      const type: TypeDeclaration = {
+        kind: 'TypeDeclaration',
+        sourceSpan: createSourceSpan(),
+        name: 'ExprArray',
+        definition: arrayDef,
+      };
+
+      const result = generator.generateTypes([type]);
+      expect(result).toContain('using ExprArray = Array3D<IEC_INT, -5, 5, 0, 5, 0, 1>;');
+    });
+
+    it('should default non-constant dimension expressions to 0', () => {
+      const generator = new TypeCodeGenerator();
+      const badBinary: BinaryExpression = {
+        kind: 'BinaryExpression',
+        sourceSpan: createSourceSpan(),
+        operator: '**' as BinaryExpression['operator'],
+        left: createLiteral(2),
+        right: createLiteral(3),
+        type: { kind: 'TypeReference', sourceSpan: createSourceSpan(), name: 'INT', isReference: false },
+        resultTypeName: 'INT',
+      };
+      const stringLiteral: LiteralExpression = {
+        kind: 'LiteralExpression',
+        sourceSpan: createSourceSpan(),
+        literalType: 'STRING',
+        value: 'abc',
+        rawValue: '\'abc\'',
+      };
+      const variable: VariableExpression = {
+        kind: 'VariableExpression',
+        sourceSpan: createSourceSpan(),
+        name: 'x',
+        fieldAccess: [],
+        isDereference: false,
+        isReference: false,
+      };
+
+      const arrayDef: ArrayDefinition = {
+        kind: 'ArrayDefinition',
+        sourceSpan: createSourceSpan(),
+        dimensions: [
+          { kind: 'ArrayDimension', sourceSpan: createSourceSpan(), isVariableLength: false, start: createLiteral(0), end: badBinary },
+          { kind: 'ArrayDimension', sourceSpan: createSourceSpan(), isVariableLength: false, start: createLiteral(0), end: stringLiteral },
+          { kind: 'ArrayDimension', sourceSpan: createSourceSpan(), isVariableLength: false, start: createLiteral(0), end: variable },
+        ],
+        elementType: createTypeRef('INT'),
+      };
+      const type: TypeDeclaration = {
+        kind: 'TypeDeclaration',
+        sourceSpan: createSourceSpan(),
+        name: 'FallbackArray',
+        definition: arrayDef,
+      };
+
+      const result = generator.generateTypes([type]);
+      // All non-constant expressions evaluate to 0, giving degenerate 0..0 bounds
+      expect(result).toContain('FallbackArray');
     });
 
     it('should generate subrange type', () => {
