@@ -63,4 +63,35 @@ describe('parseTestFile', () => {
     expect(result.errors[0]!.message).toContain('forced AST failure');
     expect(result.testFile).toBeUndefined();
   });
+
+  it('handles parse errors that lack all optional location fields', () => {
+    (parseTestSource as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      cst: undefined,
+      errors: [{}],
+      comments: [],
+    });
+
+    const result = parseTestFile('', 'bare.st');
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]!.message).toBe('Parse error');
+    expect(result.errors[0]!.line).toBe(0);
+    expect(result.errors[0]!.column).toBe(0);
+  });
+
+  it('catches non-Error AST builder throws', () => {
+    const fakeCst = { name: 'testFile' } as unknown as Record<string, unknown>;
+    (parseTestSource as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      cst: fakeCst,
+      errors: [],
+      comments: [],
+    });
+    (buildTestAST as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw 'plain string failure';
+    });
+
+    const result = parseTestFile('', 'boom.st');
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]!.message).toContain('plain string failure');
+    expect(result.testFile).toBeUndefined();
+  });
 });
