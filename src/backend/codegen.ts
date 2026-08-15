@@ -51,6 +51,7 @@ import type {
   ProjectModel,
   ConfigurationDecl,
   ProgramDecl,
+  ProjectVarDeclaration,
 } from "../project-model.js";
 import type {
   LibraryChunk,
@@ -71,7 +72,16 @@ import {
   getSystemType,
 } from "../semantic/system-types.js";
 import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
-import { formatArrayType, iecBaseToCppLiteral } from "./codegen-utils.js";
+import {
+  generateInitializerValue,
+  isStructInitializerValue,
+  type StructInitEmitter,
+} from "./struct-init-codegen.js";
+import {
+  formatArrayType,
+  formatIntegerLiteral,
+  iecBaseToCppLiteral,
+} from "./codegen-utils.js";
 import {
   getTypeBits,
   getTypeCategory,
@@ -419,6 +429,9 @@ export class CodeGenerator {
 
   /** Set of known union type names (upper case) */
   protected knownUnionTypes: Set<string> = new Set();
+
+  /** Cached emitter used by {@link generateInitializerValue}. */
+  private structInitEmitter?: StructInitEmitter;
 
   /** Map of enum type name (upper case) → set of member names (upper case) for :: emission */
   protected enumTypeMembers: Map<string, Set<string>> = new Map();
@@ -1322,6 +1335,7 @@ export class CodeGenerator {
     this.emitHeader("");
     this.emitHeader('#include "iec_types.hpp"');
     this.emitHeader('#include "iec_var.hpp"');
+    this.emitHeader('#include "iec_struct.hpp"');
     this.emitHeader('#include "iec_global.hpp"');
     this.emitHeader('#include "iec_array.hpp"');
     this.emitHeader('#include "iec_located.hpp"');
@@ -1412,19 +1426,28 @@ export class CodeGenerator {
       this.emitHeader("");
     }
 
-    // Generate user-defined types (Phase 2.2)
-    if (ast.types.length > 0) {
-      const typeRegistry = new TypeRegistry();
-      typeRegistry.registerTypes(ast.types);
-      const typeCodeGen = new TypeCodeGenerator({
-        indent: this.options.indent,
-        lineEnding: this.options.lineEnding,
-        emitChunkMarkers: this.options.emitChunkMarkers ?? false,
-      });
-      const typeCode = typeCodeGen.generateFromRegistry(typeRegistry);
-      for (const line of typeCode.split(this.options.lineEnding)) {
-        this.emitHeader(line);
-      }
+    // Generate forward declarations for all POUs and interfaces before any
+    // user-defined TYPE aliases, so array-of-FB aliases like
+    // `AccumGrid : ARRAY[0..1, 0..1] OF Accum` can name the FB class.
+    for (const iface of ast.interfaces) {
+      this.emitHeader(`class ${iface.name};`);
+    }
+    for (const fb of ast.functionBlocks) {
+      this.emitHeader(`class ${fb.name};`);
+    }
+    for (const prog of ast.programs) {
+      this.emitHeader(`class Program_${prog.name};`);
+    }
+    for (const config of ast.configurations) {
+      this.emitHeader(`class Configuration_${config.name};`);
+    }
+    if (
+      ast.interfaces.length > 0 ||
+      ast.functionBlocks.length > 0 ||
+      ast.programs.length > 0 ||
+      ast.configurations.length > 0
+    ) {
+      this.emitHeader("");
     }
 
     // Inject reachable library chunks (header side).
@@ -1463,26 +1486,19 @@ export class CodeGenerator {
       this.emitHeader("");
     }
 
-    // Generate forward declarations
-    for (const iface of ast.interfaces) {
-      this.emitHeader(`class ${iface.name};`);
-    }
-    for (const fb of ast.functionBlocks) {
-      this.emitHeader(`class ${fb.name};`);
-    }
-    for (const prog of ast.programs) {
-      this.emitHeader(`class Program_${prog.name};`);
-    }
-    for (const config of ast.configurations) {
-      this.emitHeader(`class Configuration_${config.name};`);
-    }
-    if (
-      ast.interfaces.length > 0 ||
-      ast.functionBlocks.length > 0 ||
-      ast.programs.length > 0 ||
-      ast.configurations.length > 0
-    ) {
-      this.emitHeader("");
+    // Generate user-defined types (Phase 2.2)
+    if (ast.types.length > 0) {
+      const typeRegistry = new TypeRegistry();
+      typeRegistry.registerTypes(ast.types);
+      const typeCodeGen = new TypeCodeGenerator({
+        indent: this.options.indent,
+        lineEnding: this.options.lineEnding,
+        emitChunkMarkers: this.options.emitChunkMarkers ?? false,
+      });
+      const typeCode = typeCodeGen.generateFromRegistry(typeRegistry);
+      for (const line of typeCode.split(this.options.lineEnding)) {
+        this.emitHeader(line);
+      }
     }
 
     // Generate interface declarations (before FBs since FBs may implement interfaces)
@@ -2656,6 +2672,9 @@ export class CodeGenerator {
           !isPointerInout &&
           this.isFBType(decl.type.name);
         if (decl.initialValue) {
+          const isCompositeInit =
+            decl.initialValue.kind === "StructInitializerExpression" ||
+            decl.initialValue.kind === "ArrayLiteralExpression";
           const initExpr = this.generateInitializer(
             decl.type,
             decl.initialValue,
@@ -2667,7 +2686,15 @@ export class CodeGenerator {
               cppType,
               decl.type.name,
             );
-            userInitStatements.push(`    this->${memberName} = ${initExpr};`);
+            if (isCompositeInit) {
+              // Composite initialisers can be placed in the C++ constructor
+              // init list (they compile for IECVar<T> / GlobalVar<T> members).
+              fbInits.push(`${memberName}(${initExpr})`);
+            } else {
+              // Scalar/user initial values must stay in __strucpp_fb_init so
+              // they are applied after FB_Init returns (see fb-lifecycle test).
+              userInitStatements.push(`    this->${memberName} = ${initExpr};`);
+            }
           }
         } else if (isPointerInout) {
           for (const name of decl.names) {
@@ -3198,13 +3225,9 @@ export class CodeGenerator {
         ) {
           continue;
         }
-        const initVal = this.getDefaultValue(
-          decl.typeName,
-          decl.initialValue,
-          decl.elementTypeName,
-        );
-        // Skip user-defined types (empty initVal) - they use default constructors
-        if (initVal) {
+        const initVal = this.projectVarInitializer(decl);
+        // Skip user-defined types (undefined initVal) - they use default constructors
+        if (initVal !== undefined && initVal !== "") {
           inits.push(`${decl.name}(${initVal})`);
         }
       }
@@ -3242,13 +3265,9 @@ export class CodeGenerator {
         ) {
           continue;
         }
-        const initVal = this.getDefaultValue(
-          decl.typeName,
-          decl.initialValue,
-          decl.elementTypeName,
-        );
-        // Skip user-defined types (empty initVal) - they use default constructors
-        if (initVal) {
+        const initVal = this.projectVarInitializer(decl);
+        // Skip user-defined types (undefined initVal) - they use default constructors
+        if (initVal !== undefined && initVal !== "") {
           inits.push(`${decl.name}(${initVal})`);
         }
       }
@@ -3367,11 +3386,7 @@ export class CodeGenerator {
             ? { referenceKind: gvar.referenceKind }
             : {}),
         });
-        const initVal = this.getDefaultValue(
-          gvar.typeName,
-          gvar.initialValue,
-          gvar.elementTypeName,
-        );
+        const initVal = this.projectVarInitializer(gvar);
 
         if (!emittedAny) {
           this.emitHeader(
@@ -3381,9 +3396,24 @@ export class CodeGenerator {
           );
           emittedAny = true;
         }
-        this.emitHeader(
-          `inline GlobalVar<${cppType}> ${gvar.name}{${initVal}};`,
-        );
+        let wrappedInit = initVal;
+        if (
+          initVal !== undefined &&
+          gvar.arrayDimensions &&
+          gvar.arrayDimensions.length > 0 &&
+          initVal.startsWith("{")
+        ) {
+          // GlobalVar's constructor is a template; a bare braced list is
+          // non-deducible, so name the inner array type explicitly.
+          wrappedInit = `${cppType}${initVal}`;
+        }
+        if (wrappedInit !== undefined) {
+          this.emitHeader(
+            `inline GlobalVar<${cppType}> ${gvar.name}{${wrappedInit}};`,
+          );
+        } else {
+          this.emitHeader(`inline GlobalVar<${cppType}> ${gvar.name};`);
+        }
 
         // A located VAR_GLOBAL (`AT %IX/%QX/%MW ...`) enters the located-vars
         // descriptor so the runtime binds it to the I/O image. Owner "@config"
@@ -3670,7 +3700,10 @@ export class CodeGenerator {
         } else if (stmt.call.functionName.toUpperCase() === "ADVANCE_TIME") {
           this.generateAdvanceTime(stmt.call, indent);
         } else {
-          const fbType = this.getFBInvocationType(stmt.call.functionName);
+          const fbType = this.getFBInvocationType(
+            stmt.call.functionName,
+            stmt.call.instance !== undefined,
+          );
           if (fbType) {
             this.generateFBInvocation(stmt.call, indent);
           } else if (
@@ -5132,17 +5165,155 @@ export class CodeGenerator {
     return false;
   }
 
+  /**
+   * Emit C++ for a scalar / non-composite initializer value.
+   *
+   * Differs from {@link generateExpression} in two ways that matter for
+   * declaration initializers: string literals are emitted bare (`"..."` /
+   * `u"..."`) rather than wrapped in `IEC_STRING(...)` / `IEC_WSTRING(...)`,
+   * and typed numeric literals such as `INT#5` are emitted without a
+   * `static_cast` because the target variable's constructor already knows
+   * the desired IEC type.
+   */
+  private generateInitializerExpression(
+    expr: Expression,
+    stTypeName?: string,
+  ): string {
+    if (expr.kind === "LiteralExpression") {
+      return this.generateInitializerLiteralExpression(expr);
+    }
+    if (expr.kind === "UnaryExpression") {
+      const operand = this.generateInitializerExpression(
+        expr.operand,
+        stTypeName,
+      );
+      switch (expr.operator) {
+        case "+":
+        case "-":
+          return `${expr.operator}${operand}`;
+        default:
+          break;
+      }
+    }
+    if (expr.kind === "ParenthesizedExpression") {
+      return `(${this.generateInitializerExpression(expr.expression, stTypeName)})`;
+    }
+    // Fallback to the normal expression path for variables, binary
+    // constant expressions, function calls, etc.
+    return this.generateExpression(expr);
+  }
+
+  /**
+   * Emit a literal value suitable for a declaration initializer.
+   */
+  private generateInitializerLiteralExpression(
+    expr: LiteralExpression,
+  ): string {
+    if (expr.typePrefix) {
+      const upperPrefix = expr.typePrefix.toUpperCase();
+      const hashIdx = expr.rawValue.indexOf("#");
+      const valuePart = expr.rawValue.substring(hashIdx + 1);
+      if (upperPrefix === "STRING") {
+        const inner = valuePart.replace(/^'|'$/g, "");
+        const escaped = this.translateIECString(inner);
+        return `"${escaped}"`;
+      }
+      if (upperPrefix === "WSTRING") {
+        const inner = valuePart.replace(/^["']|["']$/g, "");
+        const escaped = this.translateIECString(inner);
+        return `u"${escaped}"`;
+      }
+      // Typed numeric: strip the prefix and normalize the literal so leading
+      // zeros are not treated as C++ octal; the target IEC type constructor
+      // applies the exact cast. For REAL/LREAL keep the raw textual form (with
+      // underscores stripped) so exponents such as 1.5E3 are not lost.
+      if (upperPrefix === "REAL" || upperPrefix === "LREAL") {
+        const raw = iecBaseToCppLiteral(valuePart);
+        return /[.eE]/.test(raw) ? raw : `${raw}.0`;
+      }
+      return formatIntegerLiteral(valuePart, expr.value as number);
+    }
+
+    switch (expr.literalType) {
+      case "BOOL": {
+        const raw = expr.rawValue?.toUpperCase();
+        return expr.value === true || expr.value === "TRUE" || raw === "TRUE"
+          ? "true"
+          : "false";
+      }
+      case "INT": {
+        return formatIntegerLiteral(expr.rawValue, expr.value as number);
+      }
+      case "REAL": {
+        // Preserve the raw textual form (including exponent notation and
+        // underscores) rather than the parsed number, which loses `1.5E3`.
+        const raw = iecBaseToCppLiteral(expr.rawValue);
+        // Ensure real literals have a decimal point (but not for scientific notation).
+        return raw.includes(".") || /[eE]/.test(raw) ? raw : `${raw}.0`;
+      }
+      case "STRING": {
+        const inner = expr.rawValue.replace(/^'|'$/g, "");
+        const escaped = this.translateIECString(inner);
+        return `"${escaped}"`;
+      }
+      case "WSTRING": {
+        const inner = expr.rawValue.replace(/^["']|["']$/g, "");
+        const escaped = this.translateIECString(inner);
+        return `u"${escaped}"`;
+      }
+      case "TIME":
+        return `${parseTimeLiteral(String(expr.value)).nanoseconds}LL`;
+      case "DATE":
+        return `${parseDateLiteralToDays(String(expr.value))}LL`;
+      case "TIME_OF_DAY":
+        return `${parseTodLiteralToNs(String(expr.value))}LL`;
+      case "DATE_AND_TIME":
+        return `${parseDtLiteralToNs(String(expr.value))}LL`;
+      case "LTIME":
+        return `${parseTimeLiteral(String(expr.value)).nanoseconds}LL`;
+      case "LDATE":
+        return `${parseDateLiteralToDays(String(expr.value))}LL`;
+      case "LTOD":
+        return `${parseTodLiteralToNs(String(expr.value))}LL`;
+      case "LDT":
+        return `${parseDtLiteralToNs(String(expr.value))}LL`;
+      case "NULL":
+        return "IEC_NULL";
+      default:
+        return String(expr.value);
+    }
+  }
+
   protected generateInitializer(
     typeRef: {
       name: string;
       elementTypeName?: string;
+      maxLength?: number | string;
+      arrayDimensions?: Array<{ start: number; end: number }>;
+      referenceKind?: string;
+      elementReferenceKind?: string;
     },
     expr: Expression,
   ): string {
     if (this.isInterfaceTypeRef(typeRef)) {
       return this.generatePointerExpression(expr);
     }
-    return this.generateExpression(expr);
+    if (isGenericTypeName(typeRef.name.toUpperCase())) {
+      // ANY/ANY_* input defaults are represented by an empty AnyType descriptor.
+      return "strucpp::AnyType()";
+    }
+    if (
+      expr.kind === "ArrayLiteralExpression" ||
+      isStructInitializerValue(expr)
+    ) {
+      return generateInitializerValue(
+        expr,
+        this.mapTypeRefToCpp(typeRef as TypeReference),
+        typeRef.name,
+        this.getStructInitEmitter(),
+      );
+    }
+    return this.generateInitializerExpression(expr, typeRef.name);
   }
 
   protected generatePointerExpression(expr: Expression): string {
@@ -5268,7 +5439,7 @@ export class CodeGenerator {
         return `IEC_WSTRING(u"${escaped}")`;
       }
       const cppType = `IEC_${expr.typePrefix}`;
-      const cppValue = iecBaseToCppLiteral(valuePart);
+      const cppValue = formatIntegerLiteral(valuePart, expr.value as number);
       return `static_cast<${cppType}>(${cppValue})`;
     }
 
@@ -5280,7 +5451,7 @@ export class CodeGenerator {
           ? "true"
           : "false";
       case "INT": {
-        return this.formatIntegerLiteral(expr.rawValue, expr.value as number);
+        return formatIntegerLiteral(expr.rawValue, expr.value as number);
       }
       case "REAL": {
         const str = String(expr.value);
@@ -5345,19 +5516,6 @@ export class CodeGenerator {
    * $P/$p (form feed), $$ (literal $), $' (single quote), $XX (hex byte),
    * '' (doubled single quote), and C++ escaping for backslash and double-quote.
    */
-
-  private formatIntegerLiteral(rawValue: string, value: number): string {
-    // Based literals (16#FF, 8#77, 2#1010) → C++ notation; plain decimals use numeric value
-    const upper = rawValue.toUpperCase().replace(/_/g, "");
-    if (
-      upper.startsWith("16#") ||
-      upper.startsWith("8#") ||
-      upper.startsWith("2#")
-    ) {
-      return iecBaseToCppLiteral(rawValue);
-    }
-    return String(value);
-  }
 
   private translateIECString(inner: string): string {
     let result = "";
@@ -6761,7 +6919,7 @@ export class CodeGenerator {
         ) {
           args.push(this.emitOutputTempVar(param.typeName));
         } else {
-          args.push(this.getDefaultValue(param.typeName));
+          args.push(this.getTypeDefaultValue(param.typeName));
         }
       }
     }
@@ -6933,7 +7091,7 @@ export class CodeGenerator {
           };
         } else {
           result[i] = {
-            expr: param.defaultExpr ?? this.getDefaultValue(param.typeName),
+            expr: param.defaultExpr ?? this.getTypeDefaultValue(param.typeName),
             arg: undefined,
           };
         }
@@ -7433,8 +7591,19 @@ export class CodeGenerator {
    * Check if a function call statement is actually an FB invocation.
    * Returns the FB type name if it is, undefined otherwise.
    */
-  private getFBInvocationType(functionName: string): string | undefined {
-    const varType = this.currentScopeVarTypes.get(functionName.toUpperCase());
+  private getFBInvocationType(
+    functionName: string,
+    isElementCall = false,
+  ): string | undefined {
+    const declaredType = this.currentScopeVarTypes.get(
+      functionName.toUpperCase(),
+    );
+    if (!declaredType) return undefined;
+    const varType = isElementCall
+      ? this.ast
+        ? resolveArrayElementType(declaredType, this.ast)
+        : undefined
+      : declaredType;
     if (
       varType &&
       (this.isFBType(varType) ||
@@ -7554,13 +7723,18 @@ export class CodeGenerator {
     }
 
     const instanceName =
-      this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName;
+      call.instance !== undefined
+        ? this.generateExpression(call.instance)
+        : (this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName);
 
     // Extract implicit EN/ENO parameters
     const { enExpr, enoVar, filteredArgs } = this.extractEnEno(call.arguments);
 
     // Resolve FB type for positional argument mapping
-    const fbTypeName = this.currentScopeVarTypes.get(rawName.toUpperCase());
+    const fbTypeName = this.getFBInvocationType(
+      call.functionName,
+      call.instance !== undefined,
+    );
     const inputParamNames = fbTypeName
       ? this.fbInputParams.get(fbTypeName.toUpperCase())
       : undefined;
@@ -7846,154 +8020,107 @@ export class CodeGenerator {
   }
 
   /**
-   * Get the default value for a type.
+   * Initialiser for a project-model variable, or undefined when the member
+   * should be left to its default constructor.
+   *
+   * Shared by the PROGRAM constructor initialiser lists and the file-scope
+   * VAR_GLOBAL definitions so all three agree on how a declaration initialises.
    */
-  private getDefaultValue(
-    typeName: string,
-    initialValue?: string,
-    elementTypeName?: string,
-  ): string {
-    const upperType = typeName.toUpperCase();
+  private projectVarInitializer(
+    decl: ProjectVarDeclaration,
+  ): string | undefined {
+    // References (REF_TO / REFERENCE TO) and pointers (POINTER TO) wrap a
+    // pointer internally and must be default-constructed (unbound/null) —
+    // `name(0)` is ambiguous for IEC_REF_TO, and also for IEC_Ptr, which has an
+    // integer-address ctor (the `0` literal matches both the nullptr_t and the
+    // uintptr_t overload). The default ctor sets the pointer to nullptr, which
+    // is exactly the IEC default. References are bound later via REF= / :=
+    // REF(); pointers via := ADR()/&.
+    if (
+      decl.referenceKind === "ref_to" ||
+      decl.referenceKind === "reference_to" ||
+      decl.referenceKind === "pointer_to"
+    ) {
+      return undefined;
+    }
+    const upperType = decl.typeName.toUpperCase();
     if (this.knownInterfaceTypes.has(upperType)) {
-      if (initialValue) {
-        const upperInit = initialValue.toUpperCase();
-        if (upperInit === "0" || upperInit === "NULL") return "nullptr";
-        return `&${initialValue}`;
+      if (decl.initialValue) {
+        return this.generateInitializer(
+          this.projectVarToTypeRef(decl),
+          decl.initialValue,
+        );
       }
       return "nullptr";
     }
-    // Generic ANY/ANY_* parameters are passed as strucpp::AnyType descriptors.
     if (isGenericTypeName(upperType)) {
       return "strucpp::AnyType()";
     }
-    if (initialValue) {
-      // Convert enum dot-notation (TRAFFICSTATE.RED) to C++ scoped access (TRAFFICSTATE::RED)
-      const dotIdx = initialValue.indexOf(".");
-      if (dotIdx > 0) {
-        const prefix = initialValue.substring(0, dotIdx).toUpperCase();
-        if (this.enumTypeMembers.has(prefix)) {
-          return initialValue.replace(".", "::");
-        }
-      }
-      // Bare enum initializer: Stopped → Irrigation_State::Stopped
-      const bareEntry = this.enumMemberToType.get(initialValue.toUpperCase());
-      if (bareEntry?.typeName) {
-        return `${bareEntry.typeName}::${initialValue}`;
-      }
-      // Convert TIME/LTIME literals (T#30s, TIME#1m2s) to nanoseconds
-      const upperInit = initialValue.toUpperCase();
+    if (decl.initialValue) {
       if (
-        upperInit.startsWith("T#") ||
-        upperInit.startsWith("TIME#") ||
-        upperInit.startsWith("LTIME#") ||
-        upperInit.startsWith("LT#")
+        decl.initialValue.kind === "ArrayLiteralExpression" ||
+        isStructInitializerValue(decl.initialValue)
       ) {
-        const timeVal = parseTimeLiteral(initialValue);
-        return `${timeVal.nanoseconds}LL`;
+        return generateInitializerValue(
+          decl.initialValue,
+          this.mapTypeRefToCpp(this.projectVarToTypeRef(decl)),
+          decl.typeName,
+          this.getStructInitEmitter(),
+        );
       }
-      // Convert temporal calendar literals at the PROGRAM-init path —
-      // FB initialisers route through `generateExpression` which
-      // handles these in `generateLiteralExpression`, but PROGRAM VAR
-      // initialisers come through this helper with the literal as a
-      // raw string.  Without these branches the PROGRAM constructor
-      // emits `D(DATE#1970-01-15)` verbatim and the C++ side fails
-      // to compile.  Lowering rule matches the literal-expression
-      // path: DATE → days, TOD → ns since midnight, DT → ns since
-      // epoch.  Same rule the runtime helpers consume.
-      if (
-        upperInit.startsWith("D#") ||
-        upperInit.startsWith("DATE#") ||
-        upperInit.startsWith("LDATE#")
-      ) {
-        return `${parseDateLiteralToDays(initialValue)}LL`;
-      }
-      if (
-        upperInit.startsWith("TOD#") ||
-        upperInit.startsWith("TIME_OF_DAY#") ||
-        upperInit.startsWith("LTOD#")
-      ) {
-        return `${parseTodLiteralToNs(initialValue)}LL`;
-      }
-      if (
-        upperInit.startsWith("DT#") ||
-        upperInit.startsWith("DATE_AND_TIME#") ||
-        upperInit.startsWith("LDT#")
-      ) {
-        return `${parseDtLiteralToNs(initialValue)}LL`;
-      }
-      // Convert IEC BOOL literals to C++ bool literals
-      if (upperInit === "TRUE") return "true";
-      if (upperInit === "FALSE") return "false";
-      // Handle typed string literals: STRING#'abc' and WSTRING#"abc".
-      // The type prefix tells us the literal kind; the value part uses the
-      // same quote conventions as untyped string literals.
-      const typedStringMatch = initialValue.match(/^(STRING|WSTRING)#/i);
-      if (typedStringMatch) {
-        const valuePart = initialValue.substring(typedStringMatch[0].length);
-        if (valuePart.startsWith("'") && valuePart.endsWith("'")) {
-          const inner = valuePart.slice(1, -1);
-          const escaped = this.translateIECString(inner);
-          return `"${escaped}"`;
-        }
-        if (valuePart.startsWith('"') && valuePart.endsWith('"')) {
-          const inner = valuePart.slice(1, -1);
-          const escaped = this.translateIECString(inner);
-          return `u"${escaped}"`;
-        }
-      }
-      // Convert IEC string literals to the matching C++ literal shape:
-      //   'foo' (STRING)  → "foo"  (const char*)
-      //   "foo" (WSTRING) → u"foo" (const char16_t*, what IECWStringVar
-      //                            binds to — `L"…"` is wchar_t and
-      //                            32-bit on Linux/AVR, wrong type)
-      // The two literal kinds are NOT interchangeable per IEC 61131-3;
-      // a mismatch (e.g. WSTRING := 'foo') is a type error and is the
-      // type-checker's responsibility, not codegen's. Codegen just
-      // mirrors the literal it was handed.
-      if (initialValue.startsWith("'") && initialValue.endsWith("'")) {
-        const inner = initialValue.slice(1, -1);
-        const escaped = this.translateIECString(inner);
-        return `"${escaped}"`;
-      }
-      if (initialValue.startsWith('"') && initialValue.endsWith('"')) {
-        const inner = initialValue.slice(1, -1);
-        const escaped = this.translateIECString(inner);
-        return `u"${escaped}"`;
-      }
-      // Lower IEC numeric literals (based 16#FF/8#17/2#1010, decimals
-      // with underscore separators, typed prefixes like INT#5, optional
-      // sign). PROGRAM/GLOBAL VAR initialisers arrive here as raw IEC
-      // strings; without this they're emitted verbatim (`X(16#FF)`,
-      // `X(1_000)`, `X(INT#5)`) and the C++ build fails. Mirrors the
-      // expression-statement path (formatIntegerLiteral). Returns null
-      // for non-numeric initialisers (enum names, constants), which then
-      // pass through unchanged.
-      const numeric = this.lowerNumericInitializer(initialValue);
-      if (numeric !== null) {
-        return numeric;
-      }
-
-      // Array aggregate initialisers (e.g. `[10, 20, 30, 40]`). Program and
-      // global VAR initialisers arrive here as raw strings because the project
-      // model serialises `initialValue`; convert them to C++ brace lists.
-      if (
-        initialValue.trim().startsWith("[") &&
-        initialValue.trim().endsWith("]")
-      ) {
-        const elType =
-          elementTypeName ?? this.extractInlineArrayElementType(typeName);
-        return this.lowerArrayInitializer(initialValue, elType);
-      }
-
-      return initialValue;
+      return this.generateInitializerExpression(
+        decl.initialValue,
+        decl.typeName,
+      );
     }
+    const typeDefault = this.getTypeDefaultValue(decl.typeName);
+    return typeDefault === "" ? undefined : typeDefault;
+  }
 
+  /**
+   * Hooks {@link generateInitializerValue} uses to resolve element names and
+   * nested element types. Reuses the same member-mangling and field-resolution
+   * helpers the statement path uses.
+   */
+  private getStructInitEmitter(): StructInitEmitter {
+    this.structInitEmitter ??= {
+      emitValue: (value: Expression): string =>
+        this.generateInitializerExpression(value),
+      memberName: (
+        fieldName: string,
+        ownerTypeName: string | undefined,
+      ): string =>
+        this.needsFieldMangling(
+          fieldName,
+          this.resolveMemberType(ownerTypeName, fieldName),
+          ownerTypeName,
+        )
+          ? `${fieldName}_`
+          : fieldName,
+      fieldTypeName: (fieldName, ownerTypeName) =>
+        this.resolveMemberType(ownerTypeName, fieldName),
+      arrayElementTypeName: (typeName) =>
+        typeName !== undefined && typeName !== "" && this.ast
+          ? resolveArrayElementType(typeName, this.ast)
+          : undefined,
+    };
+    return this.structInitEmitter;
+  }
+
+  /**
+   * Value-initialisation for a type that has no declared initialiser.
+   *
+   * Returns an empty string for composite types (structs, enums, arrays, FB
+   * instances), whose default constructor already does the right thing — the
+   * callers use that to skip the member entirely in a constructor initialiser
+   * list.
+   */
+  private getTypeDefaultValue(typeName: string): string {
+    const upperType = typeName.toUpperCase();
     if (upperType === "BOOL") return "false";
     if (upperType === "REAL" || upperType === "LREAL") return "0.0";
     if (upperType === "STRING") return '""';
     if (upperType === "WSTRING") return 'u""';
-
-    // Check if it's an elementary type that uses numeric default
     const numericTypes = [
       "SINT",
       "INT",
@@ -8021,138 +8148,7 @@ export class CodeGenerator {
     if (numericTypes.includes(upperType)) {
       return "0";
     }
-
-    // User-defined types (structs, enums, arrays, subranges, type aliases)
-    // use default initialization - return empty string to skip in initializer list
     return "";
-  }
-
-  /**
-   * For inline ARRAY types, strip the synthetic `__INLINE_ARRAY_` prefix to
-   * reveal the element type name (e.g. `__INLINE_ARRAY_DINT` -> `DINT`).
-   * Nested arrays strip one prefix at a time.
-   */
-  private extractInlineArrayElementType(typeName: string): string | undefined {
-    const prefix = "__INLINE_ARRAY_";
-    if (typeName.toUpperCase().startsWith(prefix)) {
-      return typeName.slice(prefix.length);
-    }
-    return undefined;
-  }
-
-  /**
-   * Convert an IEC array aggregate literal string (e.g. `[10, 20, 30, 40]` or
-   * `[[1,2], [3,4]]`) into a C++ brace-initialiser list. Each element is lowered
-   * with `getDefaultValue` so typed literals, based numbers, strings, bools,
-   * times, and nested arrays are handled uniformly.
-   */
-  private lowerArrayInitializer(
-    initialValue: string,
-    elementTypeName?: string,
-  ): string {
-    const trimmed = initialValue.trim();
-    if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
-      return trimmed;
-    }
-    const inner = trimmed.slice(1, -1).trim();
-    if (inner.length === 0) {
-      return "{}";
-    }
-    const elements = this.splitArrayElements(inner);
-    const nestedElementType = elementTypeName
-      ? this.extractInlineArrayElementType(elementTypeName)
-      : undefined;
-    const lowered = elements.map((el) => {
-      const trimmedEl = el.trim();
-      if (trimmedEl.startsWith("[")) {
-        return this.getDefaultValue(
-          elementTypeName ?? "",
-          trimmedEl,
-          nestedElementType,
-        );
-      }
-      return this.getDefaultValue(elementTypeName ?? "", trimmedEl);
-    });
-    return `{${lowered.join(", ")}}`;
-  }
-
-  /**
-   * Split a comma-separated list of IEC array elements, respecting nested
-   * brackets and string quotes.
-   */
-  private splitArrayElements(inner: string): string[] {
-    const elements: string[] = [];
-    let depth = 0;
-    let inString: string | undefined;
-    let current = "";
-    for (const ch of inner) {
-      if (inString) {
-        current += ch;
-        if (ch === inString) {
-          inString = undefined;
-        }
-        continue;
-      }
-      if (ch === "'" || ch === '"') {
-        inString = ch;
-        current += ch;
-        continue;
-      }
-      if (ch === "[") {
-        depth++;
-      } else if (ch === "]") {
-        depth--;
-      }
-      if (ch === "," && depth === 0) {
-        elements.push(current.trim());
-        current = "";
-      } else {
-        current += ch;
-      }
-    }
-    if (current.trim().length > 0) {
-      elements.push(current.trim());
-    }
-    return elements;
-  }
-
-  /**
-   * Lower an IEC numeric literal initializer string to a C++ literal.
-   *
-   * Handles based literals (16#FF, 8#17, 2#1010), decimals/reals with
-   * IEC underscore separators (1_000, 16#FF_FF), an optional leading
-   * sign (-5, +3), and an optional IEC type prefix (INT#5, BYTE#16#AB,
-   * REAL#1.5). Reuses {@link iecBaseToCppLiteral}, the same helper the
-   * expression path uses, so declaration initialisers and statement
-   * bodies lower identically.
-   *
-   * Returns `null` when `raw` is not a recognised numeric literal, so
-   * non-numeric initialisers (enum names, named constants) pass through
-   * unchanged at the call site.
-   */
-  private lowerNumericInitializer(raw: string): string | null {
-    let s = raw.trim();
-    let sign = "";
-    if (s.startsWith("-") || s.startsWith("+")) {
-      sign = s[0]!;
-      s = s.slice(1).trimStart();
-    }
-    // Strip an optional IEC type prefix (TYPE#...). The leading
-    // identifier must start with a letter/underscore, which excludes
-    // radix markers like `16#` whose left side is numeric.
-    const typePrefix = /^[A-Za-z_][A-Za-z0-9_]*#(.+)$/.exec(s);
-    if (typePrefix) {
-      s = typePrefix[1]!;
-    }
-    const isNumeric =
-      /^16#[0-9A-Fa-f][0-9A-Fa-f_]*$/.test(s) ||
-      /^8#[0-7][0-7_]*$/.test(s) ||
-      /^2#[01][01_]*$/.test(s) ||
-      /^[0-9][0-9_]*(\.[0-9][0-9_]*)?([eE][+-]?[0-9]+)?$/.test(s);
-    if (!isNumeric) {
-      return null;
-    }
-    return sign + iecBaseToCppLiteral(s);
   }
 
   /**

@@ -63,6 +63,7 @@ import {
   resolveSystemAccess,
 } from "./system-types.js";
 import { stripEnEno } from "../ast-utils.js";
+import { IEC_INTEGER_MAX, IEC_INTEGER_MIN } from "../literal-utils.js";
 
 // Re-export from type-utils for backward compatibility
 export { ELEMENTARY_TYPES, TYPE_CATEGORIES } from "./type-utils.js";
@@ -1365,6 +1366,10 @@ export class TypeChecker {
       const bigValue = parseIntegerLiteral(valuePart);
       if (bigValue === undefined) return;
       if (range.isInteger) {
+        // Values outside the widest IEC integer types are reported by the
+        // analyzer's validateIntegerLiteralRange so the diagnostic names the
+        // global range rather than a specific target type.
+        if (bigValue > IEC_INTEGER_MAX || bigValue < IEC_INTEGER_MIN) return;
         if (bigValue < range.min || bigValue > range.max) {
           this.addError(
             `Literal value ${bigValue} is out of range for ${typeName}`,
@@ -1462,6 +1467,8 @@ export class TypeChecker {
       const bigValue = parseIntegerLiteral(String(value.rawValue));
       if (bigValue === undefined) return undefined;
       if (range.isInteger) {
+        if (bigValue > IEC_INTEGER_MAX || bigValue < IEC_INTEGER_MIN)
+          return { kind: "ok" };
         if (bigValue < range.min || bigValue > range.max) {
           return {
             kind: "error",

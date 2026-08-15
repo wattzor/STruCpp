@@ -68,7 +68,7 @@ export interface ProjectVarDeclaration {
   name: string;
   typeName: string;
   maxLength?: number | string; // For STRING(n) / WSTRING(n) parameterized length; string for constant names
-  initialValue?: string;
+  initialValue?: Expression;
   isConstant: boolean;
   isRetain: boolean;
   address?: string;
@@ -405,7 +405,7 @@ export class ProjectModelBuilder {
     }
 
     // Third pass: validate VAR_EXTERNAL references
-    this.validateExternalReferences();
+    this.validateExternalReferences(ast);
 
     return {
       success: this.errors.length === 0,
@@ -700,12 +700,35 @@ export class ProjectModelBuilder {
   /**
    * Validate VAR_EXTERNAL references against VAR_GLOBAL declarations.
    */
-  private validateExternalReferences(): void {
-    // Build a map of all global variables across all configurations
+  private validateExternalReferences(ast: CompilationUnit): void {
+    // Build a map of all global variables across all configurations and
+    // top-level VAR_GLOBAL blocks (GVL files).
     const globalVarMap = new Map<
       string,
       { typeName: string; configName: string }
     >();
+
+    for (const block of ast.globalVarBlocks) {
+      if (block.blockType !== "VAR_GLOBAL") continue;
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          const key = name.toUpperCase();
+          const typeName = decl.type.name;
+          if (globalVarMap.has(key)) {
+            const existing = globalVarMap.get(key)!;
+            if (existing.typeName.toUpperCase() !== typeName.toUpperCase()) {
+              this.addWarning(
+                `Global variable '${name}' has different types in global block (${existing.typeName}) and top-level VAR_GLOBAL (${typeName})`,
+                0,
+                0,
+              );
+            }
+          } else {
+            globalVarMap.set(key, { typeName, configName: "@global" });
+          }
+        }
+      }
+    }
 
     for (const config of this.configurations) {
       for (const globalVar of config.globalVars) {
@@ -826,10 +849,7 @@ export class ProjectModelBuilder {
     decl: VarDeclaration,
     block: VarBlock,
   ): ProjectVarDeclaration {
-    let initialValue: string | undefined;
-    if (decl.initialValue) {
-      initialValue = this.expressionToString(decl.initialValue);
-    }
+    const initialValue = decl.initialValue;
 
     // Use conditional spreading for optional properties to comply with exactOptionalPropertyTypes
     return {
@@ -893,40 +913,6 @@ export class ProjectModelBuilder {
       }
     }
     return undefined;
-  }
-
-  /**
-   * Convert an expression to a string representation.
-   */
-  private expressionToString(expr: Expression): string {
-    if (expr.kind === "LiteralExpression") {
-      const lit = expr;
-      return lit.rawValue;
-    }
-    if (
-      expr.kind === "UnaryExpression" &&
-      (expr.operator === "-" || expr.operator === "+")
-    ) {
-      // Preserve the sign on numeric literal initialisers (e.g. -5).
-      // Without this the operand is dropped and the initialiser silently
-      // falls back to the type's default (0). Codegen lowers the result.
-      const inner = this.expressionToString(expr.operand);
-      return inner === "" ? "" : `${expr.operator}${inner}`;
-    }
-    if (expr.kind === "VariableExpression") {
-      if (expr.fieldAccess.length > 0) {
-        return `${expr.name}.${expr.fieldAccess.join(".")}`;
-      }
-      return expr.name;
-    }
-    if (expr.kind === "ArrayLiteralExpression") {
-      const elements = expr.elements
-        .map((e) => this.expressionToString(e))
-        .filter((s) => s !== "")
-        .join(", ");
-      return `[${elements}]`;
-    }
-    return "";
   }
 
   /**
