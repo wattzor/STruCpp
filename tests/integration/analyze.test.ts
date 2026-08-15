@@ -270,4 +270,44 @@ describe("analyze() API", () => {
     expect(resultAny.headerCode).toBeUndefined();
     expect(resultAny.lineMap).toBeUndefined();
   });
+
+  it("returns parse errors for invalid source without throwing", () => {
+    const result = analyze("PROGRAM");
+    expect(result.errors.length).toBeGreaterThan(0);
+    // Chevrotain recovery may still produce a partial CST; that is fine.
+    expect(result).toBeDefined();
+  });
+
+  it("continues when the parser cannot produce any CST", () => {
+    const result = analyze("(* unterminated comment");
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.ast).toBeUndefined();
+  });
+
+  it("collects errors from additional sources without aborting analysis", () => {
+    const result = analyze(
+      `
+      PROGRAM Main
+        VAR x : INT; END_VAR
+        x := 1;
+      END_PROGRAM
+    `,
+      {
+        additionalSources: [
+          {
+            fileName: "broken.st",
+            source: `
+            PROGRAM Other
+              VAR x : END_VAR
+            END_PROGRAM
+          `,
+          },
+        ],
+      },
+    );
+
+    expect(result.errors.some((e) => e.file === "broken.st")).toBe(true);
+    // Primary AST should still be present because analyze mode continues
+    expect(result.ast).toBeDefined();
+  });
 });
