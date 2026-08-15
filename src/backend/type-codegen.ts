@@ -23,7 +23,11 @@ import type {
   UnaryExpression,
 } from "../frontend/ast.js";
 import { TypeRegistry, isElementaryType } from "../semantic/type-registry.js";
-import { formatArrayType } from "./codegen-utils.js";
+import {
+  formatArrayType,
+  formatIntegerLiteral,
+  translateIECString,
+} from "./codegen-utils.js";
 import {
   parseDateLiteralToDays,
   parseDtLiteralToNs,
@@ -34,6 +38,10 @@ import {
   buildEnumMemberMap,
   type EnumMemberEntry,
 } from "../semantic/type-utils.js";
+import {
+  generateInitializerValue,
+  type StructInitEmitter,
+} from "./struct-init-codegen.js";
 
 /**
  * Options for type code generation
@@ -144,6 +152,22 @@ export class TypeCodeGenerator {
   private enumMemberToType: Map<string, EnumMemberEntry> = new Map();
   /** Map of all type declarations (uppercase name → declaration) for alias resolution */
   private typeMap: Map<string, TypeDeclaration> = new Map();
+
+  /**
+   * Hooks for structure-initializer lowering (a STRUCT element whose own default
+   * is a structure initializer: `origin : Point := (x := 0.0);`).
+   *
+   * The type generator works from one type definition at a time and has no
+   * cross-type field index, so it cannot resolve nested element types or the
+   * member-name collision mangle. Nested levels take their type from
+   * `decltype(...)` of the member being assigned, which needs no metadata.
+   */
+  private structInitEmitter: StructInitEmitter = {
+    emitValue: (value: Expression): string => this.expressionToCpp(value),
+    memberName: (fieldName: string): string => fieldName,
+    fieldTypeName: (): undefined => undefined,
+    arrayElementTypeName: (): undefined => undefined,
+  };
 
   constructor(options: Partial<TypeCodeGenOptions> = {}) {
     this.options = { ...defaultTypeCodeGenOptions, ...options };
@@ -329,7 +353,18 @@ export class TypeCodeGenerator {
         memberTypes.push(cppType);
         memberNames.push(emitName);
         if (field.initialValue) {
-          const initVal = this.expressionToCpp(field.initialValue);
+          // Routes composite initialisers (array literals, structure
+          // initializers) through the shared lowering and everything else
+          // through expressionToCpp. Before this, an array-literal default on a
+          // STRUCT element fell through to expressionToCpp's `0` fallback and
+          // the `isArrayType` guard below turned it into `{}` — the declared
+          // values were dropped with no diagnostic.
+          const initVal = generateInitializerValue(
+            field.initialValue,
+            cppType,
+            field.type.name,
+            this.structInitEmitter,
+          );
           // Array types can't be initialized with = 0; use {} instead
           const isArrayType = /^Array[123]D</.test(cppType);
           if (isArrayType && initVal === "0") {
@@ -905,12 +940,21 @@ export class TypeCodeGenerator {
     switch (expr.literalType) {
       case "BOOL":
         return expr.value === true ? "true" : "false";
+      case "INT":
+        // Same lowering the expression path uses, so a STRUCT element default
+        // and the identical literal in a body can't disagree — and so a 64-bit
+        // default keeps every digit (`String(expr.value)` rounds above 2^53).
+        return formatIntegerLiteral(expr.rawValue, expr.value as number);
       case "STRING": {
         // IEC STRING literals carry their surrounding single quotes
         // in `rawValue` (`'wide hello'`); strip them before wrapping
         // in C++ double quotes — otherwise we end up with `"'…'"`.
+        // The body then goes through the same `$`-escape translation the
+        // expression emitter uses: a literal containing `"` or `\` (OSCAT's
+        // HTML-entity tables, for one) would otherwise terminate the C++ string
+        // early and fail to compile.
         const inner = expr.rawValue.replace(/^'|'$/g, "");
-        return `"${inner}"`;
+        return `"${translateIECString(inner)}"`;
       }
       case "WSTRING": {
         // IEC WSTRING literals are double-quoted; strip either form
@@ -918,7 +962,7 @@ export class TypeCodeGenerator {
         // (wchar_t) is 32-bit on Linux/AVR and wouldn't bind to
         // IECWStringVar's char16_t* ctor.
         const inner = expr.rawValue.replace(/^["']|["']$/g, "");
-        return `u"${inner}"`;
+        return `u"${translateIECString(inner)}"`;
       }
       case "TIME": {
         const timeVal = parseTimeLiteral(String(expr.value));
