@@ -227,6 +227,97 @@ describe('TypeCodeGenerator', () => {
       expect(result).toContain('STOPPED = 2');
     });
 
+    it('falls back to raw operator text for unknown binary operators', () => {
+      const generator = new TypeCodeGenerator();
+      const andThenExpr: BinaryExpression = {
+        kind: 'BinaryExpression',
+        sourceSpan: createSourceSpan(),
+        operator: 'AND_THEN',
+        left: createLiteral(1),
+        right: createLiteral(0),
+        type: { kind: 'TypeReference', sourceSpan: createSourceSpan(), name: 'BOOL', isReference: false },
+        resultTypeName: 'BOOL',
+      };
+      const enumDef: EnumDefinition = {
+        kind: 'EnumDefinition',
+        sourceSpan: createSourceSpan(),
+        members: [
+          { kind: 'EnumMember', sourceSpan: createSourceSpan(), name: 'ALWAYS', value: andThenExpr },
+        ],
+      };
+      const type: TypeDeclaration = {
+        kind: 'TypeDeclaration',
+        sourceSpan: createSourceSpan(),
+        name: 'FallbackOp',
+        definition: enumDef,
+      };
+
+      const result = generator.generateTypes([type]);
+      expect(result).toContain('enum class FallbackOp');
+      expect(result).toContain('ALWAYS = 1 AND_THEN 0');
+    });
+
+    it('lowers parenthesized, function call, pointer deref and fallback expressions', () => {
+      const generator = new TypeCodeGenerator();
+      const enumDef: EnumDefinition = {
+        kind: 'EnumDefinition',
+        sourceSpan: createSourceSpan(),
+        members: [
+          { kind: 'EnumMember', sourceSpan: createSourceSpan(), name: 'PAREN', value: { kind: 'ParenthesizedExpression', sourceSpan: createSourceSpan(), expression: createLiteral(5) } },
+          { kind: 'EnumMember', sourceSpan: createSourceSpan(), name: 'CALL', value: { kind: 'FunctionCallExpression', sourceSpan: createSourceSpan(), functionName: 'foo', arguments: [] } },
+          { kind: 'EnumMember', sourceSpan: createSourceSpan(), name: 'DEREF', value: { kind: 'VariableExpression', sourceSpan: createSourceSpan(), name: 'ptr', subscripts: [], fieldAccess: [], isDereference: true, isReference: false } },
+          { kind: 'EnumMember', sourceSpan: createSourceSpan(), name: 'INDEXDEREF', value: { kind: 'VariableExpression', sourceSpan: createSourceSpan(), name: 'arr', subscripts: [createLiteral(1)], fieldAccess: ['field'], isDereference: true, isReference: false } },
+          { kind: 'EnumMember', sourceSpan: createSourceSpan(), name: 'NEG', value: { kind: 'UnaryExpression', sourceSpan: createSourceSpan(), operator: '-', operand: createLiteral(5), type: { kind: 'TypeReference', sourceSpan: createSourceSpan(), name: 'INT', isReference: false } } },
+          { kind: 'EnumMember', sourceSpan: createSourceSpan(), name: 'UNKNOWN', value: { kind: 'ArrayLiteralExpression', sourceSpan: createSourceSpan(), elements: [] } },
+        ],
+      };
+      const type: TypeDeclaration = {
+        kind: 'TypeDeclaration',
+        sourceSpan: createSourceSpan(),
+        name: 'ExprShapes',
+        definition: enumDef,
+      };
+
+      const result = generator.generateTypes([type]);
+      expect(result).toContain('PAREN = (5)');
+      expect(result).toContain('CALL = foo()');
+      expect(result).toContain('DEREF = *ptr');
+      expect(result).toContain('INDEXDEREF = *arr[1].field');
+      expect(result).toContain('NEG = -5');
+      expect(result).toContain('UNKNOWN = 0');
+    });
+
+    it('qualifies bare and qualified enum member references in values', () => {
+      const generator = new TypeCodeGenerator();
+      const colorEnum: TypeDeclaration = {
+        kind: 'TypeDeclaration',
+        sourceSpan: createSourceSpan(),
+        name: 'Color',
+        definition: {
+          kind: 'EnumDefinition',
+          sourceSpan: createSourceSpan(),
+          members: [createEnumMember('RED'), createEnumMember('GREEN')],
+        },
+      };
+      const useEnum: TypeDeclaration = {
+        kind: 'TypeDeclaration',
+        sourceSpan: createSourceSpan(),
+        name: 'ColorUse',
+        definition: {
+          kind: 'EnumDefinition',
+          sourceSpan: createSourceSpan(),
+          members: [
+            { kind: 'EnumMember', sourceSpan: createSourceSpan(), name: 'BARE', value: { kind: 'VariableExpression', sourceSpan: createSourceSpan(), name: 'RED', subscripts: [], fieldAccess: [], isDereference: false, isReference: false } },
+            { kind: 'EnumMember', sourceSpan: createSourceSpan(), name: 'QUAL', value: { kind: 'VariableExpression', sourceSpan: createSourceSpan(), name: 'Color', subscripts: [], fieldAccess: ['RED'], isDereference: false, isReference: false } },
+          ],
+        },
+      };
+
+      const result = generator.generateTypes([colorEnum, useEnum]);
+      expect(result).toContain('BARE = Color::RED');
+      expect(result).toContain('QUAL = Color::RED');
+    });
+
     it('should generate array type', () => {
       const generator = new TypeCodeGenerator();
       const arrayDef: ArrayDefinition = {
@@ -378,6 +469,49 @@ describe('TypeCodeGenerator', () => {
       const result = generator.generateTypes([type]);
       // All non-constant expressions evaluate to 0, giving degenerate 0..0 bounds
       expect(result).toContain('FallbackArray');
+    });
+
+    it('should evaluate unary-plus, subtraction and multiplication dimension expressions', () => {
+      const generator = new TypeCodeGenerator();
+      const binary = (
+        op: BinaryExpression['operator'],
+        left: number,
+        right: number,
+      ): BinaryExpression => ({
+        kind: 'BinaryExpression',
+        sourceSpan: createSourceSpan(),
+        operator: op,
+        left: createLiteral(left),
+        right: createLiteral(right),
+        type: { kind: 'TypeReference', sourceSpan: createSourceSpan(), name: 'INT', isReference: false },
+        resultTypeName: 'INT',
+      });
+      const unaryPlus = (operand: number): UnaryExpression => ({
+        kind: 'UnaryExpression',
+        sourceSpan: createSourceSpan(),
+        operator: '+',
+        operand: createLiteral(operand),
+        type: { kind: 'TypeReference', sourceSpan: createSourceSpan(), name: 'INT', isReference: false },
+      });
+
+      const arrayDef: ArrayDefinition = {
+        kind: 'ArrayDefinition',
+        sourceSpan: createSourceSpan(),
+        dimensions: [
+          { kind: 'ArrayDimension', sourceSpan: createSourceSpan(), isVariableLength: false, start: createLiteral(0), end: binary('-', 10, 3) },
+          { kind: 'ArrayDimension', sourceSpan: createSourceSpan(), isVariableLength: false, start: unaryPlus(0), end: binary('*', 2, 3) },
+        ],
+        elementType: createTypeRef('INT'),
+      };
+      const type: TypeDeclaration = {
+        kind: 'TypeDeclaration',
+        sourceSpan: createSourceSpan(),
+        name: 'ExprArray2',
+        definition: arrayDef,
+      };
+
+      const result = generator.generateTypes([type]);
+      expect(result).toContain('using ExprArray2 = Array2D<IEC_INT, 0, 7, 0, 6>;');
     });
 
     it('should generate subrange type', () => {

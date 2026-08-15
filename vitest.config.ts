@@ -14,7 +14,7 @@ export default defineConfig({
       exclude: [
         "src/**/*.d.ts",
         "src/**/*.test.ts",
-        "src/cli.ts", // untested — CLI entry point
+        "src/node/cli.ts", // untested — CLI entry point (tested via subprocess)
       ],
       thresholds: {
         lines: 75,
