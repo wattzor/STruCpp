@@ -357,6 +357,11 @@ export function parseTimeLiteral(literal: string): TimeValue {
     }
   }
 
+  // Floating-point scaling of fractional components (e.g. 16.6667ms) can leave
+  // sub-nanosecond residue. Round to the nearest whole nanosecond so the
+  // emitted C++ literal is an integer (with LL suffix), not a double.
+  nanoseconds = Math.round(nanoseconds);
+
   return { nanoseconds, rawValue };
 }
 
