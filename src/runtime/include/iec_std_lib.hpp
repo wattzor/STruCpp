@@ -1337,6 +1337,13 @@ inline IEC_BOOL NOT(IEC_BOOL value) noexcept {
     return IEC_BOOL(!iec_unwrap(value));
 }
 
+// Boolean sub-expressions (e.g. comparisons ORed together) integer-promote to
+// `int` in C++, and `int` is not an ANY_BIT type.  Provide a plain-integral
+// overload so NOT(comparison_expression) still yields a boolean result.
+inline bool NOT(int value) noexcept {
+    return !value;
+}
+
 /**
  * AND - Bitwise AND (variadic)
  * Input: ANY_BIT, Output: ANY_BIT (same type)
