@@ -458,6 +458,12 @@ export class CodeGenerator {
   /** Map of variable name (upper case) → type name (original case) for current scope */
   protected currentScopeVarTypes: Map<string, string> = new Map();
 
+  /** Map of constant variable name (upper case) → initial value expression for
+   *  the current scope. Used to lower CASE labels that reference VAR_GLOBAL
+   *  CONSTANTs to integer literals, which are valid C++ switch case labels. */
+  private currentScopeConstants: Map<string, Expression | undefined> =
+    new Map();
+
   /** Map of variable name (upper case) → referenceKind ("ref_to" | "reference_to"
    *  | "pointer_to") for current scope. Only reference/pointer vars are present;
    *  used e.g. to pick the correct lowering for a REF= rebind. */
@@ -4117,8 +4123,8 @@ export class CodeGenerator {
       for (const label of caseElement.labels) {
         if (label.end) {
           // Range: expand to individual case labels
-          const startVal = this.evaluateLiteralInt(label.start);
-          const endVal = this.evaluateLiteralInt(label.end);
+          const startVal = this.evaluateConstantExpression(label.start);
+          const endVal = this.evaluateConstantExpression(label.end);
           if (startVal !== undefined && endVal !== undefined) {
             for (let i = startVal; i <= endVal; i++) {
               this.emit(`${innerIndent}case ${i}:`);
@@ -4130,9 +4136,14 @@ export class CodeGenerator {
             );
           }
         } else {
-          this.emit(
-            `${innerIndent}case ${this.generateExpression(label.start)}:`,
-          );
+          const labelVal = this.evaluateConstantExpression(label.start);
+          if (labelVal !== undefined) {
+            this.emit(`${innerIndent}case ${labelVal}:`);
+          } else {
+            this.emit(
+              `${innerIndent}case ${this.generateExpression(label.start)}:`,
+            );
+          }
         }
       }
       this.recordLineMapping(caseElement.sourceSpan.startLine, caseLabelLine);
@@ -4337,20 +4348,123 @@ export class CodeGenerator {
    * Returns undefined if the expression is not a compile-time integer constant.
    */
   private evaluateLiteralInt(expr: Expression): number | undefined {
-    if (expr.kind === "LiteralExpression" && expr.literalType === "INT") {
-      return typeof expr.value === "number"
-        ? expr.value
-        : parseInt(String(expr.value), 10);
+    return this.evaluateConstantExpression(expr);
+  }
+
+  /**
+   * Evaluate a constant integer expression, including references to
+   * VAR_GLOBAL CONSTANT / VAR CONSTANT values. Used to emit valid C++
+   * `case` labels and to detect constant FOR loop bounds.
+   */
+  private evaluateConstantExpression(
+    expr: Expression,
+    visited = new Set<string>(),
+  ): number | undefined {
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.evaluateConstantExpression(expr.expression, visited);
     }
+
+    if (expr.kind === "LiteralExpression") {
+      // Typed numeric literal (e.g. SINT#0) — strip the prefix and parse.
+      if (expr.typePrefix) {
+        const upperPrefix = expr.typePrefix.toUpperCase();
+        if (upperPrefix === "STRING" || upperPrefix === "WSTRING") {
+          return undefined;
+        }
+        const hashIdx = expr.rawValue.indexOf("#");
+        const valuePart =
+          hashIdx >= 0
+            ? expr.rawValue.substring(hashIdx + 1)
+            : String(expr.value);
+        return this.parseConstantInteger(valuePart);
+      }
+
+      if (expr.literalType === "INT") {
+        if (typeof expr.value === "number") return expr.value;
+        return this.parseConstantInteger(String(expr.value));
+      }
+      return undefined;
+    }
+
     if (
       expr.kind === "UnaryExpression" &&
-      expr.operator === "-" &&
-      expr.operand.kind === "LiteralExpression"
+      (expr.operator === "-" || expr.operator === "+")
     ) {
-      const val = this.evaluateLiteralInt(expr.operand);
-      return val !== undefined ? -val : undefined;
+      const val = this.evaluateConstantExpression(expr.operand, visited);
+      return val !== undefined
+        ? expr.operator === "-"
+          ? -val
+          : val
+        : undefined;
     }
+
+    if (
+      expr.kind === "BinaryExpression" &&
+      ["+", "-", "*", "/", "MOD"].includes(expr.operator)
+    ) {
+      const left = this.evaluateConstantExpression(expr.left, visited);
+      const right = this.evaluateConstantExpression(expr.right, visited);
+      if (left === undefined || right === undefined) return undefined;
+      switch (expr.operator) {
+        case "+":
+          return left + right;
+        case "-":
+          return left - right;
+        case "*":
+          return left * right;
+        case "/":
+          return right === 0 ? undefined : Math.trunc(left / right);
+        case "MOD":
+          return right === 0 ? undefined : left % right;
+      }
+    }
+
+    if (expr.kind === "VariableExpression") {
+      const nameUpper = expr.name.toUpperCase();
+
+      // Qualified access (e.g. TrafficState.RED) is left to generateExpression,
+      // which emits `TrafficState::RED` — an enumerator is a valid C++ constant.
+      const hasField =
+        (expr.accessChain &&
+          expr.accessChain.length === 1 &&
+          expr.accessChain[0]!.kind === "field") ||
+        expr.fieldAccess.length === 1;
+      if (hasField) return undefined;
+
+      if (visited.has(nameUpper)) return undefined;
+      const initialValue = this.currentScopeConstants.get(nameUpper);
+      if (initialValue !== undefined) {
+        visited.add(nameUpper);
+        const val = this.evaluateConstantExpression(initialValue, visited);
+        visited.delete(nameUpper);
+        return val;
+      }
+      return undefined;
+    }
+
     return undefined;
+  }
+
+  /**
+   * Parse an IEC integer literal string: decimal, 16#FF, 8#77, 2#1010.
+   * Strips underscore separators.
+   */
+  private parseConstantInteger(raw: string): number | undefined {
+    const s = raw.replace(/_/g, "").toUpperCase();
+    if (s.startsWith("16#")) {
+      const n = parseInt(s.slice(3), 16);
+      return Number.isNaN(n) ? undefined : n;
+    }
+    if (s.startsWith("8#")) {
+      const n = parseInt(s.slice(2), 8);
+      return Number.isNaN(n) ? undefined : n;
+    }
+    if (s.startsWith("2#")) {
+      const n = parseInt(s.slice(2), 2);
+      return Number.isNaN(n) ? undefined : n;
+    }
+    const n = parseInt(s, 10);
+    return Number.isNaN(n) ? undefined : n;
   }
 
   /**
@@ -7442,10 +7556,21 @@ export class CodeGenerator {
     this.currentScopeInoutArrayPointers.clear();
     this.currentScopeVarIsArray.clear();
     this.memberMangledNames.clear();
+    this.currentScopeConstants.clear();
 
     // Initialize with global declarations so local declarations can shadow them.
     // This lets a program/FB invoke a global function-block instance by name.
     for (const block of this.ast?.globalVarBlocks ?? []) {
+      if (block.isConstant) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names) {
+            this.currentScopeConstants.set(
+              name.toUpperCase(),
+              decl.initialValue,
+            );
+          }
+        }
+      }
       for (const decl of block.declarations) {
         for (const name of decl.names) {
           this.currentScopeVarTypes.set(name.toUpperCase(), decl.type.name);
@@ -7463,6 +7588,16 @@ export class CodeGenerator {
     }
 
     for (const block of varBlocks) {
+      if (block.isConstant) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names) {
+            this.currentScopeConstants.set(
+              name.toUpperCase(),
+              decl.initialValue,
+            );
+          }
+        }
+      }
       for (const decl of block.declarations) {
         const cppType = this.isUserDefinedType(decl.type.name)
           ? decl.type.name
@@ -7506,6 +7641,7 @@ export class CodeGenerator {
   private exitScope(): void {
     this.currentScopeVarTypes.clear();
     this.currentScopeVarIsArray.clear();
+    this.currentScopeConstants.clear();
   }
 
   /**
