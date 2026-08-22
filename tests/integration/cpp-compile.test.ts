@@ -1755,6 +1755,47 @@ int main() {
     expect(runResult.output).toContain('a0=0');
     expect(runResult.output).toContain('a3=0');
   });
+
+  it('accepts CASE selectors that are integer-producing REAL/LREAL conversions', () => {
+    const source = `
+      PROGRAM Main
+        VAR
+          r : LREAL;
+          y : INT;
+        END_VAR
+        CASE TRUNC(r) OF
+          0: y := 10;
+          1: y := 20;
+        ELSE
+          y := 30;
+        END_CASE;
+      END_PROGRAM
+    `;
+    const result = compile(source);
+    expect(result.success).toBe(true);
+
+    const mainCode = `
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.R.set(0.8);
+    prog.run();
+    std::cout << "y=" << prog.Y.get() << std::endl;
+    prog.R.set(1.9);
+    prog.run();
+    std::cout << "y2=" << prog.Y.get() << std::endl;
+    return 0;
+}
+`;
+    const runResult = compileAndRun(
+      result.headerCode,
+      result.cppCode,
+      mainCode,
+      'case_real_to_int_selector',
+    );
+    expect(runResult.success).toBe(true);
+    expect(runResult.output).toContain('y=10');
+    expect(runResult.output).toContain('y2=20');
+  });
 });
 
 /**
