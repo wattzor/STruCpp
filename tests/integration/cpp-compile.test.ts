@@ -1670,6 +1670,91 @@ int main() {
     expect(runResult.success).toBe(true);
     expect(runResult.output).toContain('x=20');
   });
+
+  it('initializes UDINT arrays whose literals span C++ integer ranks', () => {
+    const source = `
+      PROGRAM Main
+        VAR
+          seeds : ARRAY[0..3] OF UDINT := [5489, 1301868182, 2938499221, 2950281878];
+          x : UDINT;
+        END_VAR
+        x := seeds[2];
+      END_PROGRAM
+    `;
+    const result = compile(source);
+    expect(result.success).toBe(true);
+
+    const mainCode = `
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << "x=" << prog.X.get() << std::endl;
+    return 0;
+}
+`;
+    const runResult = compileAndRun(
+      result.headerCode,
+      result.cppCode,
+      mainCode,
+      'udint_array_mixed_rank',
+    );
+    expect(runResult.success).toBe(true);
+    expect(runResult.output).toContain('x=2938499221');
+  });
+
+  it('assigns an enum FB output array to a STRUCT bus member', () => {
+    const source = `
+      TYPE
+        MyColors : (RED, GREEN, BLUE);
+      END_TYPE
+
+      TYPE
+        ColorBus : STRUCT
+          a1 : ARRAY[0..3] OF MyColors;
+        END_STRUCT;
+      END_TYPE
+
+      FUNCTION_BLOCK Foo
+        VAR_OUTPUT
+          out1 : ARRAY[0..3] OF MyColors;
+        END_VAR
+        out1[0] := RED;
+        out1[1] := GREEN;
+        out1[2] := BLUE;
+        out1[3] := RED;
+      END_FUNCTION_BLOCK
+
+      PROGRAM Main
+        VAR
+          i0_foo  : Foo;
+          outBus1 : ColorBus;
+        END_VAR
+        i0_foo();
+        outBus1.a1 := i0_foo.out1;
+      END_PROGRAM
+    `;
+    const result = compile(source);
+    expect(result.success).toBe(true);
+
+    const mainCode = `
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << "a0=" << static_cast<int>(prog.OUTBUS1.A1[0].get().get()) << std::endl;
+    std::cout << "a3=" << static_cast<int>(prog.OUTBUS1.A1[3].get().get()) << std::endl;
+    return 0;
+}
+`;
+    const runResult = compileAndRun(
+      result.headerCode,
+      result.cppCode,
+      mainCode,
+      'enum_array_fb_output_to_struct',
+    );
+    expect(runResult.success).toBe(true);
+    expect(runResult.output).toContain('a0=0');
+    expect(runResult.output).toContain('a3=0');
+  });
 });
 
 /**
