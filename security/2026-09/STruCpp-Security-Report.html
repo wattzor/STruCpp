@@ -1,0 +1,83 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>STruCpp — Security Report (SBOM & VEX)</title>
+<style>
+:root{--ink:#1a1f29;--muted:#5b6472;--line:#e3e7ee;--accent:#1f4b8e;--red:#c0392b;--amber:#b7791f;--green:#237a4b;--purple:#6b3fa0;--blue:#2b6cb0;}
+*{box-sizing:border-box;}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);line-height:1.55;max-width:940px;margin:0 auto;padding:48px 32px;}
+h1{font-size:1.9rem;border-bottom:3px solid var(--accent);padding-bottom:.3em;margin-top:1.8em;}h1:first-of-type{margin-top:.2em;}
+h2{font-size:1.25rem;margin-top:1.6em;color:var(--accent);}p,li{font-size:.95rem;}
+code{background:#f2f4f8;padding:1px 5px;border-radius:4px;font-size:.86em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.86rem;}th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top;}th{background:#f6f8fb;font-weight:600;}
+.meta td:first-child{font-weight:600;width:190px;background:#fafbfd;}
+.callout{border-left:4px solid var(--accent);background:#f4f8ff;padding:14px 18px;border-radius:0 8px 8px 0;margin:1.2em 0;}.callout.good{border-color:var(--green);background:#f1f9f4;}
+.badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:.72rem;font-weight:700;color:#fff;}.b-red{background:var(--red);}.b-amber{background:var(--amber);}.b-green{background:var(--green);}
+.muted{color:var(--muted);font-size:.85rem;}hr{border:0;border-top:1px solid var(--line);margin:2.5em 0;}
+@media print{body{padding:0;max-width:none;}h1{page-break-after:avoid;}table{page-break-inside:avoid;}a{color:var(--ink);text-decoration:none;}}
+</style></head><body>
+<h1 style="border:0;margin-bottom:0;">STruCpp</h1>
+<p class="muted" style="margin-top:0;">Software Supply Chain Security Report — SBOM &amp; VEX</p>
+<table class="meta">
+<tr><td>Product</td><td>STruCpp (<code>strucpp</code>) — IEC 61131-3 Structured Text → C++ compiler / transpiler · v0.6.0</td></tr>
+<tr><td>Report type</td><td>Software Bill of Materials (SBOM) &amp; Vulnerability Exploitability eXchange (VEX)</td></tr>
+<tr><td>Assessment date</td><td>2026-09 · Report version 1.0</td></tr>
+<tr><td>Prepared by</td><td>Autonomy Logic — Engineering / Product Security</td></tr>
+<tr><td>Classification</td><td>Confidential</td></tr>
+<tr><td>Security contact</td><td>Thiago Alves — thiago.alves@autonomylogic.com</td></tr>
+</table>
+<h1>Executive Summary</h1>
+<p>This report documents the third-party software composition and known-vulnerability posture of <strong>STruCpp</strong>. It is aligned with U.S. Executive Order 14028, the NTIA <em>Minimum Elements for an SBOM</em>, and the CISA VEX guidance.</p>
+<div class="callout good"><strong>Headline posture.</strong> STruCpp is a TypeScript/Node.js command-line compiler distributed as a self-contained binary, with an unusually small third-party runtime footprint (a single direct runtime dependency, <code>chevrotain</code>). Of 29 unique advisories across the dependency tree, <b>none require remediation</b> and <b>none are exploitable in the shipped compiler</b>. Every advisory is either in build/test tooling that is not distributed, or in the one transitive runtime library (<code>lodash-es</code>) whose vulnerable functions are never called. Both critical-severity advisories are in development tooling only.</div>
+<h2>Key metrics</h2>
+<table><tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Components inventoried (full transitive graph)</td><td><strong>764</strong></td></tr>
+<tr><td>Raw advisories detected</td><td>29 (2 critical · 12 high · 14 moderate · 1 low)</td></tr>
+<tr><td><span class="badge b-red">AFFECTED — action required</span></td><td><strong>0</strong> (none require action)</td></tr>
+<tr><td><span class="badge b-amber">AFFECTED — mitigated</span></td><td>0 (—)</td></tr>
+<tr><td><span class="badge b-green">NOT AFFECTED</span></td><td><strong>29</strong> (100%)</td></tr>
+</table>
+<h1>1. Scope &amp; System Description</h1><p>STruCpp is a command-line compiler written in TypeScript, executed on Node.js and distributed as a self-contained executable (built with <code>pkg</code> for Linux/Windows/macOS). It parses IEC 61131-3 Structured Text and emits C++. The repository also contains a first-party C/C++ runtime library (headers the emitted C++ links against) — Autonomy Logic's own source code, not a third-party dependency, covered by the Runtime Library Exception.</p>
+<div class="callout"><strong>Scope note.</strong> This SBOM covers the Node.js/npm dependency graph of the compiler. The bundled Node.js runtime (embedded by <code>pkg</code>) and the first-party C/C++ runtime library are Autonomy Logic artifacts, assessed separately from third-party supply chain. A companion VS Code extension in the same repository is a distinct component.</div>
+<h1>2. Methodology</h1><p>Advisory data was obtained from the GitHub Advisory Database via <code>npm audit</code> (equivalent to GitHub Dependabot alerts). The compiler is bundled from a committed lockfile; development, build, and test dependencies are not part of the distributed binary — only the runtime dependency subtree (<code>chevrotain</code> and its transitives) ships. The compiler's input is a Structured Text source file, treated as untrusted. For each relevant package, source code was analyzed to determine whether the vulnerable code path is invoked and whether its input is attacker-controlled.</p>
+<h1>3. Software Bill of Materials Summary</h1>
+<table><tr><th>License</th><th>Components</th></tr>
+<tr><td>MIT</td><td>619</td></tr>
+<tr><td>ISC</td><td>44</td></tr>
+<tr><td>Apache-2.0</td><td>28</td></tr>
+<tr><td>BSD-2-Clause</td><td>22</td></tr>
+<tr><td>BSD-3-Clause</td><td>14</td></tr>
+<tr><td>BlueOak-1.0.0</td><td>12</td></tr>
+<tr><td>SEE LICENSE IN LICENSE.txt</td><td>10</td></tr>
+<tr><td>Artistic-2.0</td><td>5</td></tr>
+</table>
+<div class="callout"><strong>License finding:</strong> <b>STruCpp itself is licensed GPL-3.0-or-later, with a GCC-style Runtime Library Exception (RLE).</b> The compiler is open-source copyleft (distributing it or a modified version carries GPL-3.0 obligations, including source availability), while the RLE means C++ code produced by the compiler is <b>not</b> forced to be GPL — end users can compile and distribute proprietary PLC programs (mirroring GCC's libstdc++ exception). Copyright is held by Autonomy Logic / the OpenPLC Project. This is the product's intended license, surfaced for the acquirer's IP/legal review. The third-party dependency graph is fully permissive (MIT/ISC/Apache/BSD) — no copyleft is introduced through dependencies.</div>
+<h1>4. Findings Requiring Remediation (Affected)</h1>
+<div class="callout good"><strong>None.</strong></div>
+<h1>5. Not Affected — VEX Justifications</h1>
+<table><tr><th>VEX justification (CISA)</th><th>Count</th><th>Representative components</th><th>Basis</th></tr>
+<tr><td><code>component_not_present</code></td><td>26</td><td>tar (1 Critical + high), vitest (1 Critical), minimatch, vite, esbuild, rollup, brace-expansion, js-yaml, picomatch, postcss, flatted, ajv, yaml</td><td>Development, build, and test tooling (bundler, test runner, packager). Not part of the runtime dependency subtree; excluded from the distributed binary. Both critical advisories fall here.</td></tr>
+<tr><td><code>vulnerable_code_not_in_execute_path</code></td><td>3</td><td>lodash-es (1 high + 2 moderate) — via chevrotain</td><td>The only third-party runtime library with advisories. The vulnerable functions (_.template code injection; _.unset/_.omit prototype pollution) are never called: STruCpp does not import lodash directly, and chevrotain uses lodash-es only for internal parser data structures — the compiler's Structured Text input never reaches those functions.</td></tr>
+</table>
+<div class="callout"><strong>On critical severity.</strong> Both critical advisories (tar, vitest) are in development/build tooling and are not part of the distributed compiler. Neither is present in the delivered product.</div>
+<h1>6. Mitigated Findings</h1>
+<table><tr><th>Component</th><th>Advisories</th><th>Existing control</th></tr>
+
+</table>
+<h1>7. Remediation Plan</h1><ul><li><b>No action required</b> for exploitable vulnerabilities — no advisory is both present in the distributed compiler and exploitable.</li><li><b>Hygiene:</b> keep the bundled Node.js runtime (via <code>pkg</code>) current with Node security releases.</li><li><b>Legal:</b> the first-party GPL-3.0-or-later + Runtime Library Exception license (§ license posture) is material to the acquirer's IP review.</li></ul>
+<h1>8. Secure Development &amp; Supply-Chain Practices</h1>
+<table><tr><th>Practice</th><th>Status</th></tr>
+<tr><td>Minimal runtime dependency surface (1 direct dependency)</td><td><span class="badge b-green">In place</span></td></tr>
+<tr><td>Deterministic builds from a committed lockfile (npm ci)</td><td><span class="badge b-green">In place</span></td></tr>
+<tr><td>Development/build tooling excluded from the distributed binary</td><td><span class="badge b-green">In place</span></td></tr>
+<tr><td>Automated dependency updates (Dependabot / GitHub Advisory Database)</td><td><span class="badge b-green">In place</span></td></tr>
+<tr><td>SBOM generated per release in CycloneDX and SPDX</td><td><span class="badge b-green">In place</span></td></tr>
+<tr><td>Keep the bundled Node.js runtime (via pkg) current with Node security releases</td><td><span class="badge b-amber">Recommended</span></td></tr>
+</table>
+<h1>9. Attached Artifacts</h1>
+<table><tr><th>Artifact</th><th>Format</th><th>Purpose</th></tr>
+<tr><td><code>sbom/strucpp.cdx.json</code></td><td>CycloneDX 1.6</td><td>Canonical machine-readable SBOM</td></tr>
+<tr><td><code>sbom/strucpp.spdx.json</code></td><td>SPDX 2.3 (ISO/IEC 5962)</td><td>Procurement / compliance SBOM</td></tr>
+<tr><td><code>sbom/strucpp.components.csv</code></td><td>CSV</td><td>Human-readable component inventory (764 rows)</td></tr>
+<tr><td><code>sbom/vulnerabilities.csv</code></td><td>CSV</td><td>Full annotated advisory register (29 rows)</td></tr>
+</table>
+<hr/><p class="muted">Prepared by Autonomy Logic Engineering. Assessment date 2026-09. Regenerate per release.</p>
+</body></html>
