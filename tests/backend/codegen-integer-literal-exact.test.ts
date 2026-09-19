@@ -125,7 +125,9 @@ describe("64-bit integer literals keep every digit", () => {
         x := x;
       END_PROGRAM
     `);
-    expect(initList(cpp)).toContain("X(9007199254740993)");
+    expect(initList(cpp)).toContain(
+      "X(static_cast<IEC_LINT>(9007199254740993))",
+    );
   });
 
   it("leaves 64-bit based literals in their own notation", () => {
@@ -185,7 +187,7 @@ describe("decimal literals are normalized, never copied raw", () => {
     expect(inits).toContain("H(0xFF)");
     expect(inits).toContain("O(017)");
     expect(inits).toContain("B(0b1010)");
-    expect(inits).toContain("T(5)");
+    expect(inits).toContain("T(static_cast<IEC_INT>(5))");
   });
 });
 

@@ -96,7 +96,10 @@ inline void iec_null_reference_fault(const char* context) {
 // Base Classes for Runtime
 // =============================================================================
 
-// Forward declaration for retain support
+// Forward-declared for the two RESERVED vtable slots below. The type no longer
+// exists as a definition anywhere — retained leaves are listed project-wide in
+// generated_debug.cpp's `retain_vars[]` (see iec_retain.hpp) — but the
+// declaration has to stay so the slots keep their signatures and positions.
 struct RetainVarInfo;
 
 /**
@@ -109,18 +112,18 @@ struct ProgramBase {
     /** Execute one cycle of the program */
     virtual void run() = 0;
 
-    /**
-     * Get the array of retain variable descriptors.
-     * Override in generated code if the program has RETAIN variables.
-     * @return Pointer to static array, or nullptr if no retain variables
-     */
+    // RESERVED vtable slots 2 and 3, formerly the per-program retain
+    // descriptor table. Retained leaves now live in one project-wide
+    // `retain_vars[]` addressed by debug-table (arr, elem) — see
+    // iec_retain.hpp for why offsets could not work — so generated code no
+    // longer overrides these and nothing calls them.
+    //
+    // They are KEPT, not deleted. The OpenPLC v4 runtime mirrors this vtable
+    // by position (core/src/lib/strucpp_abi.hpp) to dispatch run() across a
+    // .so boundary; removing a slot would shift every slot after it and
+    // mis-dispatch run() for any program built against a different version.
+    // Same reasoning as the dead sync_in / sync_out slots below.
     virtual const RetainVarInfo* getRetainVars() const { return nullptr; }
-
-    /**
-     * Get the number of retain variables.
-     * Override in generated code if the program has RETAIN variables.
-     * @return Count of retain variables
-     */
     virtual size_t getRetainCount() const { return 0; }
 
     // -------------------------------------------------------------------------
@@ -842,16 +845,16 @@ template<typename T> inline IEC_LWORD TO_LWORD(T v) noexcept { return CONVERT<IE
 // Time/Date conversion functions
 // All time types are int64_t aliases, so IEC_TIME/IEC_DATE/IEC_TOD/IEC_DT
 // are all IECVar<int64_t>. We use a single template for each target type.
-// OSCAT calls TO_TIME with integer values (ms) — we convert ms → ns.
-// For TIME→TIME (same underlying type), the static_cast is identity and
-// the multiply still applies, but this matches CODESYS behavior where
-// integer values passed to TO_TIME are treated as milliseconds.
+// These take the value ALREADY in the internal representation. Unit scaling
+// for an integer argument (CODESYS: ms for TIME and TOD, seconds for DT and
+// DATE, ns for the L variants) is applied by codegen, which is the only layer
+// that still knows the IEC type — every temporal type is the same C++ type
+// here, so `TO_TIME(ms)` and `TO_TIME(aTimeValue)` are indistinguishable at
+// this point and a multiply here would corrupt one of them. See
+// `TEMPORAL_CONVERSION_UNITS` in codegen.ts and DOPE-618.
 
 template<typename T> inline IEC_TIME TO_TIME(T v) noexcept {
-    // If the input is already an IECVar<int64_t> (TIME/DATE/DT/TOD), this
-    // treats the raw nanosecond value as milliseconds — but in practice
-    // OSCAT only calls TO_TIME on integer types, not on TIME values.
-    return IEC_TIME(static_cast<TIME_t>(iec_unwrap(v)) * 1000000);
+    return IEC_TIME(static_cast<TIME_t>(iec_unwrap(v)));
 }
 
 template<typename T> inline IEC_DATE TO_DATE(T v) noexcept {

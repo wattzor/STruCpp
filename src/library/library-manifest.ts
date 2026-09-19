@@ -78,6 +78,23 @@ export interface LibraryVarType {
   elementTypeName?: string;
   /** Reference/pointer qualifier ("pointer_to" | "reference_to") */
   referenceKind?: string;
+  /**
+   * The C++ member name, when it differs from `name`.
+   *
+   * Emitted only when the library's own codegen mangled it — a member whose
+   * name matches its own user-defined type's name, or one colliding with a
+   * method of an interface the block implements (see member-mangling.ts).
+   * Both are decided against the DECLARING unit, so a consumer cannot always
+   * re-derive them; carrying the answer costs one optional string in the rare
+   * case and nothing in the common one. Across the five bundled archives —
+   * 224 function blocks, 7,639 leaves — it is currently emitted zero times.
+   */
+  cppName?: string;
+  /** The declaring block was `VAR CONSTANT`: read-only in every instance. */
+  readOnly?: true;
+  /** The declaring block was `VAR RETAIN`: retained in every instance, whether
+   *  or not the instance itself was declared RETAIN. */
+  retain?: true;
 }
 
 /**
@@ -86,12 +103,53 @@ export interface LibraryVarType {
 export interface LibraryFBEntry {
   /** Function block name */
   name: string;
+  /**
+   * Body language, when the block is NOT compiled by STruC++.
+   *
+   * Absent on every ordinary ST/IL block — those are compiled here and their
+   * C++ rides in `chunks`. Present on a block whose body is C/C++ or Python:
+   * STruC++ recovered this interface from the file's ST header but never
+   * parsed the body, emitted no chunk for it, and carried the authored file
+   * verbatim in `sources`. A consumer seeing this field must lower the source
+   * itself (through whatever native bridge it implements) instead of linking
+   * a chunk; see `native-sources.ts` for why the body is transported rather
+   * than compiled.
+   */
+  implementation?: "cpp" | "python";
+  /**
+   * File in `sources` holding this block's body. Set alongside
+   * `implementation` so a consumer can find the source without inferring the
+   * file name from the block name — the two need not match, and a
+   * case-insensitive guess would be wrong on a case-sensitive filesystem.
+   */
+  sourceFile?: string;
   /** Input variables */
   inputs: LibraryVarType[];
   /** Output variables */
   outputs: LibraryVarType[];
   /** In-out variables */
   inouts: LibraryVarType[];
+  /**
+   * `VAR` members — the block's own internal state, declared exactly as the
+   * interface arrays are.
+   *
+   * Needed because a RETAINed instance retains everything the block runs on,
+   * not just its interface: a TON restored with Q and ET but without its
+   * STATE and start timestamp comes back in a configuration it could never
+   * have reached by running.
+   *
+   * Declarative rather than pre-flattened, so one entry describes
+   * `buf : ARRAY[0..99] OF REAL` instead of a hundred. The consumer already
+   * walks declarations exactly this way for user-defined FBs, and every type a
+   * local can name — library structs, nested FB types — is already exported in
+   * `types` / `functionBlocks`, so the same walk resolves them here.
+   *
+   * Optional. An archive built before this field exists still loads, and a
+   * RETAINed instance of one of its blocks retains the visible surface only —
+   * with a compile warning naming the block, because a partial retain that
+   * nobody is told about is the thing this field exists to prevent.
+   */
+  locals?: LibraryVarType[];
   /** Block-level help text shown in editor hover dialogs. Authored in
    *  the library's `library.json` and merged into the manifest at build
    *  time (see scripts/generate-*.mjs). Optional so existing archives
@@ -286,7 +344,14 @@ export interface StlibArchive {
    *  (e.g. `iec-std-functions` is built from the std-function registry
    *  and contributes only symbol-table entries, no C++ output). */
   chunks: LibraryChunk[];
-  /** Original ST source files (omitted for closed-source distribution).
+  /** Original source files (ST omitted for closed-source distribution).
+   *
+   *  `--no-source` / `noSource` strips the ST entries, whose symbols are
+   *  already compiled into `chunks` and therefore usable without them. It
+   *  does NOT strip native (C/C++, Python) entries: those have no chunk, so
+   *  their source IS the deliverable and an archive without it is unbuildable
+   *  by any consumer. Closed-source distribution of a native block is not a
+   *  thing this format can express.
    *  `category` mirrors the manifest entry category for the POUs declared
    *  in this file so `--decompile-lib` can recreate the folder hierarchy
    *  on disk without re-parsing the source. Sources that span multiple

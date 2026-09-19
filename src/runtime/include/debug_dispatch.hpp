@@ -58,6 +58,14 @@ namespace strucpp { namespace debug {
 constexpr uint8_t STATUS_OK              = 0x7E;
 constexpr uint8_t STATUS_OUT_OF_BOUNDS   = 0x81;
 constexpr uint8_t STATUS_DATA_TOO_LARGE  = 0x82;
+// 0x83..0x85 are taken by the licensing FCs (MB_DEBUG_LIC_*), and 0x86 by
+// PLC_SET_STATE's REFUSED_BY_SWITCH (see the editor's ModbusDebugResponse
+// enum) — this is the next actually-free code. Returned when a write or
+// force targets a leaf carrying LEAF_FLAG_READONLY — an IEC CONSTANT. The
+// refusal lives HERE, at the bottom of the stack, so it holds for every
+// caller: the editor's debugger, an OPC-UA client, a plugin, or an older
+// editor build that never learned to hide the control.
+constexpr uint8_t STATUS_READ_ONLY       = 0x87;
 
 // ---------------------------------------------------------------------------
 // Templated per-type helpers. One instantiation per IEC elementary type;
@@ -111,6 +119,29 @@ template <typename T>
 inline void read_impl(const void* p, uint8_t* dest) noexcept {
     T v = static_cast<const IECVar<T>*>(p)->get();
     std::memcpy(dest, &v, sizeof(T));
+}
+
+// Pointer op — the same value read_impl would copy out, addressed in place.
+//
+// Exists so a caller that can serve a value without owning it (OPC-UA hands
+// open62541 a UA_Variant with UA_VARIANT_DATA_NODELETE) does not pay an
+// allocation and a copy per read. `read_ptr()` rather than `raw_ptr()`: a
+// located variable is written by the PLC program straight into value_, so
+// raw_ptr() would leak the program's value past an active force.
+//
+// The pointer is valid until the variable is next written OR ITS FORCE STATE
+// CHANGES, which for a cooperative single-threaded runtime means "until the
+// caller yields". A caller that can be preempted by the PLC scan must copy
+// instead.
+//
+// The force clause is not pedantry: read_ptr() returns &forced_value_ while
+// forced and &value_ otherwise, so force()/unforce() changes WHICH OBJECT the
+// pointer refers to. A pointer taken while forced keeps reporting the stale
+// forced value after an unforce, with nothing written to invalidate it.
+template <typename T>
+inline const void* ptr_impl(const void* p, uint16_t* len) noexcept {
+    *len = static_cast<uint16_t>(sizeof(T));
+    return static_cast<const IECVar<T>*>(p)->read_ptr();
 }
 
 // STRING / WSTRING live in `IECStringVar<254>` / `IECWStringVar<254>`,
@@ -179,6 +210,23 @@ inline void unforce_string(void* p) noexcept {
     static_cast<IECStringVar<254>*>(p)->unforce();
 }
 
+// The payload only — NOT the [len][payload] wire form read_string() builds.
+// `len` is the character count, and c_str() already resolves the force.
+//
+// Deliberately NOT capped at DEBUG_STRING_CAP. That cap is the Modbus debug
+// FRAME budget: the wire form spends one byte on the length prefix and the
+// editor reads a fixed window, so read_string() has to truncate. A pointer
+// spends nothing and has no window — the caller (OPC-UA) carries its own
+// length — so clamping here would silently shorten a string for a transport
+// that never asked for it. `length()` is already bounded by the variable's own
+// capacity, which is the only real limit on this path.
+// `len` must be non-null; handle_ptr always passes a real address.
+inline const void* ptr_string(const void* p, uint16_t* len) noexcept {
+    const auto* var = static_cast<const IECStringVar<254>*>(p);
+    *len = static_cast<uint16_t>(var->length());
+    return var->c_str();
+}
+
 // --- WSTRING (IECWStringVar<254>) -------------------------------------
 
 inline void read_wstring(const void* p, uint8_t* dest) noexcept {
@@ -228,6 +276,36 @@ inline void unforce_wstring(void* p) noexcept {
     static_cast<IECWStringVar<254>*>(p)->unforce();
 }
 
+// The code-unit buffer as it sits in memory, so `len` is BYTES (2 per code
+// unit), not characters. Like ptr_string, NOT capped at DEBUG_STRING_CAP —
+// see the note there; the cap belongs to the Modbus frame, not to a pointer.
+// `len` must be non-null; handle_ptr always passes a real address.
+//
+// read_wstring() splits each code unit explicitly to keep the WIRE format
+// little-endian on any host. A pointer cannot do that — what the caller gets is
+// host order — so this op is only correct on a little-endian target.
+//
+// The refusal is a RUNTIME one, not a static_assert. At namespace scope an
+// unconditional assert fires when the header is INCLUDED, so a big-endian (or
+// MSVC, which defines no __BYTE_ORDER__) build of firmware that only ever calls
+// handle_read/handle_write stopped compiling — an op nobody referenced taking
+// the whole translation unit down with it. Refusing here instead leaves every
+// other op available and routes the caller to the copying path, which is what
+// the old assertion text told them to do anyway.
+#if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || \
+    __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+inline const void* ptr_wstring(const void*, uint16_t* len) noexcept {
+    *len = 0;
+    return nullptr;   // handle_ptr's contract for "no pointer available"
+}
+#else
+inline const void* ptr_wstring(const void* p, uint16_t* len) noexcept {
+    const auto* var = static_cast<const IECWStringVar<254>*>(p);
+    *len = static_cast<uint16_t>(var->length() * 2);
+    return var->c_str();
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // Dispatch table entry. The `size` field is the byte width consumed/produced
 // by force/read (for strings: reserved, handled specially).
@@ -240,32 +318,92 @@ struct TypeOps {
     uint8_t size;
 };
 
+/** The pointer op, in a table of its own — see ptr_ops[] below. */
+struct PtrOps {
+    const void* (*ptr)(const void*, uint16_t*);
+};
+
 // ---------------------------------------------------------------------------
 // type_ops[]: one row per TypeTag, in tag order.
-// Kept inline so it's flash-resident with no separate .cpp required.
+// Kept inline so no separate .cpp is required.
+//
+// NOT flash-resident on AVR, whatever "inline constexpr" suggests. The Entry
+// tables carry STRUCPP_DEBUG_FLASH (see debug_table.hpp) and this does not, so
+// on a Harvard target it is const data in .rodata, which the startup code
+// copies into SRAM. Every AVR firmware pays for this table.
+//
+// That is why the pointer op is NOT a column here — see ptr_ops[] below.
+//
+// Moving this one to STRUCPP_DEBUG_FLASH would mean routing every row read
+// through pgm_read_ptr in the hot path of handle_read / handle_write /
+// handle_set. Worth doing on its own evidence, not as a side effect.
 // ---------------------------------------------------------------------------
 inline constexpr TypeOps type_ops[TAG__COUNT] = {
-    /*BOOL    */ { &force_impl<BOOL_t>,   &unforce_impl<BOOL_t>,   &read_impl<BOOL_t>,   &write_impl<BOOL_t>,   sizeof(BOOL_t)   },
-    /*SINT    */ { &force_impl<SINT_t>,   &unforce_impl<SINT_t>,   &read_impl<SINT_t>,   &write_impl<SINT_t>,   sizeof(SINT_t)   },
-    /*USINT   */ { &force_impl<USINT_t>,  &unforce_impl<USINT_t>,  &read_impl<USINT_t>,  &write_impl<USINT_t>,  sizeof(USINT_t)  },
-    /*INT     */ { &force_impl<INT_t>,    &unforce_impl<INT_t>,    &read_impl<INT_t>,    &write_impl<INT_t>,    sizeof(INT_t)    },
-    /*UINT    */ { &force_impl<UINT_t>,   &unforce_impl<UINT_t>,   &read_impl<UINT_t>,   &write_impl<UINT_t>,   sizeof(UINT_t)   },
-    /*DINT    */ { &force_impl<DINT_t>,   &unforce_impl<DINT_t>,   &read_impl<DINT_t>,   &write_impl<DINT_t>,   sizeof(DINT_t)   },
-    /*UDINT   */ { &force_impl<UDINT_t>,  &unforce_impl<UDINT_t>,  &read_impl<UDINT_t>,  &write_impl<UDINT_t>,  sizeof(UDINT_t)  },
-    /*LINT    */ { &force_impl<LINT_t>,   &unforce_impl<LINT_t>,   &read_impl<LINT_t>,   &write_impl<LINT_t>,   sizeof(LINT_t)   },
-    /*ULINT   */ { &force_impl<ULINT_t>,  &unforce_impl<ULINT_t>,  &read_impl<ULINT_t>,  &write_impl<ULINT_t>,  sizeof(ULINT_t)  },
-    /*REAL    */ { &force_impl<REAL_t>,   &unforce_impl<REAL_t>,   &read_impl<REAL_t>,   &write_impl<REAL_t>,   sizeof(REAL_t)   },
-    /*LREAL   */ { &force_impl<LREAL_t>,  &unforce_impl<LREAL_t>,  &read_impl<LREAL_t>,  &write_impl<LREAL_t>,  sizeof(LREAL_t)  },
-    /*BYTE    */ { &force_impl<BYTE_t>,   &unforce_impl<BYTE_t>,   &read_impl<BYTE_t>,   &write_impl<BYTE_t>,   sizeof(BYTE_t)   },
-    /*WORD    */ { &force_impl<WORD_t>,   &unforce_impl<WORD_t>,   &read_impl<WORD_t>,   &write_impl<WORD_t>,   sizeof(WORD_t)   },
-    /*DWORD   */ { &force_impl<DWORD_t>,  &unforce_impl<DWORD_t>,  &read_impl<DWORD_t>,  &write_impl<DWORD_t>,  sizeof(DWORD_t)  },
-    /*LWORD   */ { &force_impl<LWORD_t>,  &unforce_impl<LWORD_t>,  &read_impl<LWORD_t>,  &write_impl<LWORD_t>,  sizeof(LWORD_t)  },
-    /*TIME    */ { &force_impl<TIME_t>,   &unforce_impl<TIME_t>,   &read_impl<TIME_t>,   &write_impl<TIME_t>,   sizeof(TIME_t)   },
-    /*DATE    */ { &force_impl<DATE_t>,   &unforce_impl<DATE_t>,   &read_impl<DATE_t>,   &write_impl<DATE_t>,   sizeof(DATE_t)   },
-    /*TOD     */ { &force_impl<TOD_t>,    &unforce_impl<TOD_t>,    &read_impl<TOD_t>,    &write_impl<TOD_t>,    sizeof(TOD_t)    },
-    /*DT      */ { &force_impl<DT_t>,     &unforce_impl<DT_t>,     &read_impl<DT_t>,     &write_impl<DT_t>,     sizeof(DT_t)     },
-    /*STRING  */ { &force_string,         &unforce_string,         &read_string,         &write_string,         DEBUG_STRING_WIDTH  },
-    /*WSTRING */ { &force_wstring,        &unforce_wstring,        &read_wstring,        &write_wstring,        DEBUG_WSTRING_WIDTH },
+    /*BOOL    */ { &force_impl<BOOL_t>,  &unforce_impl<BOOL_t>,  &read_impl<BOOL_t>,  &write_impl<BOOL_t>,  sizeof(BOOL_t)      },
+    /*SINT    */ { &force_impl<SINT_t>,  &unforce_impl<SINT_t>,  &read_impl<SINT_t>,  &write_impl<SINT_t>,  sizeof(SINT_t)      },
+    /*USINT   */ { &force_impl<USINT_t>, &unforce_impl<USINT_t>, &read_impl<USINT_t>, &write_impl<USINT_t>, sizeof(USINT_t)     },
+    /*INT     */ { &force_impl<INT_t>,   &unforce_impl<INT_t>,   &read_impl<INT_t>,   &write_impl<INT_t>,   sizeof(INT_t)       },
+    /*UINT    */ { &force_impl<UINT_t>,  &unforce_impl<UINT_t>,  &read_impl<UINT_t>,  &write_impl<UINT_t>,  sizeof(UINT_t)      },
+    /*DINT    */ { &force_impl<DINT_t>,  &unforce_impl<DINT_t>,  &read_impl<DINT_t>,  &write_impl<DINT_t>,  sizeof(DINT_t)      },
+    /*UDINT   */ { &force_impl<UDINT_t>, &unforce_impl<UDINT_t>, &read_impl<UDINT_t>, &write_impl<UDINT_t>, sizeof(UDINT_t)     },
+    /*LINT    */ { &force_impl<LINT_t>,  &unforce_impl<LINT_t>,  &read_impl<LINT_t>,  &write_impl<LINT_t>,  sizeof(LINT_t)      },
+    /*ULINT   */ { &force_impl<ULINT_t>, &unforce_impl<ULINT_t>, &read_impl<ULINT_t>, &write_impl<ULINT_t>, sizeof(ULINT_t)     },
+    /*REAL    */ { &force_impl<REAL_t>,  &unforce_impl<REAL_t>,  &read_impl<REAL_t>,  &write_impl<REAL_t>,  sizeof(REAL_t)      },
+    /*LREAL   */ { &force_impl<LREAL_t>, &unforce_impl<LREAL_t>, &read_impl<LREAL_t>, &write_impl<LREAL_t>, sizeof(LREAL_t)     },
+    /*BYTE    */ { &force_impl<BYTE_t>,  &unforce_impl<BYTE_t>,  &read_impl<BYTE_t>,  &write_impl<BYTE_t>,  sizeof(BYTE_t)      },
+    /*WORD    */ { &force_impl<WORD_t>,  &unforce_impl<WORD_t>,  &read_impl<WORD_t>,  &write_impl<WORD_t>,  sizeof(WORD_t)      },
+    /*DWORD   */ { &force_impl<DWORD_t>, &unforce_impl<DWORD_t>, &read_impl<DWORD_t>, &write_impl<DWORD_t>, sizeof(DWORD_t)     },
+    /*LWORD   */ { &force_impl<LWORD_t>, &unforce_impl<LWORD_t>, &read_impl<LWORD_t>, &write_impl<LWORD_t>, sizeof(LWORD_t)     },
+    /*TIME    */ { &force_impl<TIME_t>,  &unforce_impl<TIME_t>,  &read_impl<TIME_t>,  &write_impl<TIME_t>,  sizeof(TIME_t)      },
+    /*DATE    */ { &force_impl<DATE_t>,  &unforce_impl<DATE_t>,  &read_impl<DATE_t>,  &write_impl<DATE_t>,  sizeof(DATE_t)      },
+    /*TOD     */ { &force_impl<TOD_t>,   &unforce_impl<TOD_t>,   &read_impl<TOD_t>,   &write_impl<TOD_t>,   sizeof(TOD_t)       },
+    /*DT      */ { &force_impl<DT_t>,    &unforce_impl<DT_t>,    &read_impl<DT_t>,    &write_impl<DT_t>,    sizeof(DT_t)        },
+    /*STRING  */ { &force_string,        &unforce_string,        &read_string,        &write_string,        DEBUG_STRING_WIDTH  },
+    /*WSTRING */ { &force_wstring,       &unforce_wstring,       &read_wstring,       &write_wstring,       DEBUG_WSTRING_WIDTH },
+};
+
+// ---------------------------------------------------------------------------
+// ptr_ops[]: the pointer op, deliberately NOT a sixth column of type_ops.
+//
+// Only handle_ptr reads this, and only the baremetal OPC-UA server calls
+// handle_ptr — but as a column it was reachable from handle_read/handle_write
+// too, so the whole table grew for every firmware. Measured on an ATmega2560
+// (arduino:avr:mega, the simulator's target) with a sketch that only ever calls
+// handle_read/handle_write: 383 -> 425 bytes of SRAM and 4654 -> 5128 of flash.
+//
+// Split out, nothing references this table unless handle_ptr is called, and
+// -ffunction-sections/-fdata-sections + --gc-sections (which the AVR core
+// passes) drop both it and the ptr_impl<T> instantiations.
+//
+// Measured on arduino:avr:mega, same sketch, same runtime tree:
+//
+//   never calls handle_ptr   383 B SRAM / 4728 B flash   (was 425 / 5128)
+//   calls handle_ptr         425 B SRAM / 5196 B flash
+//
+// So the feature now costs what it costs, and only to firmware that uses it.
+// ---------------------------------------------------------------------------
+inline constexpr PtrOps ptr_ops[TAG__COUNT] = {
+    /*BOOL    */ { &ptr_impl<BOOL_t> },
+    /*SINT    */ { &ptr_impl<SINT_t> },
+    /*USINT   */ { &ptr_impl<USINT_t> },
+    /*INT     */ { &ptr_impl<INT_t> },
+    /*UINT    */ { &ptr_impl<UINT_t> },
+    /*DINT    */ { &ptr_impl<DINT_t> },
+    /*UDINT   */ { &ptr_impl<UDINT_t> },
+    /*LINT    */ { &ptr_impl<LINT_t> },
+    /*ULINT   */ { &ptr_impl<ULINT_t> },
+    /*REAL    */ { &ptr_impl<REAL_t> },
+    /*LREAL   */ { &ptr_impl<LREAL_t> },
+    /*BYTE    */ { &ptr_impl<BYTE_t> },
+    /*WORD    */ { &ptr_impl<WORD_t> },
+    /*DWORD   */ { &ptr_impl<DWORD_t> },
+    /*LWORD   */ { &ptr_impl<LWORD_t> },
+    /*TIME    */ { &ptr_impl<TIME_t> },
+    /*DATE    */ { &ptr_impl<DATE_t> },
+    /*TOD     */ { &ptr_impl<TOD_t> },
+    /*DT      */ { &ptr_impl<DT_t> },
+    /*STRING  */ { &ptr_string },
+    /*WSTRING */ { &ptr_wstring },
 };
 
 // ---------------------------------------------------------------------------
@@ -323,6 +461,13 @@ inline Entry read_entry(uint8_t arr, uint16_t elem) noexcept {
     const uint8_t* entry_addr = reinterpret_cast<const uint8_t*>(table_ptr) + elem * sizeof(Entry);
     uintptr_t ptr_val = pgm_read_word(entry_addr);
     uint8_t tag_val   = pgm_read_byte(entry_addr + sizeof(void*));
+    // `flags` sits immediately after `tag` — both uint8_t, no padding between
+    // them — so it is the byte after the tag. MUST be read here: the AVR paths
+    // assemble `out` field by field rather than copying the struct, and a
+    // missed flags read silently returns 0, which reads as "writable" and
+    // defeats the CONSTANT gate on exactly the targets with the least memory
+    // to spare for a second lookup.
+    out.flags = pgm_read_byte(entry_addr + sizeof(void*) + 1);
     out.ptr = reinterpret_cast<void*>(ptr_val);
     out.tag = tag_val;
 #elif defined(__AVR__)
@@ -335,6 +480,7 @@ inline Entry read_entry(uint8_t arr, uint16_t elem) noexcept {
     const uint8_t* entry_addr = reinterpret_cast<const uint8_t*>(table) + elem * sizeof(Entry);
     uintptr_t ptr_val = pgm_read_word(entry_addr);
     uint8_t tag_val   = pgm_read_byte(entry_addr + sizeof(void*));
+    out.flags = pgm_read_byte(entry_addr + sizeof(void*) + 1);
     out.ptr = reinterpret_cast<void*>(ptr_val);
     out.tag = tag_val;
 #else
@@ -349,17 +495,55 @@ inline Entry read_entry(uint8_t arr, uint16_t elem) noexcept {
 // Per-entry operations. These are what ModbusSlave / Runtime v4 call.
 // ---------------------------------------------------------------------------
 
+/**
+ * Validate a value payload against a leaf's type. Returns STATUS_OK, or the
+ * STATUS_* refusal to hand straight back to the caller. Shared by handle_set()
+ * and handle_write() so the rule cannot drift between them.
+ *
+ * Scalars are fixed-width: `len` must cover the type's size.
+ *
+ * Strings are length-prefixed: `bytes[0]` is the character (STRING) or
+ * code-unit (WSTRING) count, and force_string / write_string read exactly that
+ * many, so `len` must cover `1 + count` -- `1 + 2 * count` for WSTRING -- and
+ * NOT `type_ops[tag].size`, which is the padded width the READ path emits. A
+ * count past DEBUG_STRING_CAP is refused rather than silently truncated.
+ *
+ * `len` is a lower bound throughout, so a caller that pads to the full field
+ * width still passes.
+ */
+inline uint8_t validate_payload(uint8_t tag, const uint8_t* bytes, uint16_t len) noexcept {
+    const uint8_t expected = type_ops[tag].size;
+    if (expected == 0) return STATUS_DATA_TOO_LARGE;
+    if (!bytes) return STATUS_DATA_TOO_LARGE;
+
+    if (tag == TAG_STRING || tag == TAG_WSTRING) {
+        const uint8_t count = bytes[0];
+        if (count > DEBUG_STRING_CAP) return STATUS_DATA_TOO_LARGE;
+        const uint16_t need = static_cast<uint16_t>(
+            1u + (tag == TAG_WSTRING ? static_cast<uint16_t>(count) * 2u
+                                     : static_cast<uint16_t>(count)));
+        if (len < need) return STATUS_DATA_TOO_LARGE;
+        return STATUS_OK;
+    }
+
+    if (len < expected) return STATUS_DATA_TOO_LARGE;
+    return STATUS_OK;
+}
+
 /** Set (force or unforce) a variable. Returns STATUS_* code. */
 inline uint8_t handle_set(uint8_t arr, uint16_t elem, bool forcing,
                           const uint8_t* bytes, uint16_t len) noexcept {
     Entry e = read_entry(arr, elem);
     if (!e.ptr || e.tag >= TAG__COUNT) return STATUS_OUT_OF_BOUNDS;
 
+    // A CONSTANT cannot be forced. Refused for BOTH directions: unforcing a
+    // leaf that could never be forced is a no-op, and returning OK for it
+    // would tell the caller a force had been cleared that never existed.
+    if (e.flags & LEAF_FLAG_READONLY) return STATUS_READ_ONLY;
+
     if (forcing) {
-        uint8_t expected = type_ops[e.tag].size;
-        // size == 0 is the string stub — Phase 4a rejects for now
-        if (expected == 0) return STATUS_DATA_TOO_LARGE;
-        if (len < expected) return STATUS_DATA_TOO_LARGE;
+        const uint8_t bad = validate_payload(e.tag, bytes, len);
+        if (bad != STATUS_OK) return bad;
         type_ops[e.tag].force(e.ptr, bytes);
     } else {
         type_ops[e.tag].unforce(e.ptr);
@@ -388,9 +572,12 @@ inline uint8_t handle_write(uint8_t arr, uint16_t elem,
                             const uint8_t* bytes, uint16_t len) noexcept {
     Entry e = read_entry(arr, elem);
     if (!e.ptr || e.tag >= TAG__COUNT) return STATUS_OUT_OF_BOUNDS;
-    uint8_t expected = type_ops[e.tag].size;
-    if (expected == 0) return STATUS_DATA_TOO_LARGE;  // string stub
-    if (len < expected) return STATUS_DATA_TOO_LARGE;
+    // Same gate as handle_set. This is also the path the retain restore walk
+    // uses, so a CONSTANT can never be clobbered by a stale retained value
+    // either — constants come from the declaration, never from storage.
+    if (e.flags & LEAF_FLAG_READONLY) return STATUS_READ_ONLY;
+    const uint8_t bad = validate_payload(e.tag, bytes, len);
+    if (bad != STATUS_OK) return bad;
     type_ops[e.tag].write(e.ptr, bytes);
     return STATUS_OK;
 }
@@ -400,6 +587,29 @@ inline uint16_t handle_size(uint8_t arr, uint16_t elem) noexcept {
     Entry e = read_entry(arr, elem);
     if (!e.ptr || e.tag >= TAG__COUNT) return 0;
     return type_ops[e.tag].size;
+}
+
+/** Address a leaf's value in place; `out_len` receives its length in BYTES.
+ *  Returns nullptr (and sets *out_len = 0) for an out-of-range leaf.
+ *
+ *  The copy-free counterpart to handle_read(). The pointer is into live PLC
+ *  storage, so it is valid only until the variable is next written or its force
+ *  state changes — safe for a caller that runs inside the scan's own thread of
+ *  control, wrong for one that can be preempted by it.
+ *
+ *  Returns nullptr with *out_len = 0 when the leaf has no address to give:
+ *  an unknown (arr, elem), a tag with no ptr op, or WSTRING on a big-endian
+ *  target (see ptr_wstring). */
+inline const void* handle_ptr(uint8_t arr, uint16_t elem, uint16_t* out_len) noexcept {
+    Entry e = read_entry(arr, elem);
+    if (!e.ptr || e.tag >= TAG__COUNT) {
+        if (out_len) *out_len = 0;
+        return nullptr;
+    }
+    uint16_t len = 0;
+    const void* p = ptr_ops[e.tag].ptr(e.ptr, &len);
+    if (out_len) *out_len = len;
+    return p;
 }
 
 /** Total number of arrays. */
@@ -458,6 +668,12 @@ STRUCPP_V4_EXPORT uint16_t strucpp_debug_elem_count(uint8_t arr) {
 STRUCPP_V4_EXPORT uint16_t strucpp_debug_size(uint8_t arr, uint16_t elem) {
     return strucpp::debug::handle_size(arr, elem);
 }
+
+// handle_ptr() is deliberately NOT exported here. It hands out a pointer into
+// live PLC storage, which is only safe for a caller running inside the scan's
+// own thread of control — true of the baremetal super-loop, false of the
+// Runtime v4 .so, where the scan runs in its own thread and a plugin reading
+// through the pointer would race it. Linux callers use strucpp_debug_read().
 
 STRUCPP_V4_EXPORT uint8_t strucpp_debug_set(uint8_t arr, uint16_t elem,
                                              bool forcing,

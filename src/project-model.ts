@@ -68,6 +68,15 @@ export interface ProjectVarDeclaration {
   name: string;
   typeName: string;
   maxLength?: number | string; // For STRING(n) / WSTRING(n) parameterized length; string for constant names
+  /**
+   * Declared initialiser, kept as the AST expression.
+   *
+   * Codegen lowers it with the same expression emitter it uses for statement
+   * bodies. An earlier version flattened this to a string here, which silently
+   * dropped every composite initialiser (array literals, structure
+   * initializers) — `expressionToString` had no case for them — and forced
+   * codegen to re-implement literal lowering for the string form.
+   */
   initialValue?: Expression;
   isConstant: boolean;
   isRetain: boolean;
@@ -230,6 +239,79 @@ export function toQualifiedCppName(name: string): string {
 }
 
 /**
+ * Convert an AST VarDeclaration to a ProjectVarDeclaration.
+ *
+ * Module-level so both the project-model builder and
+ * {@link collectFileScopeGlobals} produce identical records.
+ */
+export function toProjectVarDeclaration(
+  name: string,
+  decl: VarDeclaration,
+  block: VarBlock,
+): ProjectVarDeclaration {
+  // Use conditional spreading for optional properties to comply with exactOptionalPropertyTypes
+  return {
+    name,
+    typeName: decl.type.name,
+    isConstant: block.isConstant,
+    isRetain: block.isRetain,
+    ...(decl.initialValue !== undefined
+      ? { initialValue: decl.initialValue }
+      : {}),
+    ...(decl.address !== undefined ? { address: decl.address } : {}),
+    ...(decl.type.maxLength !== undefined
+      ? { maxLength: decl.type.maxLength }
+      : {}),
+    // Carry inline-array metadata through so codegen can rebuild
+    // Array1D<T, L, U> instead of falling through to mapVarTypeToCpp's
+    // IEC_${name} branch (which produces IEC___INLINE_ARRAY_<T>).
+    ...(decl.type.arrayDimensions !== undefined
+      ? { arrayDimensions: decl.type.arrayDimensions }
+      : {}),
+    ...(decl.type.elementTypeName !== undefined
+      ? { elementTypeName: decl.type.elementTypeName }
+      : {}),
+    ...(decl.type.elementReferenceKind !== undefined &&
+    decl.type.elementReferenceKind !== "none"
+      ? { elementReferenceKind: decl.type.elementReferenceKind }
+      : {}),
+    ...(decl.type.referenceKind !== undefined &&
+    decl.type.referenceKind !== "none"
+      ? { referenceKind: decl.type.referenceKind }
+      : {}),
+  };
+}
+
+/**
+ * Collect the file-level VAR_GLOBAL blocks of a compilation unit, keyed by
+ * upper-case name.
+ *
+ * These are a different animal from CONFIGURATION VAR_GLOBALs: they are emitted
+ * as plain file-scope storage that every POU already reaches by name, with no
+ * `GlobalVar<V>` wrapper and no mutex. A VAR_EXTERNAL that names one therefore
+ * needs no pointer member and no pointer threading — the declaration only
+ * documents the access, and the body resolves straight to the global. Both the
+ * project model (which drops such externals from a POU's pointer-plumbing list)
+ * and codegen (same, for function blocks) use this to tell the two apart.
+ */
+export function collectFileScopeGlobals(
+  ast: CompilationUnit,
+): Map<string, ProjectVarDeclaration> {
+  const globals = new Map<string, ProjectVarDeclaration>();
+  for (const block of ast.globalVarBlocks) {
+    for (const decl of block.declarations) {
+      for (const name of decl.names) {
+        globals.set(
+          name.toUpperCase(),
+          toProjectVarDeclaration(name, decl, block),
+        );
+      }
+    }
+  }
+  return globals;
+}
+
+/**
  * Result of building the project model.
  */
 export interface ProjectModelResult {
@@ -380,6 +462,9 @@ export class ProjectModelBuilder {
   private functionBlocks: Map<string, FunctionBlockDecl> = new Map();
   private configurations: ConfigurationDecl[] = [];
 
+  /** File-level VAR_GLOBALs by upper-case name — see collectFileScopeGlobals. */
+  private fileScopeGlobals: Map<string, ProjectVarDeclaration> = new Map();
+
   /**
    * Build the project model from an AST.
    */
@@ -390,6 +475,7 @@ export class ProjectModelBuilder {
     this.functions = new Map();
     this.functionBlocks = new Map();
     this.configurations = [];
+    this.fileScopeGlobals = collectFileScopeGlobals(ast);
 
     // First pass: collect all program, function, and function block declarations
     for (const prog of ast.programs) {
@@ -450,15 +536,17 @@ export class ProjectModelBuilder {
             // Carry type-shape metadata through so codegen can rebuild
             // Array1D<...> / IEC_Ptr<...> instead of falling through to
             // mapVarTypeToCpp's IEC_${name} default.
-            varExternal.push(this.convertVarExternal(varName, decl));
+            this.addVarExternal(
+              varExternal,
+              this.convertVarExternal(varName, decl),
+              `program '${prog.name}'`,
+            );
           }
         }
       } else {
         for (const decl of block.declarations) {
           for (const varName of decl.names) {
-            varDeclarations.push(
-              this.convertVarDeclaration(varName, decl, block),
-            );
+            varDeclarations.push(toProjectVarDeclaration(varName, decl, block));
           }
         }
       }
@@ -493,7 +581,7 @@ export class ProjectModelBuilder {
       if (block.blockType === "VAR_INPUT") {
         for (const decl of block.declarations) {
           for (const varName of decl.names) {
-            parameters.push(this.convertVarDeclaration(varName, decl, block));
+            parameters.push(toProjectVarDeclaration(varName, decl, block));
           }
         }
       }
@@ -534,7 +622,11 @@ export class ProjectModelBuilder {
       if (block.blockType === "VAR_EXTERNAL") {
         for (const decl of block.declarations) {
           for (const varName of decl.names) {
-            varExternal.push(this.convertVarExternal(varName, decl));
+            this.addVarExternal(
+              varExternal,
+              this.convertVarExternal(varName, decl),
+              `function block '${fb.name}'`,
+            );
           }
         }
         continue;
@@ -551,7 +643,7 @@ export class ProjectModelBuilder {
 
       for (const decl of block.declarations) {
         for (const varName of decl.names) {
-          target.push(this.convertVarDeclaration(varName, decl, block));
+          target.push(toProjectVarDeclaration(varName, decl, block));
         }
       }
     }
@@ -577,7 +669,7 @@ export class ProjectModelBuilder {
       if (block.blockType === "VAR_GLOBAL") {
         for (const decl of block.declarations) {
           for (const varName of decl.names) {
-            globalVars.push(this.convertVarDeclaration(varName, decl, block));
+            globalVars.push(toProjectVarDeclaration(varName, decl, block));
           }
         }
       }
@@ -700,6 +792,37 @@ export class ProjectModelBuilder {
         ? { taskName: instance.taskName }
         : {}),
     };
+  }
+
+  /**
+   * Record a POU's VAR_EXTERNAL reference.
+   *
+   * A reference to a **file-level** VAR_GLOBAL is validated here and then
+   * dropped: those globals are plain file-scope storage that the POU body
+   * already resolves to by name, so keeping them would make codegen add a
+   * `GlobalVar<V>*` member and shadow the very global being referenced. A
+   * reference to a CONFIGURATION VAR_GLOBAL is kept for the pointer plumbing and
+   * validated later by {@link validateExternalReferences}, once every
+   * configuration has been processed.
+   */
+  private addVarExternal(
+    varExternal: VarExternalDeclaration[],
+    ext: VarExternalDeclaration,
+    ownerLabel: string,
+  ): void {
+    const fileScope = this.fileScopeGlobals.get(ext.name.toUpperCase());
+    if (!fileScope) {
+      varExternal.push(ext);
+      return;
+    }
+    if (fileScope.typeName.toUpperCase() !== ext.typeName.toUpperCase()) {
+      this.addError(
+        `Type mismatch for VAR_EXTERNAL '${ext.name}' in ${ownerLabel}: expected '${fileScope.typeName}' but found '${ext.typeName}'`,
+        ext.sourceSpan?.startLine ?? 0,
+        ext.sourceSpan?.startCol ?? 0,
+        ext.sourceSpan?.file,
+      );
+    }
   }
 
   /**
@@ -829,47 +952,6 @@ export class ProjectModelBuilder {
       ...(decl.type.maxLength !== undefined
         ? { maxLength: decl.type.maxLength }
         : {}),
-      ...(decl.type.arrayDimensions !== undefined
-        ? { arrayDimensions: decl.type.arrayDimensions }
-        : {}),
-      ...(decl.type.elementTypeName !== undefined
-        ? { elementTypeName: decl.type.elementTypeName }
-        : {}),
-      ...(decl.type.elementReferenceKind !== undefined &&
-      decl.type.elementReferenceKind !== "none"
-        ? { elementReferenceKind: decl.type.elementReferenceKind }
-        : {}),
-      ...(decl.type.referenceKind !== undefined &&
-      decl.type.referenceKind !== "none"
-        ? { referenceKind: decl.type.referenceKind }
-        : {}),
-    };
-  }
-
-  /**
-   * Convert an AST VarDeclaration to a ProjectVarDeclaration.
-   */
-  private convertVarDeclaration(
-    name: string,
-    decl: VarDeclaration,
-    block: VarBlock,
-  ): ProjectVarDeclaration {
-    const initialValue = decl.initialValue;
-
-    // Use conditional spreading for optional properties to comply with exactOptionalPropertyTypes
-    return {
-      name,
-      typeName: decl.type.name,
-      isConstant: block.isConstant,
-      isRetain: block.isRetain,
-      ...(initialValue !== undefined ? { initialValue } : {}),
-      ...(decl.address !== undefined ? { address: decl.address } : {}),
-      ...(decl.type.maxLength !== undefined
-        ? { maxLength: decl.type.maxLength }
-        : {}),
-      // Carry inline-array metadata through so codegen can rebuild
-      // Array1D<T, L, U> instead of falling through to mapVarTypeToCpp's
-      // IEC_${name} branch (which produces IEC___INLINE_ARRAY_<T>).
       ...(decl.type.arrayDimensions !== undefined
         ? { arrayDimensions: decl.type.arrayDimensions }
         : {}),

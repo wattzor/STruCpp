@@ -184,6 +184,11 @@ describe("function block array element invocation — no effect on other stateme
   });
 
   it("parses a method call on an array element", () => {
+    // `cs[0].Bump()` is a *method* call on an element. `isMethodCallAhead`
+    // scans over bracketed subscripts (and `^` dereferences) before checking
+    // for `.identifier(`, so this is recognized as a method call rather than
+    // falling to the element-invocation rule above, whose gate only fires
+    // when `(` follows `]` directly.
     const ast = parseOk(`
       FUNCTION_BLOCK Counter
         VAR n : INT; END_VAR

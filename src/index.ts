@@ -845,6 +845,37 @@ export function compile(
     );
     debugTableCpp = dbg.debugTableCpp;
     debugMap = dbg.debugMap;
+
+    // A RETAIN the walk could not follow all the way down is a WARNING, not an
+    // error. The program still builds and its visible surface is still
+    // retained; refusing would strand anyone using a third-party .stlib they
+    // have no way to rebuild. But the retain is partial, and a partial retain
+    // nobody is told about is a fault discovered after a power cycle with
+    // nothing in the build to point at — so it is said, every build.
+    for (const item of dbg.incomplete) {
+      pipeline.warnings.push({
+        message: item.reason,
+        line: 0,
+        column: 0,
+        severity: "warning",
+      });
+    }
+
+    // A leaf the walk could not register is not debuggable: it is absent from
+    // the debugger's watch list and from anything built on the debug table,
+    // OPC-UA included. That was silent — `skipped` was collected and dropped —
+    // so a variable simply was not there, with nothing in the build to say why
+    // or which. Same reasoning as `incomplete` above: the program still builds,
+    // but a drop nobody is told about is found later, at a debugger that shows
+    // nothing, with no thread back to the cause.
+    for (const item of dbg.skipped) {
+      pipeline.warnings.push({
+        message: `${item.path} is not debuggable: ${item.reason}`,
+        line: 0,
+        column: 0,
+        severity: "warning",
+      });
+    }
   }
 
   return {

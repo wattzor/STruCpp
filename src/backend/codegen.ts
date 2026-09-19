@@ -58,6 +58,7 @@ import type {
   StlibArchive,
 } from "../library/library-manifest.js";
 import {
+  collectFileScopeGlobals,
   getProjectNamespace,
   parseDateLiteralToDays,
   parseDtLiteralToNs,
@@ -73,21 +74,19 @@ import {
 } from "../semantic/system-types.js";
 import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
 import {
-  generateInitializerValue,
-  isStructInitializerValue,
-  type StructInitEmitter,
-} from "./struct-init-codegen.js";
-import {
   formatArrayType,
   formatIntegerLiteral,
   iecBaseToCppLiteral,
+  translateIECString,
 } from "./codegen-utils.js";
+import { mangledMemberName, needsMemberMangling } from "./member-mangling.js";
 import {
   getTypeBits,
   getTypeCategory,
   isImplicitlyConvertible,
   resolveFieldType as resolveFieldTypeUtil,
   resolveArrayElementType,
+  resolveArrayShapeByName,
   typeName as typeNameUtil,
   buildEnumMemberMap,
   isGenericTypeName,
@@ -101,6 +100,11 @@ import {
   stdFuncReturnsCommonType,
 } from "../semantic/type-utils.js";
 import { isEnEnoArgument } from "../ast-utils.js";
+import {
+  generateInitializerValue,
+  isStructInitializerValue,
+  type StructInitEmitter,
+} from "./struct-init-codegen.js";
 
 // =============================================================================
 // Located Variable Support
@@ -121,6 +125,17 @@ interface LocatedVarDescriptor {
   programName: string;
   /** True when the C++ variable is a GlobalVar<V> wrapper (project-model VAR_GLOBAL). */
   isGlobalVarWrapper: boolean;
+  /**
+   * IEC index of the array element this descriptor binds, for a located
+   * ARRAY. Absent for a scalar.
+   *
+   * A located array is emitted as one descriptor PER ELEMENT, laid out over
+   * consecutive addresses -- `AT %MW60 : ARRAY [0..66] OF WORD` becomes 67
+   * descriptors at %MW60..%MW126. The descriptor table is flat and carries no
+   * notion of an aggregate, so the element index is what tells the pointer
+   * initialiser to bind `arr[i]` rather than `arr` (openplc-editor#565).
+   */
+  elementIndex?: number;
 }
 
 /**
@@ -224,11 +239,62 @@ export interface CodeGenOptions {
 }
 
 /**
- * Numeric and bit-string targets for the `TO_*` family — i.e. every
- * elementary type whose runtime representation is "just an integer or
- * a float."  Used by `wrapTemporalArgForNumericConversion` to gate
- * the temporal→ms scaling: STRING / WSTRING and temporal targets need
- * different handling and stay out of this set.
+ * How each IEC temporal type is exchanged with an integer, per CODESYS.
+ *
+ * `toUnit` converts our internal representation to the unit a conversion must
+ * yield; `fromUnit` converts back. `undefined` means the internal
+ * representation already IS that unit, so no call is emitted.
+ *
+ * Internally every temporal type is nanoseconds since its own zero, except
+ * DATE, which is whole days. CODESYS uses 32-bit seconds for DATE and DT,
+ * 32-bit milliseconds for TOD and TIME, and 64-bit nanoseconds for all four
+ * `L` variants — so the `L` rows are pass-through and the rest scale.
+ *
+ * One table rather than a chain of `if`s because the two directions have to
+ * agree: OSCAT converts out and back inside a single expression, and a unit
+ * that disagreed between them would round-trip to nonsense. See DOPE-618.
+ */
+interface TemporalUnitInfo {
+  /** internal → CODESYS unit, for a temporal source. */
+  toUnit: string | undefined;
+  /** CODESYS unit → internal, for a temporal target. */
+  fromUnit: string | undefined;
+}
+
+const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
+  // milliseconds
+  ["TIME", { toUnit: "TIME_TO_MS", fromUnit: "TIME_FROM_MS" }],
+  ["TOD", { toUnit: "TOD_TO_MS", fromUnit: "TOD_FROM_MS" }],
+  ["TIME_OF_DAY", { toUnit: "TOD_TO_MS", fromUnit: "TOD_FROM_MS" }],
+  // seconds
+  ["DT", { toUnit: "DT_TO_SECONDS", fromUnit: "DT_FROM_SECONDS" }],
+  ["DATE_AND_TIME", { toUnit: "DT_TO_SECONDS", fromUnit: "DT_FROM_SECONDS" }],
+  ["DATE", { toUnit: "DATE_TO_SECONDS", fromUnit: "DATE_FROM_SECONDS" }],
+  ["D", { toUnit: "DATE_TO_SECONDS", fromUnit: "DATE_FROM_SECONDS" }],
+  // nanoseconds — the 64-bit variants. TIME, TOD and DT are already stored in
+  // nanoseconds, so those need no call at all; DATE is stored in days and
+  // still has to be scaled.
+  ["LTIME", { toUnit: undefined, fromUnit: undefined }],
+  ["LTOD", { toUnit: undefined, fromUnit: undefined }],
+  ["LTIME_OF_DAY", { toUnit: undefined, fromUnit: undefined }],
+  ["LDT", { toUnit: undefined, fromUnit: undefined }],
+  ["LDATE_AND_TIME", { toUnit: undefined, fromUnit: undefined }],
+  ["LDATE", { toUnit: "DATE_TO_NS", fromUnit: "DATE_FROM_NS" }],
+]);
+
+/**
+ * Numeric and bit-string targets for the `TO_*` family — i.e. every elementary
+ * type whose runtime representation is "just an integer or a float."
+ *
+ * Gates BOTH directions of the temporal scaling. A temporal source is scaled
+ * only when the target is in here; a numeric source is scaled into a temporal
+ * target only when the SOURCE is in here. STRING / WSTRING need a format
+ * pipeline rather than a scale, and temporal types stay out so that
+ * temporal→temporal conversions are left alone.
+ *
+ * This set and `TEMPORAL_CONVERSION_UNITS` are disjoint, which is what makes
+ * the two directions mutually exclusive: no type is both a temporal type and a
+ * numeric target.
  */
 const NUMERIC_OR_BIT_CONVERSION_TARGETS = new Set([
   "BOOL",
@@ -356,12 +422,6 @@ export class CodeGenerator {
    *  gated here (fail-loud) until locked field/element/call codegen lands. */
   private compositeExternals: Set<string> = new Set();
 
-  /** Track retain variables per program for table generation */
-  private programRetainVars: Map<
-    string,
-    Array<{ name: string; typeName: string }>
-  > = new Map();
-
   /** Store AST for looking up program bodies when using project model */
   protected ast?: CompilationUnit;
 
@@ -438,6 +498,9 @@ export class CodeGenerator {
 
   /** Reverse map: enum member name (upper case) → owning enum type (for bare enum qualification) */
   protected enumMemberToType: Map<string, EnumMemberEntry> = new Map();
+
+  /** Lazily built set of file-level VAR_GLOBAL names (see fileScopeGlobalNames). */
+  private fileScopeGlobalNameCache?: Set<string>;
 
   /** Library FB field type map: "FBNAME.FIELDNAME" → type name (for field mangling in test codegen) */
   private libraryFBFieldTypes: Map<string, string> = new Map();
@@ -1434,27 +1497,20 @@ export class CodeGenerator {
 
     // Generate forward declarations for all POUs and interfaces before any
     // user-defined TYPE aliases, so array-of-FB aliases like
-    // `AccumGrid : ARRAY[0..1, 0..1] OF Accum` can name the FB class.
-    for (const iface of ast.interfaces) {
-      this.emitHeader(`class ${iface.name};`);
-    }
-    for (const fb of ast.functionBlocks) {
-      this.emitHeader(`class ${fb.name};`);
-    }
-    for (const prog of ast.programs) {
-      this.emitHeader(`class Program_${prog.name};`);
-    }
-    for (const config of ast.configurations) {
-      this.emitHeader(`class Configuration_${config.name};`);
-    }
-    if (
-      ast.interfaces.length > 0 ||
-      ast.functionBlocks.length > 0 ||
-      ast.programs.length > 0 ||
-      ast.configurations.length > 0
-    ) {
-      this.emitHeader("");
-    }
+    // `AccumGrid : ARRAY[0..1, 0..1] OF Accum` can name the FB class. An
+    // incomplete type is enough here because the alias doesn't instantiate
+    // anything; instantiation happens where the alias is used as a member,
+    // by which point the full definition has been emitted. Repeated below
+    // with the rest of the forward declarations — harmless, since redundant
+    // class declarations are legal — and both call the same helper so they
+    // can't drift.
+    //
+    // Global variables and the user-defined types block stay at their
+    // original, later position (after the FB class declarations) rather than
+    // moving up here: a VAR_GLOBAL naming a function-block type instantiates
+    // it inline (`motor : Motor;`), which needs the FULL class definition,
+    // not just this forward declaration.
+    this.emitPouForwardDeclarations(ast);
 
     // Inject reachable library chunks (header side).
     //
@@ -1492,6 +1548,9 @@ export class CodeGenerator {
       this.emitHeader("");
     }
 
+    // Generate forward declarations (repeated — see emitPouForwardDeclarations).
+    this.emitPouForwardDeclarations(ast);
+
     // Generate user-defined types (Phase 2.2)
     if (ast.types.length > 0) {
       const typeRegistry = new TypeRegistry();
@@ -1500,6 +1559,9 @@ export class CodeGenerator {
         indent: this.options.indent,
         lineEnding: this.options.lineEnding,
         emitChunkMarkers: this.options.emitChunkMarkers ?? false,
+        // Struct fields must mangle by the same rule as everything else that
+        // names them, and only codegen knows the FB / program type names.
+        isUserDefinedType: (t) => this.isUserDefinedType(t),
       });
       const typeCode = typeCodeGen.generateFromRegistry(typeRegistry);
       for (const line of typeCode.split(this.options.lineEnding)) {
@@ -1539,8 +1601,9 @@ export class CodeGenerator {
             this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
             if (decl.initialValue) {
               const initExpr = this.generateInitializer(
-                decl.type,
                 decl.initialValue,
+                cppType,
+                decl.type.name,
               );
               this.emitHeader(
                 `${constQualifier}inline ${cppType} ${name} = ${initExpr};`,
@@ -1725,24 +1788,45 @@ export class CodeGenerator {
   }
 
   /**
-   * Collect a function block's VAR_EXTERNAL references (name + resolved C++
-   * type). IEC 61131-3 lets an FB access configuration globals this way; each
-   * becomes a `GlobalVar<V>*` bound to the file-scope canonical.
+   * Collect a function block's VAR_EXTERNAL references to CONFIGURATION
+   * VAR_GLOBALs. IEC 61131-3 lets an FB access globals this way; each becomes a
+   * `GlobalVar<V>*` bound to the file-scope canonical.
+   *
+   * References to a **file-level** VAR_GLOBAL are excluded: that storage is a
+   * plain file-scope object the FB body already reaches by name, so it needs no
+   * pointer member — and adding one would shadow the global it references. Same
+   * rule the project model applies to PROGRAMs (see `addVarExternal`).
    */
   private collectFBExternals(
     fb: CompilationUnit["functionBlocks"][0],
-  ): Array<{ name: string; cppType: string }> {
-    const externals: Array<{ name: string; cppType: string }> = [];
+  ): Array<{ name: string; typeName: string; cppType: string }> {
+    const fileScopeGlobals = this.fileScopeGlobalNames();
+    const externals: Array<{
+      name: string;
+      typeName: string;
+      cppType: string;
+    }> = [];
     for (const block of fb.varBlocks) {
       if (block.blockType !== "VAR_EXTERNAL") continue;
       for (const decl of block.declarations) {
         const cppType = this.mapTypeRefToCpp(decl.type);
         for (const name of decl.names) {
-          externals.push({ name, cppType });
+          if (fileScopeGlobals.has(name.toUpperCase())) continue;
+          externals.push({ name, typeName: decl.type.name, cppType });
         }
       }
     }
     return externals;
+  }
+
+  /** Upper-case names of the compilation unit's file-level VAR_GLOBALs. */
+  private fileScopeGlobalNames(): Set<string> {
+    if (!this.fileScopeGlobalNameCache) {
+      this.fileScopeGlobalNameCache = this.ast
+        ? new Set(collectFileScopeGlobals(this.ast).keys())
+        : new Set<string>();
+    }
+    return this.fileScopeGlobalNameCache;
   }
 
   /**
@@ -1852,11 +1936,7 @@ export class CodeGenerator {
         // mapTypeRefToCpp, so only array inouts need an extra * here.
         const tag = this.elaboratedTagIfShadowed(decl.type.name, fbMemberNames);
         for (const name of decl.names) {
-          const memberName = this.mangleMemberIfNeeded(
-            name,
-            cppType,
-            decl.type.name,
-          );
+          const memberName = this.mangleMemberIfNeeded(name, decl.type.name);
           this.emitHeaderLineDirective(decl.sourceSpan.startLine);
           const memberLine = this.currentHeaderLine;
           this.emitHeader(`    ${tag}${cppType} ${memberName};`);
@@ -2037,11 +2117,7 @@ export class CodeGenerator {
       for (const decl of block.declarations) {
         const cppType = this.mapTypeRefToCpp(decl.type);
         for (const name of decl.names) {
-          const memberName = this.mangleMemberIfNeeded(
-            name,
-            cppType,
-            decl.type.name,
-          );
+          const memberName = this.mangleMemberIfNeeded(name, decl.type.name);
           this.emitHeaderLineDirective(decl.sourceSpan.startLine);
           const memberLine = this.currentHeaderLine;
           if (decl.address) {
@@ -2445,12 +2521,11 @@ export class CodeGenerator {
       if (block.blockType === "VAR" || block.blockType === "VAR_TEMP") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
+            const cppType = this.mapTypeRefToCpp(decl.type);
             const initValue = decl.initialValue
-              ? ` = ${this.generateInitializer(decl.type, decl.initialValue)}`
+              ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
               : "";
-            this.emit(
-              `    ${this.mapTypeRefToCpp(decl.type)} ${name}${initValue};`,
-            );
+            this.emit(`    ${cppType} ${name}${initValue};`);
           }
         }
       }
@@ -2577,8 +2652,9 @@ export class CodeGenerator {
       for (const decl of block.declarations) {
         if (decl.initialValue !== undefined) {
           const initExpr = this.generateInitializer(
-            decl.type,
             decl.initialValue,
+            this.mapTypeRefToCpp(decl.type),
+            decl.type.name,
           );
           for (const name of decl.names) {
             this.emit(`    ${name} = ${initExpr};`);
@@ -2587,14 +2663,20 @@ export class CodeGenerator {
       }
     }
 
-    // Initialize located variable pointers
-    this.generateLocatedVarPointerInit(prog.name);
+    // Bind located variable pointers. Calling the same method the deferred
+    // main()-time rebind uses (rather than re-emitting the assignments here)
+    // keeps the text — and so the descriptor table — single-sourced: a
+    // located ARRAY's per-element bindings are generated once, not once per
+    // caller. A caller that runs after every translation unit's static
+    // initialization has completed (REPL's main(), across TUs) still gets a
+    // correct rebind by calling bind_located_vars() again; harmless here,
+    // since assigning the same pointer twice is a no-op.
+    this.emit("    bind_located_vars();");
 
     this.emit("}");
     this.emit("");
     // PROGRAM line now maps to header class declaration, not constructor
 
-    // Bind located variable pointers after static initialization is complete.
     this.generateBindLocatedVars(prog.name);
 
     // Run method
@@ -2628,13 +2710,7 @@ export class CodeGenerator {
     // VAR_EXTERNAL: body access (operator(), methods, properties) is rewritten
     // to go through the GlobalVar pointer (g->read()/write()/with_lock), exactly
     // like a PROGRAM. Set for the whole implementation, cleared at the end.
-    const externalDecls = fb.varBlocks
-      .filter((b) => b.blockType === "VAR_EXTERNAL")
-      .flatMap((b) =>
-        b.declarations.flatMap((d) =>
-          d.names.map((n) => ({ name: n, typeName: d.type.name })),
-        ),
-      );
+    const externalDecls = this.collectFBExternals(fb);
     this.programExternals = new Set(
       externalDecls.map((e) => e.name.toUpperCase()),
     );
@@ -2681,17 +2757,14 @@ export class CodeGenerator {
           const isCompositeInit =
             decl.initialValue.kind === "StructInitializerExpression" ||
             decl.initialValue.kind === "ArrayLiteralExpression";
+          const cppType = this.mapTypeRefToCpp(decl.type);
           const initExpr = this.generateInitializer(
-            decl.type,
             decl.initialValue,
+            cppType,
+            decl.type.name,
           );
           for (const name of decl.names) {
-            const cppType = this.mapTypeRefToCpp(decl.type);
-            const memberName = this.mangleMemberIfNeeded(
-              name,
-              cppType,
-              decl.type.name,
-            );
+            const memberName = this.mangleMemberIfNeeded(name, decl.type.name);
             if (isCompositeInit) {
               // Composite initialisers can be placed in the C++ constructor
               // init list (they compile for IECVar<T> / GlobalVar<T> members).
@@ -2704,21 +2777,12 @@ export class CodeGenerator {
           }
         } else if (isPointerInout) {
           for (const name of decl.names) {
-            const memberName = this.mangleMemberIfNeeded(
-              name,
-              decl.type.name,
-              decl.type.name,
-            );
+            const memberName = this.mangleMemberIfNeeded(name, decl.type.name);
             fbInits.push(`${memberName}(nullptr)`);
           }
         } else if (isScalarFB) {
           for (const name of decl.names) {
-            const cppType = this.mapTypeRefToCpp(decl.type);
-            const memberName = this.mangleMemberIfNeeded(
-              name,
-              cppType,
-              decl.type.name,
-            );
+            const memberName = this.mangleMemberIfNeeded(name, decl.type.name);
             fbInits.push(`${memberName}(false)`);
             memberFBs.push(memberName);
           }
@@ -2890,12 +2954,11 @@ export class CodeGenerator {
         if (block.blockType === "VAR" || block.blockType === "VAR_TEMP") {
           for (const decl of block.declarations) {
             for (const name of decl.names) {
+              const cppType = this.mapTypeRefToCpp(decl.type);
               const initValue = decl.initialValue
-                ? ` = ${this.generateInitializer(decl.type, decl.initialValue)}`
+                ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
                 : "";
-              this.emit(
-                `    ${this.mapTypeRefToCpp(decl.type)} ${name}${initValue};`,
-              );
+              this.emit(`    ${cppType} ${name}${initValue};`);
             }
           }
         }
@@ -3006,9 +3069,6 @@ export class CodeGenerator {
       }
     }
 
-    // Collect retain variables for table generation
-    const retainVars: Array<{ name: string; typeName: string }> = [];
-
     // Generate local variable members and collect located variables
     if (prog.varDeclarations.length > 0) {
       this.emitHeader("    // Local variables");
@@ -3037,11 +3097,7 @@ export class CodeGenerator {
             ? { referenceKind: decl.referenceKind }
             : {}),
         });
-        const memberName = this.mangleMemberIfNeeded(
-          decl.name,
-          cppType,
-          decl.typeName,
-        );
+        const memberName = this.mangleMemberIfNeeded(decl.name, decl.typeName);
         // Map variable ST line → header member line
         const stLine = varSourceLines.get(decl.name);
         if (stLine !== undefined) {
@@ -3066,16 +3122,6 @@ export class CodeGenerator {
         }
 
         iecStructMembers.push(`${constQualifier}${cppType}`);
-
-        // Collect retain variables (cppType — same metadata-aware lookup
-        // as the member emission above, so inline arrays don't end up as
-        // IEC___INLINE_ARRAY_<T> in the retain table either).
-        if (decl.isRetain) {
-          retainVars.push({
-            name: decl.name,
-            typeName: cppType,
-          });
-        }
       }
     }
 
@@ -3160,23 +3206,14 @@ export class CodeGenerator {
       this.emitHeader("#endif");
     }
 
-    // Generate retain variable support if there are retain variables
-    if (retainVars.length > 0) {
-      this.emitHeader("");
-      this.emitHeader("    // Retain variable support");
-      this.emitHeader(
-        `    static const RetainVarInfo __retain_vars[${retainVars.length}];`,
-      );
-      this.emitHeader(
-        `    const RetainVarInfo* getRetainVars() const override { return __retain_vars; }`,
-      );
-      this.emitHeader(
-        `    size_t getRetainCount() const override { return ${retainVars.length}; }`,
-      );
-
-      // Store retain vars for implementation file generation
-      this.programRetainVars.set(prog.name, retainVars);
-    }
+    // No per-program retain members are emitted. Retained leaves are listed
+    // once, project-wide, in `generated_debug.cpp`'s `retain_vars[]` — see
+    // backend/debug-table-gen.ts and runtime/include/iec_retain.hpp.
+    //
+    // `getRetainVars` / `getRetainCount` stay as no-op base methods on
+    // ProgramBase and are deliberately NOT overridden: the v4 runtime's ABI
+    // mirror pins their vtable positions, and renumbering would mis-dispatch
+    // run() for any program built against a different version.
 
     if (iecStructMembers.length > 0) {
       this.emitHeader("");
@@ -3224,6 +3261,8 @@ export class CodeGenerator {
         // the nullptr_t and the uintptr_t overload). The default ctor sets the
         // pointer to nullptr, which is exactly the IEC default. References are
         // bound later via REF= / := REF(); pointers via := ADR()/&.
+        // (projectVarInitializer already returns undefined for these, so this
+        // is belt-and-suspenders, but keeps the intent explicit here too.)
         if (
           decl.referenceKind === "ref_to" ||
           decl.referenceKind === "reference_to" ||
@@ -3232,9 +3271,14 @@ export class CodeGenerator {
           continue;
         }
         const initVal = this.projectVarInitializer(decl);
-        // Skip user-defined types (undefined initVal) - they use default constructors
-        if (initVal !== undefined && initVal !== "") {
-          inits.push(`${decl.name}(${initVal})`);
+        if (initVal) {
+          // Name the member as `generateProgramHeaderFromModel` declared it —
+          // `scale : Scale` is a collision (ST names are case-insensitive) and
+          // is declared `SCALE_`, so an initializer list naming `SCALE` does not
+          // compile. The FUNCTION_BLOCK constructor already does this.
+          inits.push(
+            `${this.mangleMemberIfNeeded(decl.name, decl.typeName)}(${initVal})`,
+          );
         }
       }
       // External globals: bind the pointer member to the canonical GlobalVar<V>
@@ -3248,8 +3292,10 @@ export class CodeGenerator {
       }
       this.emit("{");
 
-      // Initialize located variable pointers
-      this.generateLocatedVarPointerInit(prog.name);
+      // Bind located variable pointers (see the AST-based constructor's
+      // equivalent call for why this delegates to bind_located_vars()
+      // instead of emitting the assignments inline).
+      this.emit("    bind_located_vars();");
 
       this.emit("}");
     } else {
@@ -3264,6 +3310,8 @@ export class CodeGenerator {
         // the nullptr_t and the uintptr_t overload). The default ctor sets the
         // pointer to nullptr, which is exactly the IEC default. References are
         // bound later via REF= / := REF(); pointers via := ADR()/&.
+        // (projectVarInitializer already returns undefined for these, so this
+        // is belt-and-suspenders, but keeps the intent explicit here too.)
         if (
           decl.referenceKind === "ref_to" ||
           decl.referenceKind === "reference_to" ||
@@ -3272,9 +3320,14 @@ export class CodeGenerator {
           continue;
         }
         const initVal = this.projectVarInitializer(decl);
-        // Skip user-defined types (undefined initVal) - they use default constructors
-        if (initVal !== undefined && initVal !== "") {
-          inits.push(`${decl.name}(${initVal})`);
+        if (initVal) {
+          // Name the member as `generateProgramHeaderFromModel` declared it —
+          // `scale : Scale` is a collision (ST names are case-insensitive) and
+          // is declared `SCALE_`, so an initializer list naming `SCALE` does not
+          // compile. The FUNCTION_BLOCK constructor already does this.
+          inits.push(
+            `${this.mangleMemberIfNeeded(decl.name, decl.typeName)}(${initVal})`,
+          );
         }
       }
       if (inits.length > 0) {
@@ -3282,13 +3335,11 @@ export class CodeGenerator {
       }
       this.emit("{");
 
-      // Initialize located variable pointers
-      this.generateLocatedVarPointerInit(prog.name);
+      this.emit("    bind_located_vars();");
 
       this.emit("}");
     }
     this.emit("");
-    // Bind located variable pointers after static initialization is complete.
     this.generateBindLocatedVars(prog.name);
     this.emit("");
     // PROGRAM line now maps to header class declaration, not constructor
@@ -3326,27 +3377,6 @@ export class CodeGenerator {
     if (astProg) {
       this.recordLineMapping(astProg.sourceSpan.endLine, closingBraceLine);
     }
-
-    // Generate retain variable table if there are retain variables
-    this.generateRetainTable(`Program_${prog.name}`, prog.name);
-  }
-
-  /**
-   * Generate retain variable table for a class.
-   */
-  private generateRetainTable(className: string, progName: string): void {
-    const retainVars = this.programRetainVars.get(progName);
-    if (!retainVars || retainVars.length === 0) return;
-
-    this.emit(`// Retain variable table for ${className}`);
-    this.emit(`const RetainVarInfo ${className}::__retain_vars[] = {`);
-    for (const v of retainVars) {
-      this.emit(
-        `    {"${v.name}", offsetof(${className}, ${v.name}), sizeof(${v.typeName})},`,
-      );
-    }
-    this.emit("};");
-    this.emit("");
   }
 
   /**
@@ -3362,6 +3392,34 @@ export class CodeGenerator {
    * bodies can name the globals. Also registers located VAR_GLOBALs so the
    * runtime binds them to the I/O image.
    */
+  /**
+   * Forward-declare every interface, function block, program and configuration
+   * class. Emitted twice: once ahead of the user-defined types, which may name a
+   * function block, and once in the usual forward-declaration block.
+   */
+  private emitPouForwardDeclarations(ast: CompilationUnit): void {
+    for (const iface of ast.interfaces) {
+      this.emitHeader(`class ${iface.name};`);
+    }
+    for (const fb of ast.functionBlocks) {
+      this.emitHeader(`class ${fb.name};`);
+    }
+    for (const prog of ast.programs) {
+      this.emitHeader(`class Program_${prog.name};`);
+    }
+    for (const config of ast.configurations) {
+      this.emitHeader(`class Configuration_${config.name};`);
+    }
+    if (
+      ast.interfaces.length > 0 ||
+      ast.functionBlocks.length > 0 ||
+      ast.programs.length > 0 ||
+      ast.configurations.length > 0
+    ) {
+      this.emitHeader("");
+    }
+  }
+
   private emitFileScopeGlobals(): void {
     if (!this.projectModel) return;
     const seen = new Set<string>();
@@ -3374,24 +3432,7 @@ export class CodeGenerator {
         if (seen.has(key)) continue;
         seen.add(key);
 
-        const cppType = this.mapTypeRefToCpp({
-          name: gvar.typeName,
-          ...(gvar.maxLength !== undefined
-            ? { maxLength: gvar.maxLength }
-            : {}),
-          ...(gvar.arrayDimensions !== undefined
-            ? { arrayDimensions: gvar.arrayDimensions }
-            : {}),
-          ...(gvar.elementTypeName !== undefined
-            ? { elementTypeName: gvar.elementTypeName }
-            : {}),
-          ...(gvar.elementReferenceKind !== undefined
-            ? { elementReferenceKind: gvar.elementReferenceKind }
-            : {}),
-          ...(gvar.referenceKind !== undefined
-            ? { referenceKind: gvar.referenceKind }
-            : {}),
-        });
+        const cppType = this.mapTypeRefToCpp(this.projectVarToTypeRef(gvar));
         const initVal = this.projectVarInitializer(gvar);
 
         if (!emittedAny) {
@@ -3403,14 +3444,11 @@ export class CodeGenerator {
           emittedAny = true;
         }
         let wrappedInit = initVal;
-        if (
-          initVal !== undefined &&
-          gvar.arrayDimensions &&
-          gvar.arrayDimensions.length > 0 &&
-          initVal.startsWith("{")
-        ) {
-          // GlobalVar's constructor is a template; a bare braced list is
-          // non-deducible, so name the inner array type explicitly.
+        if (initVal !== undefined && initVal.startsWith("{")) {
+          // GlobalVar's initialising constructor is a template
+          // (`template<typename T> explicit GlobalVar(T)`), so a bare braced
+          // list has nothing to deduce from — name the type explicitly. Covers
+          // both an array literal and a structure initializer, not just arrays.
           wrappedInit = `${cppType}${initVal}`;
         }
         if (wrappedInit !== undefined) {
@@ -3432,6 +3470,9 @@ export class CodeGenerator {
               typeName: gvar.typeName,
               address: gvar.address,
               isGlobalVarWrapper: true,
+              // Carried through so a located ARRAY global expands to one
+              // descriptor per element rather than binding only its first.
+              arrayDimensions: gvar.arrayDimensions,
             },
             "@config",
           );
@@ -3583,8 +3624,13 @@ export class CodeGenerator {
     // #172: bind located VAR_GLOBAL descriptor pointers to the canonical
     // storage (through the GlobalVar<V> wrapper's `.value`). The runtime copies
     // the I/O image to/from these pointers (locking each global's mutex on the
-    // threaded path).
-    this.generateLocatedVarPointerInit("@config");
+    // threaded path). Delegates to the free function emitted earlier in this
+    // translation unit (see generateInitGlobalLocatedPointers) rather than
+    // re-emitting the assignments here, so the descriptor table is
+    // single-sourced; a later call from REPL's main() (after every
+    // translation unit's static initialization has completed) is a harmless
+    // no-op rebind.
+    this.emit("    __init_global_located_pointers();");
 
     this.emit("}");
     this.emit("");
@@ -4524,6 +4570,20 @@ export class CodeGenerator {
       case "VarInfoExpression": {
         return this.generateVarInfoExpression(expr);
       }
+      case "StructInitializerExpression":
+        // A structure initializer needs the target's C++ type, which only a
+        // declaration supplies — declarations route through
+        // `generateInitializer` instead. It is not an expression IEC allows in a
+        // statement either, and the analyzer rejects it there
+        // (`validateStructInitializerPlacement`), so this is unreachable for any
+        // unit that got past semantic analysis. Loud rather than silent: the
+        // previous `return "{}"` value-initialised, which discarded every
+        // element the initializer named and produced no diagnostic anywhere.
+        throw new Error(
+          `Internal error: structure initializer at ${expr.sourceSpan.startLine}:` +
+            `${expr.sourceSpan.startCol} reached expression codegen, where the ` +
+            `target type is unknown. It is only valid as a declaration's initial value.`,
+        );
     }
     throw new Error("Unsupported expression kind");
   }
@@ -5329,23 +5389,26 @@ export class CodeGenerator {
       const valuePart = expr.rawValue.substring(hashIdx + 1);
       if (upperPrefix === "STRING") {
         const inner = valuePart.replace(/^'|'$/g, "");
-        const escaped = this.translateIECString(inner);
+        const escaped = translateIECString(inner);
         return `"${escaped}"`;
       }
       if (upperPrefix === "WSTRING") {
         const inner = valuePart.replace(/^["']|["']$/g, "");
-        const escaped = this.translateIECString(inner);
+        const escaped = translateIECString(inner);
         return `u"${escaped}"`;
       }
-      // Typed numeric: strip the prefix and normalize the literal so leading
-      // zeros are not treated as C++ octal; the target IEC type constructor
-      // applies the exact cast. For REAL/LREAL keep the raw textual form (with
-      // underscores stripped) so exponents such as 1.5E3 are not lost.
-      if (upperPrefix === "REAL" || upperPrefix === "LREAL") {
-        const raw = iecBaseToCppLiteral(valuePart);
-        return /[.eE]/.test(raw) ? raw : `${raw}.0`;
-      }
-      return formatIntegerLiteral(valuePart, expr.value as number);
+      // Typed numeric: the same static_cast the expression path emits — the
+      // target variable's own constructor doesn't get a say in a typed
+      // literal's type, `INT#5` names it explicitly. An integer payload goes
+      // through the exact lowering too (`LINT#<64-bit>` must not round, and
+      // `INT#0010` must not become a C++ octal constant); a based payload
+      // (`BYTE#16#FF`) goes through the base-aware lowering instead.
+      const cppType = `IEC_${expr.typePrefix}`;
+      const cppValue =
+        expr.literalType === "INT"
+          ? formatIntegerLiteral(valuePart, expr.value as number)
+          : iecBaseToCppLiteral(valuePart);
+      return `static_cast<${cppType}>(${cppValue})`;
     }
 
     switch (expr.literalType) {
@@ -5359,20 +5422,21 @@ export class CodeGenerator {
         return formatIntegerLiteral(expr.rawValue, expr.value as number);
       }
       case "REAL": {
-        // Preserve the raw textual form (including exponent notation and
-        // underscores) rather than the parsed number, which loses `1.5E3`.
-        const raw = iecBaseToCppLiteral(expr.rawValue);
+        // Re-derived from the parsed value, as the statement-body path does —
+        // not the raw text, which would keep scientific notation (`1.5E3`)
+        // instead of a plain C++ double literal.
+        const str = String(expr.value);
         // Ensure real literals have a decimal point (but not for scientific notation).
-        return raw.includes(".") || /[eE]/.test(raw) ? raw : `${raw}.0`;
+        return str.includes(".") || /[eE]/.test(str) ? str : `${str}.0`;
       }
       case "STRING": {
         const inner = expr.rawValue.replace(/^'|'$/g, "");
-        const escaped = this.translateIECString(inner);
+        const escaped = translateIECString(inner);
         return `"${escaped}"`;
       }
       case "WSTRING": {
         const inner = expr.rawValue.replace(/^["']|["']$/g, "");
-        const escaped = this.translateIECString(inner);
+        const escaped = translateIECString(inner);
         return `u"${escaped}"`;
       }
       case "TIME":
@@ -5398,36 +5462,45 @@ export class CodeGenerator {
     }
   }
 
+  /**
+   * Emit C++ for a declaration initialiser.
+   *
+   * An interface-typed declaration routes through the pointer-expression path
+   * (assigning an FB instance address, not constructing one), and an ANY/ANY_*
+   * one gets an empty AnyType descriptor. Everything else is an ordinary
+   * expression, except a structure/array-literal initializer, which needs the
+   * target's C++ type — known only at the declaration site — so it routes
+   * through {@link generateInitializerValue}. The plain-expression fallback
+   * goes through `generateInitializerExpression`, not `generateExpression`:
+   * declaration position lets a typed numeric literal such as `INT#5` skip the
+   * `static_cast` a statement body needs, since the target's constructor
+   * already knows the desired IEC type.
+   */
   protected generateInitializer(
-    typeRef: {
-      name: string;
-      elementTypeName?: string;
-      maxLength?: number | string;
-      arrayDimensions?: Array<{ start: number; end: number }>;
-      referenceKind?: string;
-      elementReferenceKind?: string;
-    },
-    expr: Expression,
+    value: Expression,
+    cppType: string,
+    stTypeName: string | undefined,
   ): string {
-    if (this.isInterfaceTypeRef(typeRef)) {
-      return this.generatePointerExpression(expr);
+    const upperType = stTypeName?.toUpperCase();
+    if (upperType && this.knownInterfaceTypes.has(upperType)) {
+      return this.generatePointerExpression(value);
     }
-    if (isGenericTypeName(typeRef.name.toUpperCase())) {
+    if (upperType && isGenericTypeName(upperType)) {
       // ANY/ANY_* input defaults are represented by an empty AnyType descriptor.
       return "strucpp::AnyType()";
     }
     if (
-      expr.kind === "ArrayLiteralExpression" ||
-      isStructInitializerValue(expr)
+      value.kind === "ArrayLiteralExpression" ||
+      isStructInitializerValue(value)
     ) {
       return generateInitializerValue(
-        expr,
-        this.mapTypeRefToCpp(typeRef as TypeReference),
-        typeRef.name,
+        value,
+        cppType,
+        stTypeName,
         this.getStructInitEmitter(),
       );
     }
-    return this.generateInitializerExpression(expr, typeRef.name);
+    return this.generateInitializerExpression(value, stTypeName);
   }
 
   protected generatePointerExpression(expr: Expression): string {
@@ -5544,16 +5617,24 @@ export class CodeGenerator {
       const valuePart = expr.rawValue.substring(hashIdx + 1);
       if (upperPrefix === "STRING") {
         const inner = valuePart.replace(/^'|'$/g, "");
-        const escaped = this.translateIECString(inner);
+        const escaped = translateIECString(inner);
         return `IEC_STRING("${escaped}")`;
       }
       if (upperPrefix === "WSTRING") {
         const inner = valuePart.replace(/^["']|["']$/g, "");
-        const escaped = this.translateIECString(inner);
+        const escaped = translateIECString(inner);
         return `IEC_WSTRING(u"${escaped}")`;
       }
       const cppType = `IEC_${expr.typePrefix}`;
-      const cppValue = formatIntegerLiteral(valuePart, expr.value as number);
+      // An integer payload goes through the exact lowering too — `LINT#<64-bit>`
+      // must not round, and `INT#0010` must not become a C++ octal constant. A
+      // based payload (`BYTE#16#FF`) goes through the base-aware lowering
+      // instead, since a REAL/LREAL prefix's value has no digit-exactness
+      // concern and formatIntegerLiteral expects an integer payload.
+      const cppValue =
+        expr.literalType === "INT"
+          ? formatIntegerLiteral(valuePart, expr.value as number)
+          : iecBaseToCppLiteral(valuePart);
       return `static_cast<${cppType}>(${cppValue})`;
     }
 
@@ -5578,7 +5659,7 @@ export class CodeGenerator {
         // standard functions (LEFT/RIGHT/MID/CONCAT/FIND/etc.) that expect an
         // IECStringVar/IECString argument.
         const inner = expr.rawValue.replace(/^'|'$/g, "");
-        const escaped = this.translateIECString(inner);
+        const escaped = translateIECString(inner);
         return `IEC_STRING("${escaped}")`;
       }
       case "WSTRING": {
@@ -5586,7 +5667,7 @@ export class CodeGenerator {
         // form for safety. Wrap in IEC_WSTRING(...) so the literal binds to
         // the WSTRING overloads of the standard string functions.
         const wInner = expr.rawValue.replace(/^["']|["']$/g, "");
-        const wEscaped = this.translateIECString(wInner);
+        const wEscaped = translateIECString(wInner);
         return `IEC_WSTRING(u"${wEscaped}")`;
       }
       case "TIME": {
@@ -5622,74 +5703,6 @@ export class CodeGenerator {
       default:
         return String(expr.value);
     }
-  }
-
-  /**
-   * Translate IEC 61131-3 $-escape sequences to C++ escape sequences.
-   * Handles: $N/$n (newline), $L/$l (line feed), $R/$r (CR), $T/$t (tab),
-   * $P/$p (form feed), $$ (literal $), $' (single quote), $XX (hex byte),
-   * '' (doubled single quote), and C++ escaping for backslash and double-quote.
-   */
-
-  private translateIECString(inner: string): string {
-    let result = "";
-    for (let i = 0; i < inner.length; i++) {
-      const ch = inner[i]!;
-      if (ch === "$" && i + 1 < inner.length) {
-        const next = inner[i + 1]!;
-        switch (next.toUpperCase()) {
-          case "N":
-          case "L":
-            result += "\\n";
-            i++;
-            break;
-          case "R":
-            result += "\\r";
-            i++;
-            break;
-          case "T":
-            result += "\\t";
-            i++;
-            break;
-          case "P":
-            result += "\\f";
-            i++;
-            break;
-          case "$":
-            result += "$";
-            i++;
-            break;
-          case "'":
-            result += "'";
-            i++;
-            break;
-          default:
-            // $XX hex escape: two hex digits
-            if (
-              i + 2 < inner.length &&
-              /^[0-9A-Fa-f]{2}$/.test(inner.substring(i + 1, i + 3))
-            ) {
-              result += "\\x" + inner.substring(i + 1, i + 3);
-              i += 2;
-            } else {
-              // Unknown $-escape, pass through
-              result += "\\\\$";
-            }
-            break;
-        }
-      } else if (ch === "'" && i + 1 < inner.length && inner[i + 1] === "'") {
-        // ST doubled-quote → single quote
-        result += "'";
-        i++;
-      } else if (ch === "\\") {
-        result += "\\\\";
-      } else if (ch === '"') {
-        result += '\\"';
-      } else {
-        result += ch;
-      }
-    }
-    return result;
   }
 
   /**
@@ -6629,71 +6642,119 @@ export class CodeGenerator {
   }
 
   /**
-   * Wrap a temporal-typed argument with the right `*_TO_MS` helper
-   * before it's handed to a numeric / bit-string `TO_*` conversion.
+   * Scale the argument of a `TO_*` conversion when a temporal type is on
+   * either side of it.
    *
    * Why this lives in codegen and not in the runtime:
    *  - `IEC_TIME`, `IEC_LTIME`, `IEC_TOD`, `IEC_LTOD`, `IEC_DT`,
    *    `IEC_LDT`, `IEC_DATE`, `IEC_LDATE` are all
-   *    `using ... = IECVar<int64_t>` aliases in `iec_var.hpp` — they
-   *    collapse to the same C++ type after preprocessing.
+   *    `using ... = IECVar<int64_t>` aliases — they collapse to the same
+   *    C++ type after preprocessing.
    *  - A runtime overload `TO_UINT(IEC_TIME)` therefore CANNOT be
-   *    distinguished from `TO_UINT(IEC_DATE)` by the C++ compiler;
-   *    both bind to the same generic template and the raw `int64_t`
-   *    underlying value gets `static_cast`ed straight to the target
-   *    integer (low 16 / 32 bits of a nanosecond count for TIME).
-   *  - The IEC type label only survives at the language layer.  So
-   *    the scaling has to happen at the call site, before the type
-   *    identity is erased.
+   *    distinguished from `TO_UINT(IEC_DATE)`, and `TO_DT(seconds)`
+   *    cannot be distinguished from `TO_DT(IEC_DT)`.
+   *  - The IEC type label only survives at the language layer, so the
+   *    scaling has to happen here, before the type identity is erased.
    *
-   * Scaling chosen (matches `TO_TIME(integer)`'s established
-   * "integer means milliseconds" convention from OSCAT/CODESYS):
-   *  - TIME / LTIME → `TIME_TO_MS`           (ns since 0   → ms)
-   *  - TOD / TIME_OF_DAY / LTOD / LTIME_OF_DAY → `TOD_TO_MS`
-   *    (ns since midnight  → ms since midnight, [0, 86_400_000))
-   *  - DT / DATE_AND_TIME / LDT / LDATE_AND_TIME → `DT_TO_MS`
-   *    (ns since epoch  → ms since epoch)
-   *  - DATE / LDATE: NOT scaled — DATE is already stored as whole
-   *    days, and "days since 1970-01-01" is the natural integer
-   *    answer for `DATE_TO_INT` / etc.  Callers wanting a different
-   *    unit can compose with `DATE_TO_DAYS` (today, the identity).
+   * The units are CODESYS's, which is what the IEC libraries we ship are
+   * written against. From its documentation: DATE, DT and TOD are held in a
+   * 32-bit DWORD with a 1970-01-01 epoch, at SECONDS resolution for DATE and
+   * DT and MILLISECONDS for TOD; TIME is 32-bit milliseconds; and the 64-bit
+   * LDATE / LDT / LTOD / LTIME are all nanoseconds. Its own examples pin this
+   * down: `DT_TO_DINT(DT#2019-9-1-12:0:0.0)` = 1567339200 (seconds),
+   * `DATE_TO_DINT(D#1970-1-2)` = 86400 (seconds, NOT 1 day — the prose on
+   * that page says "days" and is wrong, the example is right), and
+   * `TOD_TO_DINT(TOD#12:0:0)` = 43200000 (milliseconds).
    *
-   * No wrap on temporal-target conversions (`TO_TIME(TIME)`,
-   * `INT_TO_TIME(ms)`, etc.) — those are either pass-through (same
-   * family) or handled by the existing `TO_TIME(integer)` runtime
-   * template which scales ms→ns going the other way.  No wrap on
-   * non-temporal sources either (the generic numeric path already
-   * does the right thing).
+   * Getting this wrong is not a cosmetic scaling error. Milliseconds since
+   * the epoch overflow a DWORD every ~49.7 days, so the result comes back
+   * aliased rather than merely a factor of 1000 out, and CODESYS's documented
+   * DT range (to 2106) only holds when the unit is seconds. See DOPE-618.
+   */
+  private temporalConversionUnit(
+    typeUpper: string,
+  ): TemporalUnitInfo | undefined {
+    return TEMPORAL_CONVERSION_UNITS.get(typeUpper);
+  }
+
+  /**
+   * Temporal SOURCE, numeric target: internal representation → CODESYS unit.
    */
   private wrapTemporalArgForNumericConversion(
     argExpr: string,
     fromTypeUpper: string,
     toTypeUpper: string,
   ): string {
-    // Only the numeric / bit-string targets — temporal targets stay
-    // pass-through and STRING targets need a separate format pipeline
-    // (out of scope for this helper).
+    // STRING targets need a separate format pipeline, not a scale.
     if (!NUMERIC_OR_BIT_CONVERSION_TARGETS.has(toTypeUpper)) {
       return argExpr;
     }
-    if (fromTypeUpper === "TIME" || fromTypeUpper === "LTIME") {
-      return `TIME_TO_MS(${argExpr})`;
+    const unit = this.temporalConversionUnit(fromTypeUpper);
+    if (!unit) return argExpr;
+    return unit.toUnit === undefined ? argExpr : `${unit.toUnit}(${argExpr})`;
+  }
+
+  /**
+   * Numeric SOURCE, temporal target: CODESYS unit → internal representation.
+   *
+   * The mirror of the above, and it has to move with it: OSCAT round-trips
+   * through both in a single expression — `DWORD_TO_DT(DT_TO_DWORD(mez) -
+   * 7200)` in DCF77, for one — so a fix to one direction alone would leave
+   * those worse off than before.
+   */
+  private wrapNumericArgForTemporalConversion(
+    argExpr: string,
+    fromTypeUpper: string,
+    toTypeUpper: string,
+  ): string {
+    // Only a genuinely numeric source. A temporal source is a
+    // temporal→temporal conversion, which is a semantic question (does
+    // DT_TO_DATE truncate to the day?) rather than a unit one, and is left
+    // alone here.
+    if (!NUMERIC_OR_BIT_CONVERSION_TARGETS.has(fromTypeUpper)) {
+      return argExpr;
     }
-    if (
-      fromTypeUpper === "TOD" ||
-      fromTypeUpper === "TIME_OF_DAY" ||
-      fromTypeUpper === "LTOD" ||
-      fromTypeUpper === "LTIME_OF_DAY"
-    ) {
-      return `TOD_TO_MS(${argExpr})`;
+    const unit = this.temporalConversionUnit(toTypeUpper);
+    if (!unit) return argExpr;
+    return unit.fromUnit === undefined
+      ? argExpr
+      : `${unit.fromUnit}(${argExpr})`;
+  }
+
+  /**
+   * Apply whichever of the two directions fits this conversion.
+   *
+   * Branches on which side is temporal rather than on whether the first call
+   * changed the string. A row whose scaling is a legitimate no-op — the `L`
+   * variants are exactly that shape — returns its argument untouched, so a
+   * value comparison cannot distinguish "this direction did not apply" from
+   * "it applied and had nothing to do", and would fall through to the other
+   * direction on a correct answer.
+   *
+   * That fall-through is harmless today because
+   * `NUMERIC_OR_BIT_CONVERSION_TARGETS` and `TEMPORAL_CONVERSION_UNITS` are
+   * disjoint, so the second guard rejects what the first already handled. But
+   * that is a property of two separate tables agreeing, and this reads the
+   * question directly instead of relying on it.
+   */
+  private scaleConversionArg(
+    argExpr: string,
+    fromTypeUpper: string,
+    toTypeUpper: string,
+  ): string {
+    if (TEMPORAL_CONVERSION_UNITS.has(fromTypeUpper)) {
+      return this.wrapTemporalArgForNumericConversion(
+        argExpr,
+        fromTypeUpper,
+        toTypeUpper,
+      );
     }
-    if (
-      fromTypeUpper === "DT" ||
-      fromTypeUpper === "DATE_AND_TIME" ||
-      fromTypeUpper === "LDT" ||
-      fromTypeUpper === "LDATE_AND_TIME"
-    ) {
-      return `DT_TO_MS(${argExpr})`;
+    if (TEMPORAL_CONVERSION_UNITS.has(toTypeUpper)) {
+      return this.wrapNumericArgForTemporalConversion(
+        argExpr,
+        fromTypeUpper,
+        toTypeUpper,
+      );
     }
     return argExpr;
   }
@@ -6890,17 +6951,19 @@ export class CodeGenerator {
       const args = expr.arguments.map((arg, idx) => {
         const generated = this.generateExpression(arg.value);
         if (idx !== 0) return generated;
-        // Type-aware scaling for temporal sources.  See the helper for
-        // the full rationale — short version: the C++ runtime aliases
-        // every temporal type to `IECVar<int64_t>` (so a `TIME` and a
-        // `DATE` are literally the same C++ type after compilation),
-        // and the only place that still knows "this expression is a
-        // TIME" is the codegen layer.  We have to wrap the argument
-        // with `TIME_TO_MS` / `TOD_TO_MS` / `DT_TO_MS` here, otherwise
-        // `TO_UINT(time_var)` lowers to a `static_cast<uint16_t>(raw_ns)`
-        // and the user sees the low 16 bits of the nanosecond count
-        // instead of the milliseconds they asked for.
-        return this.wrapTemporalArgForNumericConversion(
+        // Type-aware unit scaling, in whichever direction applies — a
+        // temporal source going to an integer, or an integer going into a
+        // temporal target. See `TEMPORAL_CONVERSION_UNITS` for the units and
+        // why they are CODESYS's.
+        //
+        // It has to happen here rather than in the runtime because the C++
+        // runtime aliases every temporal type to `IECVar<int64_t>`: a `TIME`
+        // and a `DATE` are literally the same type after compilation, and the
+        // codegen layer is the last place that still knows which one this
+        // expression is. Without it `TO_UINT(time_var)` lowers to a
+        // `static_cast<uint16_t>(raw_ns)` and the user sees the low 16 bits of
+        // a nanosecond count.
+        return this.scaleConversionArg(
           generated,
           conversion.fromType.toUpperCase(),
           conversion.toType.toUpperCase(),
@@ -6978,7 +7041,7 @@ export class CodeGenerator {
         if (idx === 0 && stdFunc.isConversion && stdFunc.specificReturnType) {
           const fromType = this.inferExprType(arg.value);
           if (fromType) {
-            generated = this.wrapTemporalArgForNumericConversion(
+            generated = this.scaleConversionArg(
               generated,
               fromType.toUpperCase(),
               stdFunc.specificReturnType.toUpperCase(),
@@ -7093,8 +7156,9 @@ export class CodeGenerator {
             };
             if (decl.initialValue) {
               entry.defaultExpr = this.generateInitializer(
-                decl.type,
                 decl.initialValue,
+                this.mapTypeRefToCpp(decl.type),
+                decl.type.name,
               );
             }
             params.push(entry);
@@ -7726,6 +7790,9 @@ export class CodeGenerator {
   /**
    * Check if a function call statement is actually an FB invocation.
    * Returns the FB type name if it is, undefined otherwise.
+   *
+   * `isElementCall` distinguishes `units[0]()` from `units()`: there the
+   * declared type is the array, so the instance type is its element type.
    */
   private getFBInvocationType(
     functionName: string,
@@ -7858,6 +7925,10 @@ export class CodeGenerator {
       );
     }
 
+    // `units[0](…)` invokes an element rather than a bare instance: the target
+    // is the subscripted expression, and the FB type is the array's element
+    // type. Everything below (input assignment, the call, inout copy-back,
+    // output capture) then works against that expression unchanged.
     const instanceName =
       call.instance !== undefined
         ? this.generateExpression(call.instance)
@@ -7908,13 +7979,13 @@ export class CodeGenerator {
       } else if (arg.name) {
         // Named argument: assign directly
         this.emit(
-          `${indent}${instanceName}.${arg.name} = ${this.generateExpression(arg.value)};`,
+          `${indent}${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)} = ${this.generateExpression(arg.value)};`,
         );
       } else if (inputParamNames && positionalIndex < inputParamNames.length) {
         // Positional argument: map to VAR_INPUT by position
         const paramName = inputParamNames[positionalIndex];
         this.emit(
-          `${indent}${instanceName}.${paramName} = ${this.generateExpression(arg.value)};`,
+          `${indent}${instanceName}.${this.fbParamMemberName(paramName!, fbTypeName)} = ${this.generateExpression(arg.value)};`,
         );
         positionalIndex++;
       } else {
@@ -7958,7 +8029,7 @@ export class CodeGenerator {
           }
           this.emitCaptureToLvalue(
             arg.value,
-            `${instanceName}.${arg.name}`,
+            `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`,
             indent,
           );
         }
@@ -7970,7 +8041,7 @@ export class CodeGenerator {
       if (arg.name && arg.isOutput) {
         this.emitCaptureToLvalue(
           arg.value,
-          `${instanceName}.${arg.name}`,
+          `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`,
           indent,
         );
       }
@@ -8084,55 +8155,61 @@ export class CodeGenerator {
    * method name (case-insensitive), append '_' to avoid C++ errors.
    * Populates memberMangledNames map and returns the (possibly mangled) name.
    */
-  private mangleMemberIfNeeded(
-    name: string,
-    _cppType: string,
-    stTypeName: string,
-  ): string {
-    // Variable name vs type name collision (GCC -Wchanges-meaning)
-    if (this.isUserDefinedType(stTypeName)) {
-      if (name.toUpperCase() === stTypeName.toUpperCase()) {
-        const mangled = `${name}_`;
-        this.memberMangledNames.set(name.toUpperCase(), mangled);
-        return mangled;
-      }
-    }
-    // Variable name vs interface method name collision
-    if (this.currentFBInterfaceMethods.has(name.toUpperCase())) {
-      const mangled = `${name}_`;
+  private mangleMemberIfNeeded(name: string, stTypeName: string): string {
+    // Declaring a member of the FB currently being generated, so the interface
+    // methods in scope are that FB's.
+    const mangled = mangledMemberName(name, stTypeName, {
+      isUserDefinedType: (t) => this.isUserDefinedType(t),
+      interfaceMethods: this.currentFBInterfaceMethods,
+    });
+    if (mangled !== name) {
       this.memberMangledNames.set(name.toUpperCase(), mangled);
-      return mangled;
     }
-    return name;
+    return mangled;
+  }
+
+  /**
+   * C++ member name for a parameter of the function block being invoked, by the
+   * same rule its declaration used (see member-mangling.ts).
+   *
+   * An FB whose input is named after its own type, or after an interface method
+   * it implements, is declared with a trailing underscore — so assigning through
+   * the bare name reaches a member that does not exist. Left alone when the FB
+   * type is unknown, which only disables the check.
+   */
+  private fbParamMemberName(
+    paramName: string,
+    fbTypeName: string | undefined,
+  ): string {
+    if (fbTypeName === undefined) return paramName;
+    return this.needsFieldMangling(
+      paramName,
+      this.resolveMemberType(fbTypeName, paramName),
+      fbTypeName,
+    )
+      ? `${paramName}_`
+      : paramName;
   }
 
   /**
    * Check if a field access needs mangling — true when the field name collides
    * with its type name (GCC -Wchanges-meaning) or with an interface method name.
+   *
+   * Reaching a member through a named owner rather than from inside it, so the
+   * interface methods come from that owner's entry.
    */
-  private needsFieldMangling(
+  protected needsFieldMangling(
     fieldName: string,
     fieldTypeName: string | undefined,
     parentTypeName?: string,
   ): boolean {
-    // Field name vs type name collision
-    if (
-      fieldTypeName &&
-      this.isUserDefinedType(fieldTypeName) &&
-      fieldName.toUpperCase() === fieldTypeName.toUpperCase()
-    ) {
-      return true;
-    }
-    // Field name vs interface method name collision
-    if (parentTypeName) {
-      const ifaceMethods = this.fbInterfaceMethodNames.get(
-        parentTypeName.toUpperCase(),
-      );
-      if (ifaceMethods?.has(fieldName.toUpperCase())) {
-        return true;
-      }
-    }
-    return false;
+    return needsMemberMangling(fieldName, fieldTypeName, {
+      isUserDefinedType: (t) => this.isUserDefinedType(t),
+      interfaceMethods:
+        parentTypeName !== undefined
+          ? this.fbInterfaceMethodNames.get(parentTypeName.toUpperCase())
+          : undefined,
+    });
   }
 
   /**
@@ -8183,32 +8260,22 @@ export class CodeGenerator {
     if (this.knownInterfaceTypes.has(upperType)) {
       if (decl.initialValue) {
         return this.generateInitializer(
-          this.projectVarToTypeRef(decl),
           decl.initialValue,
+          this.mapTypeRefToCpp(this.projectVarToTypeRef(decl)),
+          decl.typeName,
         );
       }
       return "nullptr";
     }
-    if (isGenericTypeName(upperType)) {
-      return "strucpp::AnyType()";
-    }
     if (decl.initialValue) {
-      if (
-        decl.initialValue.kind === "ArrayLiteralExpression" ||
-        isStructInitializerValue(decl.initialValue)
-      ) {
-        return generateInitializerValue(
-          decl.initialValue,
-          this.mapTypeRefToCpp(this.projectVarToTypeRef(decl)),
-          decl.typeName,
-          this.getStructInitEmitter(),
-        );
-      }
-      return this.generateInitializerExpression(
+      return this.generateInitializer(
         decl.initialValue,
+        this.mapTypeRefToCpp(this.projectVarToTypeRef(decl)),
         decl.typeName,
       );
     }
+    // Composite types (struct, enum, array, FB instance) report no default here
+    // (empty string) and are skipped, so their own default constructor runs.
     const typeDefault = this.getTypeDefaultValue(decl.typeName);
     return typeDefault === "" ? undefined : typeDefault;
   }
@@ -8216,7 +8283,8 @@ export class CodeGenerator {
   /**
    * Hooks {@link generateInitializerValue} uses to resolve element names and
    * nested element types. Reuses the same member-mangling and field-resolution
-   * helpers the statement path uses.
+   * helpers the statement path uses, so `p.X` in a body and `X :=` in an
+   * initializer always name the same C++ member.
    */
   private getStructInitEmitter(): StructInitEmitter {
     this.structInitEmitter ??= {
@@ -8233,9 +8301,13 @@ export class CodeGenerator {
         )
           ? `${fieldName}_`
           : fieldName,
-      fieldTypeName: (fieldName, ownerTypeName) =>
-        this.resolveMemberType(ownerTypeName, fieldName),
-      arrayElementTypeName: (typeName) =>
+      fieldTypeName: (
+        fieldName: string,
+        ownerTypeName: string | undefined,
+      ): string | undefined => this.resolveMemberType(ownerTypeName, fieldName),
+      arrayElementTypeName: (
+        typeName: string | undefined,
+      ): string | undefined =>
         typeName !== undefined && typeName !== "" && this.ast
           ? resolveArrayElementType(typeName, this.ast)
           : undefined,
@@ -8320,6 +8392,108 @@ export class CodeGenerator {
   }
 
   /**
+   * Push the descriptor(s) one located declaration produces.
+   *
+   * A scalar produces one. An ARRAY produces one PER ELEMENT, walking the
+   * address forward by one slot each time, so `AT %MW60 : ARRAY [0..66] OF
+   * WORD` fills %MW60..%MW126 (openplc-editor#565). The runtime table is flat
+   * and knows nothing about aggregates -- the expansion happens here so that
+   * every consumer of `locatedVars[]` (the descriptor array, the count, the
+   * per-program range, the located-globals list) gets the element-level view
+   * without any of them having to understand arrays.
+   *
+   * Bit addresses advance across the byte boundary (%IX0.7 -> %IX1.0), which
+   * is why the step is computed on the linearised index rather than on
+   * `byteIndex` alone.
+   *
+   * `dims` is `undefined` for a non-array. The semantic analyzer has already
+   * rejected the array shapes that cannot be laid out linearly (multi-
+   * dimensional, non-constant bounds), so anything reaching here with bounds
+   * is a single dimension with a known extent.
+   */
+  /**
+   * The dimensions a located declaration actually has, resolving a NAMED
+   * ARRAY type the way the semantic analyzer already does.
+   *
+   * The AST builder writes bounds onto the TypeReference only for an INLINE
+   * `ARRAY [a..b] OF T`. A named type (`TYPE Buf : ARRAY [0..9] OF WORD`) has
+   * none, so reading `decl.type.arrayDimensions` alone made codegen see a
+   * scalar where the analyzer had seen ten slots: one descriptor was emitted
+   * and the pointer initialiser called `.raw_ptr()` on the array itself, which
+   * does not compile. Resolving by name here keeps the two passes agreeing.
+   *
+   * Answers `undefined` for anything that is not a single fixed dimension --
+   * multi-dimensional and variable-length shapes are rejected in semantics and
+   * never reach codegen, so this is a fallback rather than a second opinion.
+   */
+  private resolveLocatedDims(
+    typeName: string,
+    dims: Array<{ start: number; end: number }> | undefined,
+  ): Array<{ start: number; end: number }> | undefined {
+    if (dims && dims.length > 0) return dims;
+    if (!this.ast) return undefined;
+
+    const shape = resolveArrayShapeByName(typeName, this.ast);
+    if (!shape || shape.dims.length !== 1) return undefined;
+
+    const dim = shape.dims[0];
+    return dim ? [dim] : undefined;
+  }
+
+  private pushLocatedDescriptors(
+    varName: string,
+    address: string,
+    typeName: string,
+    programName: string,
+    dims: Array<{ start: number; end: number }> | undefined,
+    cppName: string = varName,
+    isGlobalVarWrapper = false,
+  ): void {
+    const parsed = parseLocatedAddress(address);
+    if (!parsed) return;
+
+    const resolved = this.resolveLocatedDims(typeName, dims);
+    const dim = resolved?.length === 1 ? resolved[0] : undefined;
+    if (!dim) {
+      this.locatedVars.push({
+        varName,
+        cppName,
+        address,
+        area: parsed.area,
+        size: parsed.size,
+        byteIndex: parsed.byteIndex,
+        bitIndex: parsed.bitIndex,
+        typeName,
+        programName,
+        isGlobalVarWrapper,
+      });
+      return;
+    }
+
+    const isBit = parsed.size === "Bit";
+    const baseSlot = isBit
+      ? parsed.byteIndex * 8 + parsed.bitIndex
+      : parsed.byteIndex;
+
+    for (let iecIndex = dim.start; iecIndex <= dim.end; iecIndex++) {
+      const slot = baseSlot + (iecIndex - dim.start);
+      this.locatedVars.push({
+        varName,
+        cppName,
+        address,
+        area: parsed.area,
+        size: parsed.size,
+        byteIndex: isBit ? Math.floor(slot / 8) : slot,
+        bitIndex: isBit ? slot % 8 : 0,
+        typeName,
+        programName,
+        isGlobalVarWrapper,
+        elementIndex: iecIndex,
+      });
+    }
+  }
+
+  /**
    * Collect a located variable for descriptor array generation.
    */
   private collectLocatedVar(
@@ -8331,21 +8505,18 @@ export class CodeGenerator {
   ): void {
     if (!decl.address) return;
 
-    const parsed = parseLocatedAddress(decl.address);
-    if (!parsed) return;
-
-    this.locatedVars.push({
+    this.pushLocatedDescriptors(
       varName,
-      cppName,
-      address: decl.address,
-      area: parsed.area,
-      size: parsed.size,
-      byteIndex: parsed.byteIndex,
-      bitIndex: parsed.bitIndex,
-      typeName: decl.type.name,
+      decl.address,
+      decl.type.name,
       programName,
+      // Inline `ARRAY [a..b] OF T`: the AST builder resolves the bounds onto
+      // the TypeReference. A named ARRAY type carries none here and is
+      // handled by the model path, which resolves the alias first.
+      decl.type.arrayDimensions,
+      cppName,
       isGlobalVarWrapper,
-    });
+    );
   }
 
   /**
@@ -8358,26 +8529,23 @@ export class CodeGenerator {
       typeName: string;
       address?: string;
       isGlobalVarWrapper?: boolean;
+      // Explicit `| undefined` (not just `?`): exactOptionalPropertyTypes is
+      // on, and callers forward an optional field straight through.
+      arrayDimensions?: Array<{ start: number; end: number }> | undefined;
     },
     programName: string,
   ): void {
     if (!decl.address) return;
 
-    const parsed = parseLocatedAddress(decl.address);
-    if (!parsed) return;
-
-    this.locatedVars.push({
-      varName: decl.name,
-      cppName: decl.cppName ?? decl.name,
-      address: decl.address,
-      area: parsed.area,
-      size: parsed.size,
-      byteIndex: parsed.byteIndex,
-      bitIndex: parsed.bitIndex,
-      typeName: decl.typeName,
+    this.pushLocatedDescriptors(
+      decl.name,
+      decl.address,
+      decl.typeName,
       programName,
-      isGlobalVarWrapper: decl.isGlobalVarWrapper ?? false,
-    });
+      decl.arrayDimensions,
+      decl.cppName ?? decl.name,
+      decl.isGlobalVarWrapper ?? false,
+    );
   }
 
   /**
@@ -8417,15 +8585,21 @@ export class CodeGenerator {
     this.emitHeader(" */");
     this.emitHeader("");
 
-    // Forward declarations for program instances
+    // Forward declarations for program instances.
+    //
+    // One line per DECLARATION, not per descriptor: a located array expands to
+    // one descriptor per element, and repeating the same "AT %MW60" line 67
+    // times would bury the rest of the header in noise.
+    const listed = new Set<string>();
     for (const locVar of this.locatedVars) {
       const scope =
         locVar.programName === "@config"
           ? "configuration"
           : `Program_${locVar.programName}`;
-      this.emitHeader(
-        `// Forward: ${locVar.varName} AT ${locVar.address} in ${scope}`,
-      );
+      const line = `// Forward: ${locVar.varName} AT ${locVar.address} in ${scope}`;
+      if (listed.has(line)) continue;
+      listed.add(line);
+      this.emitHeader(line);
     }
     if (isEmpty) {
       this.emitHeader("// (no located variables — placeholder entry only)");
@@ -8491,7 +8665,7 @@ export class CodeGenerator {
         const comma = i < this.locatedVars.length - 1 ? "," : "";
         this.emit(
           `    { LocatedArea::${locVar.area}, LocatedSize::${locVar.size}, ` +
-            `${locVar.byteIndex}, ${locVar.bitIndex}, {0, 0, 0}, nullptr }${comma}  // ${locVar.varName} AT ${locVar.address}`,
+            `${locVar.byteIndex}, ${locVar.bitIndex}, {0, 0, 0}, nullptr }${comma}  // ${this.describeLocatedDescriptor(locVar)}`,
         );
       }
     }
@@ -8551,7 +8725,9 @@ export class CodeGenerator {
       for (let i = 0; i < globals.length; i++) {
         const g = globals[i]!;
         const comma = i < globals.length - 1 ? "," : "";
-        this.emit(`    nullptr${comma}  // ${g.varName} AT ${g.address}`);
+        this.emit(
+          `    nullptr${comma}  // ${this.describeLocatedDescriptor(g)}`,
+        );
       }
     }
     this.emit("};");
@@ -8595,54 +8771,6 @@ export class CodeGenerator {
   }
 
   /**
-   * Generate initialization code for located variable pointers.
-   * Called from within a program constructor.
-   */
-  private generateLocatedVarPointerInit(
-    programName: string,
-    indent: string = "    ",
-  ): void {
-    const progVars = this.locatedVars.filter(
-      (v) => v.programName === programName,
-    );
-    if (progVars.length === 0) return;
-
-    this.emit(`${indent}// Initialize located variable pointers`);
-    for (const locVar of progVars) {
-      // Find the index of this variable in the global array
-      const index = this.locatedVars.findIndex(
-        (v) =>
-          v.varName === locVar.varName && v.programName === locVar.programName,
-      );
-      if (index >= 0) {
-        const memberAccess = locVar.isGlobalVarWrapper ? ".value" : "";
-        this.emit(
-          `${indent}locatedVars[${index}].pointer = ${locVar.cppName}${memberAccess}.raw_ptr();`,
-        );
-      }
-    }
-
-    // Configuration VAR_GLOBALs additionally record their storage pointer in
-    // locatedGlobals[], which is what lets a host runtime tell config-scope
-    // entries from POU-local ones without guessing from array position. Emitted
-    // here (rather than as a static initializer) because raw_ptr() is not a
-    // constant expression, and to keep it beside the locatedVars[] population it
-    // must agree with.
-    if (programName === "@config") {
-      this.emit("#ifdef STRUCPP_THREADED");
-      this.emit(`${indent}// Initialize located-global pointers`);
-      for (let g = 0; g < progVars.length; g++) {
-        const locVar = progVars[g]!;
-        const memberAccess = locVar.isGlobalVarWrapper ? ".value" : "";
-        this.emit(
-          `${indent}locatedGlobals[${g}] = ${locVar.cppName}${memberAccess}.raw_ptr();`,
-        );
-      }
-      this.emit("#endif");
-    }
-  }
-
-  /**
    * Generate a program method that binds this program's located variable
    * descriptors to its member storage. Called from main() after all static
    * initialization is complete, avoiding dynamic-initialization-order races
@@ -8655,16 +8783,12 @@ export class CodeGenerator {
     if (progVars.length === 0) return;
 
     this.emit(`void Program_${programName}::bind_located_vars() {`);
-    for (const locVar of progVars) {
-      const index = this.locatedVars.findIndex(
-        (v) =>
-          v.varName === locVar.varName && v.programName === locVar.programName,
+    for (let index = 0; index < this.locatedVars.length; index++) {
+      const locVar = this.locatedVars[index]!;
+      if (locVar.programName !== programName) continue;
+      this.emit(
+        `    locatedVars[${index}].pointer = ${this.locatedStorageExpr(locVar, "")};`,
       );
-      if (index >= 0) {
-        this.emit(
-          `    locatedVars[${index}].pointer = this->${locVar.cppName}.raw_ptr();`,
-        );
-      }
     }
     this.emit("}");
     this.emit("");
@@ -8679,34 +8803,74 @@ export class CodeGenerator {
     const globals = this.locatedVars.filter((v) => v.programName === "@config");
 
     this.emit("void __init_global_located_pointers() {");
-    for (const locVar of globals) {
-      const index = this.locatedVars.findIndex(
-        (v) =>
-          v.varName === locVar.varName && v.programName === locVar.programName,
+    for (let index = 0; index < this.locatedVars.length; index++) {
+      const locVar = this.locatedVars[index]!;
+      if (locVar.programName !== "@config") continue;
+      const memberAccess = locVar.isGlobalVarWrapper ? ".value" : "";
+      this.emit(
+        `    locatedVars[${index}].pointer = ${this.locatedStorageExpr(locVar, memberAccess)};`,
       );
-      if (index >= 0) {
-        const memberAccess = locVar.isGlobalVarWrapper ? ".value" : "";
-        this.emit(
-          `    locatedVars[${index}].pointer = ${locVar.cppName}${memberAccess}.raw_ptr();`,
-        );
-      }
     }
     if (globals.length > 0) {
       this.emit("#ifdef STRUCPP_THREADED");
-      this.emit(
-        "    // Initialize located-global pointer array for host dispatch.",
-      );
+      this.emit("    // Initialize located-global pointers");
       for (let g = 0; g < globals.length; g++) {
         const locVar = globals[g]!;
         const memberAccess = locVar.isGlobalVarWrapper ? ".value" : "";
         this.emit(
-          `    locatedGlobals[${g}] = ${locVar.cppName}${memberAccess}.raw_ptr();`,
+          `    locatedGlobals[${g}] = ${this.locatedStorageExpr(locVar, memberAccess)};`,
         );
       }
       this.emit("#endif");
     }
     this.emit("}");
     this.emit("");
+  }
+
+  /**
+   * The C++ expression yielding the storage a descriptor binds to.
+   *
+   * Scalar: `name[.value].raw_ptr()`. Array element: `name[.value][i].raw_ptr()`,
+   * where `i` is the IEC index — `IEC_ARRAY_1D::operator[]` maps the declared
+   * index range onto its internal storage, so the declared index is what goes
+   * in, not a zero-based offset. `cppName` (not `varName`) is used since a
+   * member whose name collides with its own type is emitted with a trailing
+   * underscore (see member-mangling.ts) — the storage expression has to name
+   * the member as codegen actually declared it.
+   */
+  private locatedStorageExpr(
+    locVar: LocatedVarDescriptor,
+    memberAccess: string,
+  ): string {
+    const element =
+      locVar.elementIndex === undefined ? "" : `[${locVar.elementIndex}]`;
+    return `${locVar.cppName}${memberAccess}${element}.raw_ptr()`;
+  }
+
+  /**
+   * How a descriptor labels itself in the generated table's trailing comment.
+   *
+   * For an array element this is the address the element actually occupies,
+   * not the array's declared base — 67 rows all reading `AT %MW60` would tell
+   * a reader nothing about which slot each row binds.
+   */
+  private describeLocatedDescriptor(locVar: LocatedVarDescriptor): string {
+    if (locVar.elementIndex === undefined) {
+      return `${locVar.varName} AT ${locVar.address}`;
+    }
+    const areaChar = { Input: "I", Output: "Q", Memory: "M" }[locVar.area];
+    const sizeChar = {
+      Bit: "X",
+      Byte: "B",
+      Word: "W",
+      DWord: "D",
+      LWord: "L",
+    }[locVar.size];
+    const offset =
+      locVar.size === "Bit"
+        ? `${locVar.byteIndex}.${locVar.bitIndex}`
+        : `${locVar.byteIndex}`;
+    return `${locVar.varName}[${locVar.elementIndex}] AT %${areaChar}${sizeChar}${offset}`;
   }
 
   /**
