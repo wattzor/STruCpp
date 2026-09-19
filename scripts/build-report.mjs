@@ -112,7 +112,6 @@ md.push(`\n---\n\n*Prepared by Autonomy Logic Engineering. Assessment date ${dat
 const mdOut = md.join('\n');
 
 // ========================= HTML =========================
-const sevBadge = (s) => s; // severity strings already human
 const row = (cells) => `<tr>${cells.map((c) => `<td>${c}</td>`).join('')}</tr>`;
 const th = (cells) => `<tr>${cells.map((c) => `<th>${c}</th>`).join('')}</tr>`;
 const badge = (txt, cls) => `<span class="badge ${cls}">${txt}</span>`;
@@ -164,16 +163,16 @@ ${topLicenses.map(([l, n]) => row([esc(l), String(n)])).join('\n')}
 <div class="callout"><strong>License finding:</strong> ${rich(cfg.licenseNote)}</div>
 <h1>4. Findings Requiring Remediation (Affected)</h1>
 ${cfg.affected.length ? `<table>${th(['Priority', 'Component', 'Installed', 'Fixed in', 'Severity', 'Reachability rationale'])}
-${cfg.affected.map((f) => row([f.priority, `<code>${esc(f.component)}</code>`, esc(f.installed), esc(f.fixedIn), f.severity, rich(f.rationale)])).join('\n')}
+${cfg.affected.map((f) => row([esc(f.priority), `<code>${esc(f.component)}</code>`, esc(f.installed), esc(f.fixedIn), esc(f.severity), rich(f.rationale)])).join('\n')}
 </table>` : '<div class="callout good"><strong>None.</strong></div>'}
 <h1>5. Not Affected — VEX Justifications</h1>
 <table>${th(['VEX justification (CISA)', 'Count', 'Representative components', 'Basis'])}
-${cfg.notAffected.map((n) => row([`<code>${esc(n.justification)}</code>`, n.count, rich(n.components), rich(n.basis)])).join('\n')}
+${cfg.notAffected.map((n) => row([`<code>${esc(n.justification)}</code>`, esc(n.count), rich(n.components), rich(n.basis)])).join('\n')}
 </table>
 ${cfg.criticalNote ? `<div class="callout"><strong>On critical severity.</strong> ${rich(cfg.criticalNote)}</div>` : ''}
 <h1>6. Mitigated Findings</h1>
 <table>${th(['Component', 'Advisories', 'Existing control'])}
-${cfg.mitigated.map((m) => row([`<code>${esc(m.component)}</code>`, m.advisories, rich(m.control)])).join('\n')}
+${cfg.mitigated.map((m) => row([`<code>${esc(m.component)}</code>`, esc(m.advisories), rich(m.control)])).join('\n')}
 </table>
 <h1>7. Remediation Plan</h1><ul>${cfg.remediation.map((r) => `<li>${rich(r)}</li>`).join('')}</ul>
 <h1>8. Secure Development &amp; Supply-Chain Practices</h1>
