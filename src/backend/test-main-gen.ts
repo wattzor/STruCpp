@@ -586,9 +586,18 @@ class TestFunctionGenerator {
 
     for (const name of decl.names) {
       if (decl.initialValue) {
+        // A SETUP/TEST var is a declaration, so `p : Point := (x := 1.0)` is the
+        // legal form and must go through the initializer lowering — the plain
+        // expression emitter has no target type and cannot lower it. An
+        // interface-typed var instead needs the pointer-expression form (see
+        // emitPointerExpression).
         const initExpr = isInterface
           ? this.testCodegen.emitPointerExpression(decl.initialValue)
-          : this.testCodegen.emitExpression(decl.initialValue);
+          : this.testCodegen.emitInitializer(
+              decl.initialValue,
+              cppType,
+              decl.type.name,
+            );
         lines.push(`${this.indent}${cppType} ${name} = ${initExpr};`);
       } else {
         lines.push(`${this.indent}${cppType} ${name};`);

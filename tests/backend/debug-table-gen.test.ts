@@ -8,6 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { discoverStlibs } from "../../src/node/library-loader.js";
 import { compile } from "../../src/index.js";
+import { compileLibrary } from "../../src/library/library-compiler.js";
 import { tagNameForTypeName, sizeForTypeName, TAG } from "../../src/backend/debug-table-gen.js";
 
 describe("debug-table-gen helpers", () => {
@@ -217,6 +218,61 @@ END_CONFIGURATION
       expect(l.type).toBe("INT");
       expect(l.size).toBe(2);
     }
+  });
+
+  it("uses operator() for multi-dimensional array elements", () => {
+    // Array2D/Array3D take every index in one operator() call. Emitting a
+    // subscript per dimension gives `arr[i][j]`, which has no matching operator
+    // on those containers — the generated debug table then fails to compile
+    // (reported from an AVR build: "no match for 'operator[]'").
+    const source = `
+TYPE
+  Matrix2 : ARRAY[0..1, 0..1] OF INT;
+  Cube : ARRAY[0..1, 0..1, 0..1] OF INT;
+END_TYPE
+
+PROGRAM main
+  VAR
+    m : Matrix2;
+    c : Cube;
+    flat : ARRAY[0..2] OF INT;
+  END_VAR
+  m[0, 0] := 1;
+END_PROGRAM
+
+CONFIGURATION Config0
+  RESOURCE Res0 ON PLC
+    TASK t(INTERVAL := T#20ms, PRIORITY := 1);
+    PROGRAM p WITH t : main;
+  END_RESOURCE
+END_CONFIGURATION
+`;
+    const result = compile(source);
+    expect(result.success).toBe(true);
+    const cpp = result.debugTableCpp!;
+
+    // 2D → one operator() call with both indices.
+    expect(cpp).toContain(".M(0, 0)");
+    expect(cpp).toContain(".M(1, 1)");
+    // 3D → one call with all three.
+    expect(cpp).toContain(".C(0, 0, 0)");
+    expect(cpp).toContain(".C(1, 1, 1)");
+    // 1D still subscripts. No chained subscripting survives in any pointer
+    // expression — the trailing comment keeps the IEC `[i][j]` path, so check
+    // only the code ahead of it.
+    expect(cpp).toContain(".FLAT[2]");
+    const pointerExprs = cpp
+      .split("\n")
+      .filter((l) => l.includes("(void*)&"))
+      .map((l) => l.split("//")[0]!);
+    expect(pointerExprs.length).toBeGreaterThan(0);
+    expect(pointerExprs.filter((e) => e.includes("]["))).toEqual([]);
+
+    // The IEC display paths keep the [i][j] form the debug UI shows.
+    const paths = result.debugMap!.leaves.map((l) => l.path);
+    expect(paths).toContain("P.M[0][0]");
+    expect(paths).toContain("P.C[1][1][1]");
+    expect(paths).toContain("P.FLAT[2]");
   });
 
   it("applies maxEntriesPerArray split when exceeded", () => {
@@ -432,5 +488,706 @@ END_CONFIGURATION`;
     const cpp = compile(src).debugTableCpp ?? "";
     expect(cpp).toContain("g_config.INSTANCE0.PLAIN");
     expect(cpp).not.toContain("PLAIN_");
+  });
+});
+
+describe("member mangling agrees with the class definition", () => {
+  /**
+   * The table addresses members by name, so it has to name exactly what codegen
+   * declared — in both directions. Mangling too little names a member that does
+   * not exist; mangling too much does the same in reverse. Either way
+   * `generated_debug.cpp` fails to compile and takes the firmware build with it,
+   * and nothing catches it earlier because `strucpp file.st` emits no table.
+   *
+   * The rule now lives in one place (`member-mangling.ts`) and covers both
+   * collisions — a member named after its own type, and a member named after an
+   * interface method the owning FB implements — at every site the table builds a
+   * member expression: PROGRAM variables, FB members, and STRUCT fields.
+   */
+  const CFG = `
+CONFIGURATION Config0
+  RESOURCE Res0 ON PLC
+    TASK task0(INTERVAL := T#20ms, PRIORITY := 0);
+    PROGRAM instance0 WITH task0 : Main;
+  END_RESOURCE
+END_CONFIGURATION`;
+
+  /** Debug-table entry addresses, with the trailing ST-path comments stripped. */
+  function addresses(source: string): string {
+    const result = compile(source);
+    expect(result.errors.map((e) => e.message)).toEqual([]);
+    expect(result.success).toBe(true);
+    return (result.debugTableCpp ?? "")
+      .split("\n")
+      .map((line) => line.split("//")[0])
+      .join("\n");
+  }
+
+  function header(source: string): string {
+    return compile(source).headerCode ?? "";
+  }
+
+  const MOTOR = `
+FUNCTION_BLOCK Motor
+VAR_INPUT run : BOOL; END_VAR
+VAR_OUTPUT spinning : BOOL; END_VAR
+  spinning := run;
+END_FUNCTION_BLOCK`;
+
+  it("mangles a colliding member of a FUNCTION_BLOCK, not just of a PROGRAM", () => {
+    const src = `${MOTOR}
+FUNCTION_BLOCK Rig
+VAR Motor : Motor; idle : BOOL; END_VAR
+  Motor(run := idle);
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR r : Rig; END_VAR
+  r();
+END_PROGRAM${CFG}`;
+    expect(header(src)).toContain("MOTOR MOTOR_;");
+    const addr = addresses(src);
+    expect(addr).toContain("g_config.INSTANCE0.R.MOTOR_.RUN");
+    expect(addr).not.toMatch(/\.R\.MOTOR\./);
+    // A sibling that does not collide is untouched.
+    expect(addr).toContain("g_config.INSTANCE0.R.IDLE");
+  });
+
+  it("mangles a colliding STRUCT field", () => {
+    const src = `
+TYPE
+  Inner : STRUCT v : BOOL; END_STRUCT;
+  Rig : STRUCT Inner : Inner; plain : BOOL; END_STRUCT;
+END_TYPE
+PROGRAM Main
+VAR r : Rig; END_VAR
+  r.plain := FALSE;
+END_PROGRAM${CFG}`;
+    expect(header(src)).toContain("INNER INNER_");
+    const addr = addresses(src);
+    expect(addr).toContain("g_config.INSTANCE0.R.INNER_.V");
+    expect(addr).not.toMatch(/\.R\.INNER\./);
+    expect(addr).toContain("g_config.INSTANCE0.R.PLAIN");
+  });
+
+  it("mangles a member colliding with an implemented interface method", () => {
+    // Codegen renames the variable because the method already owns the name;
+    // addressing `.START` would take the address of the member function instead
+    // ("cannot create a non-constant pointer to member function").
+    const src = `
+INTERFACE IMotor
+  METHOD Start : BOOL
+  END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK Drive IMPLEMENTS IMotor
+VAR Start : BOOL; other : INT; END_VAR
+  METHOD Start : BOOL
+    Start := TRUE;
+  END_METHOD
+  other := 1;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR d : Drive; END_VAR
+  d();
+END_PROGRAM${CFG}`;
+    expect(header(src)).toContain("IEC_BOOL START_;");
+    const addr = addresses(src);
+    expect(addr).toContain("g_config.INSTANCE0.D.START_");
+    expect(addr).not.toMatch(/\.D\.START\b(?!_)/);
+    expect(addr).toContain("g_config.INSTANCE0.D.OTHER");
+  });
+
+  it("does NOT mangle a variable named after an elementary type", () => {
+    // `Time : TIME` is an ordinary declaration — codegen emits it as plain
+    // `TIME`, because the collision rule only applies to user-defined types. A
+    // name-only comparison would mangle it and address a `TIME_` that does not
+    // exist, breaking a build that works today.
+    const src = `
+PROGRAM Main
+VAR Time : TIME; Word : WORD; Date : DATE; Real : REAL; END_VAR
+  Time := T#0s;
+END_PROGRAM${CFG}`;
+    expect(header(src)).toContain("IEC_TIME TIME;");
+    const addr = addresses(src);
+    for (const name of ["TIME", "WORD", "DATE", "REAL"]) {
+      expect(addr).toContain(`g_config.INSTANCE0.${name},`);
+    }
+    expect(addr).not.toContain("_,");
+  });
+
+  it("does NOT mangle elementary-named members of an FB or a STRUCT", () => {
+    const src = `
+TYPE Bag : STRUCT Time : TIME; Word : WORD; END_STRUCT; END_TYPE
+FUNCTION_BLOCK Holder
+VAR Time : TIME; b : Bag; END_VAR
+  Time := T#0s;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR h : Holder; g : Bag; END_VAR
+  h();
+END_PROGRAM${CFG}`;
+    const addr = addresses(src);
+    expect(addr).toContain("g_config.INSTANCE0.H.TIME,");
+    expect(addr).toContain("g_config.INSTANCE0.H.B.TIME,");
+    expect(addr).toContain("g_config.INSTANCE0.G.WORD,");
+    expect(addr).not.toContain("TIME_");
+    expect(addr).not.toContain("WORD_");
+  });
+
+  it("mangles a variable named after an enum type, matching codegen", () => {
+    const src = `
+TYPE Color : (Red, Green, Blue); END_TYPE
+PROGRAM Main
+VAR Color : Color; plain : BOOL; END_VAR
+  plain := FALSE;
+END_PROGRAM${CFG}`;
+    expect(header(src)).toContain("IEC_COLOR COLOR_;");
+    expect(addresses(src)).toContain("g_config.INSTANCE0.COLOR_");
+  });
+});
+
+describe("CONSTANT leaves are marked read-only", () => {
+  const CFG_RO = `
+CONFIGURATION Config0
+  RESOURCE Res0 ON PLC
+    TASK task0(INTERVAL := T#20ms, PRIORITY := 0);
+    PROGRAM instance0 WITH task0 : Main;
+  END_RESOURCE
+END_CONFIGURATION`;
+
+  /** path → leaf, for asserting on the flag without depending on ordering. */
+  const leaves = (src: string) => {
+    const r = compile(src, { headerFileName: "generated.hpp" });
+    expect(r.errors.map((e) => e.message)).toEqual([]);
+    const byPath = new Map<string, { readOnly?: true }>();
+    for (const l of r.debugMap!.leaves) byPath.set(l.path, l);
+    return { byPath, cpp: r.debugTableCpp!, map: r.debugMap! };
+  };
+
+  it("flags a program's VAR CONSTANT and leaves plain VAR writable", () => {
+    const { byPath, cpp } = leaves(
+      `PROGRAM Main
+VAR CONSTANT LIMIT : DINT := 10; END_VAR
+VAR live : DINT; END_VAR
+  live := LIMIT;
+END_PROGRAM${CFG_RO}`,
+    );
+    expect(byPath.get("INSTANCE0.LIMIT")?.readOnly).toBe(true);
+    // Omitted rather than false — the map carries thousands of leaves and the
+    // flag is rare, so absence is the encoding for "writable".
+    expect(byPath.get("INSTANCE0.LIVE")).not.toHaveProperty("readOnly");
+    // The emitted table names the constant, not a bare bitmask.
+    expect(cpp).toContain("TAG_DINT, LEAF_FLAG_READONLY },  // INSTANCE0.LIMIT");
+    expect(cpp).toContain("TAG_DINT, 0 },  // INSTANCE0.LIVE");
+  });
+
+  it("flags a VAR CONSTANT declared inside a FUNCTION_BLOCK, per instance", () => {
+    // Regression guard: the bit used to be applied only at the program level,
+    // which left `g.SCALE` writable while the program's own constants were
+    // gated — the same qualifier meaning two different things by depth.
+    const { byPath } = leaves(
+      `FUNCTION_BLOCK Gauge
+VAR CONSTANT SCALE : REAL := 2.5; END_VAR
+VAR reading : REAL; END_VAR
+  reading := SCALE;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR g : Gauge; END_VAR
+  g();
+END_PROGRAM${CFG_RO}`,
+    );
+    expect(byPath.get("INSTANCE0.G.SCALE")?.readOnly).toBe(true);
+    expect(byPath.get("INSTANCE0.G.READING")).not.toHaveProperty("readOnly");
+  });
+
+  it("propagates the flag into every field of a CONSTANT structure", () => {
+    const { byPath } = leaves(
+      `TYPE Pair : STRUCT a : DINT; b : DINT; END_STRUCT; END_TYPE
+PROGRAM Main
+VAR CONSTANT LIMITS : Pair := (a := 1, b := 2); END_VAR
+VAR live : Pair; END_VAR
+  live.a := LIMITS.a;
+END_PROGRAM${CFG_RO}`,
+    );
+    expect(byPath.get("INSTANCE0.LIMITS.A")?.readOnly).toBe(true);
+    expect(byPath.get("INSTANCE0.LIMITS.B")?.readOnly).toBe(true);
+    expect(byPath.get("INSTANCE0.LIVE.A")).not.toHaveProperty("readOnly");
+  });
+
+  it("propagates the flag into every element of a CONSTANT array", () => {
+    const { byPath } = leaves(
+      `PROGRAM Main
+VAR CONSTANT TABLE : ARRAY[0..2] OF DINT := [1, 2, 3]; END_VAR
+VAR live : DINT; END_VAR
+  live := TABLE[0];
+END_PROGRAM${CFG_RO}`,
+    );
+    for (const i of [0, 1, 2]) {
+      expect(byPath.get(`INSTANCE0.TABLE[${i}]`)?.readOnly).toBe(true);
+    }
+  });
+
+  it("flags a CONFIGURATION VAR_GLOBAL CONSTANT and not its plain sibling", () => {
+    const { byPath } = leaves(
+      `PROGRAM Main
+VAR_EXTERNAL G_MAX : DINT; G_LIVE : DINT; END_VAR
+  G_LIVE := G_MAX;
+END_PROGRAM
+CONFIGURATION Config0
+  VAR_GLOBAL CONSTANT G_MAX : DINT := 500; END_VAR
+  VAR_GLOBAL G_LIVE : DINT; END_VAR
+  RESOURCE Res0 ON PLC
+    TASK task0(INTERVAL := T#20ms, PRIORITY := 0);
+    PROGRAM instance0 WITH task0 : Main;
+  END_RESOURCE
+END_CONFIGURATION`,
+    );
+    expect(byPath.get("G_MAX")?.readOnly).toBe(true);
+    expect(byPath.get("G_LIVE")).not.toHaveProperty("readOnly");
+  });
+
+  it("keeps the manifest at version 2", () => {
+    // Additive on purpose. `debug-parser.ts` in the editor rejects anything
+    // but 2 outright, so bumping would break every editor pinned to an older
+    // strucpp release the moment it read a new map.
+    const { map } = leaves(
+      `PROGRAM Main
+VAR CONSTANT LIMIT : DINT := 10; END_VAR
+  ;
+END_PROGRAM${CFG_RO}`,
+    );
+    expect(map.version).toBe(2);
+  });
+});
+
+describe("retain table", () => {
+  const CFG_R = `
+CONFIGURATION Config0
+  RESOURCE Res0 ON PLC
+    TASK task0(INTERVAL := T#20ms, PRIORITY := 0);
+    PROGRAM instance0 WITH task0 : Main;
+  END_RESOURCE
+END_CONFIGURATION`;
+
+  /** An archive as it would have been built before locals were exported. */
+  const withoutLocals = (archives: ReturnType<typeof discoverStlibs>) =>
+    archives.map((a) => ({
+      ...a,
+      manifest: {
+        ...a.manifest,
+        functionBlocks: a.manifest.functionBlocks.map(
+          ({ locals: _locals, ...rest }) => rest,
+        ),
+      },
+    }));
+
+  const mapOf = (src: string) => {
+    const r = compile(src, { headerFileName: "generated.hpp" });
+    expect(r.errors.map((e) => e.message)).toEqual([]);
+    const byPath = new Map(r.debugMap!.leaves.map((l) => [l.path, l]));
+    return { map: r.debugMap!, byPath, cpp: r.debugTableCpp! };
+  };
+
+  it("lists retained leaves in walk order, and nothing else", () => {
+    const { map, cpp } = mapOf(
+      `PROGRAM Main
+VAR RETAIN boots : DINT; END_VAR
+VAR live : DINT; END_VAR
+  live := boots;
+END_PROGRAM${CFG_R}`,
+    );
+    expect(map.retainVars?.map((v) => v.path)).toEqual(["INSTANCE0.BOOTS"]);
+    expect(cpp).toContain("const uint16_t retain_var_count = 1;");
+    // Addressed by (arr, elem) — no offsetof, no sizeof.
+    expect(cpp).not.toContain("offsetof");
+    expect(cpp).toMatch(/\{ 0, 0 \},\s*\/\/ INSTANCE0\.BOOTS/);
+  });
+
+  it("omits every retain field when nothing is retained", () => {
+    // A project with no RETAIN must carry no retain manifest at all, so the
+    // runtime's `count == 0` fast path is the only thing it ever sees.
+    const { map } = mapOf(
+      `PROGRAM Main
+VAR live : DINT; END_VAR
+  live := 1;
+END_PROGRAM${CFG_R}`,
+    );
+    expect(map.retainVars).toBeUndefined();
+    expect(map.retainLayoutHash).toBeUndefined();
+  });
+
+  it("retains a whole function-block subtree when the instance is RETAIN", () => {
+    const { byPath } = mapOf(
+      `FUNCTION_BLOCK Inner
+VAR_INPUT en : BOOL; END_VAR
+VAR ticks : DINT; END_VAR
+  IF en THEN ticks := ticks + 1; END_IF;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR RETAIN held : Inner; END_VAR
+VAR loose : Inner; END_VAR
+  held(); loose();
+END_PROGRAM${CFG_R}`,
+    );
+    // Inherited two members deep…
+    expect(byPath.get("INSTANCE0.HELD.EN")?.retain).toBe(true);
+    expect(byPath.get("INSTANCE0.HELD.TICKS")?.retain).toBe(true);
+    // …and not leaked to a sibling instance that was not declared RETAIN.
+    expect(byPath.get("INSTANCE0.LOOSE.EN")).not.toHaveProperty("retain");
+    expect(byPath.get("INSTANCE0.LOOSE.TICKS")).not.toHaveProperty("retain");
+  });
+
+  it("retains a function block's own VAR RETAIN in every instance", () => {
+    const { byPath } = mapOf(
+      `FUNCTION_BLOCK Counter
+VAR RETAIN total : DINT; END_VAR
+VAR scratch : DINT; END_VAR
+  total := total + 1; scratch := 0;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR c : Counter; END_VAR
+  c();
+END_PROGRAM${CFG_R}`,
+    );
+    expect(byPath.get("INSTANCE0.C.TOTAL")?.retain).toBe(true);
+    expect(byPath.get("INSTANCE0.C.SCRATCH")).not.toHaveProperty("retain");
+  });
+
+  it("lets NON_RETAIN opt a member out of a retained container", () => {
+    // The case the walk threads flags as a PARAMETER for: the bit is cleared
+    // partway down a subtree, and must not leak into the following sibling.
+    const { byPath } = mapOf(
+      `FUNCTION_BLOCK Inner
+VAR NON_RETAIN scratch : DINT; END_VAR
+VAR kept : DINT; END_VAR
+  scratch := 1; kept := 2;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR RETAIN held : Inner; END_VAR
+VAR RETAIN after : DINT; END_VAR
+  held();
+END_PROGRAM${CFG_R}`,
+    );
+    expect(byPath.get("INSTANCE0.HELD.SCRATCH")).not.toHaveProperty("retain");
+    expect(byPath.get("INSTANCE0.HELD.KEPT")?.retain).toBe(true);
+    // The sibling declared after the opt-out is still retained.
+    expect(byPath.get("INSTANCE0.AFTER")?.retain).toBe(true);
+  });
+
+  // The gap this closes: a retained library FB used to keep its interface and
+  // silently drop everything the block actually runs on. A TON restored with Q
+  // and ET but without START_TIME comes back in a state it could never have
+  // reached by running.
+  it("retains every internal leaf of a library FB instance", () => {
+    const r = compile(
+      `PROGRAM Main
+VAR RETAIN t : TON; END_VAR
+VAR go : BOOL; END_VAR
+  t(IN := go, PT := T#5s);
+END_PROGRAM${CFG_R}`,
+      { libraries: discoverStlibs("libs") },
+    );
+    expect(r.errors.map((e) => e.message)).toEqual([]);
+    const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);
+    // The interface…
+    expect(retained).toContain("INSTANCE0.T.IN");
+    expect(retained).toContain("INSTANCE0.T.PT");
+    expect(retained).toContain("INSTANCE0.T.Q");
+    expect(retained).toContain("INSTANCE0.T.ET");
+    // …and the state that makes the interface meaningful.
+    expect(retained).toContain("INSTANCE0.T.STATE");
+    expect(retained).toContain("INSTANCE0.T.PREV_IN");
+    expect(retained).toContain("INSTANCE0.T.CURRENT_TIME");
+    expect(retained).toContain("INSTANCE0.T.START_TIME");
+    // The un-retained sibling stays out of the blob.
+    expect(retained).not.toContain("INSTANCE0.GO");
+  });
+
+  it("recurses into an FB nested inside a retained library FB", () => {
+    // CTU holds `VAR cu_t : R_TRIG`. Its edge-detect state is two levels down
+    // and invisible to the consuming compilation — only the archive knows it
+    // is there.
+    const r = compile(
+      `PROGRAM Main
+VAR RETAIN c : CTU; END_VAR
+VAR pulse : BOOL; END_VAR
+  c(CU := pulse, PV := 10);
+END_PROGRAM${CFG_R}`,
+      { libraries: discoverStlibs("libs") },
+    );
+    expect(r.errors.map((e) => e.message)).toEqual([]);
+    const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);
+    expect(retained).toContain("INSTANCE0.C.CV");
+    expect(retained).toContain("INSTANCE0.C.CU_T.CLK");
+    expect(retained).toContain("INSTANCE0.C.CU_T.Q");
+    expect(retained).toContain("INSTANCE0.C.CU_T.M");
+  });
+
+  it("keeps library FB locals out of the table when the instance is not retained", () => {
+    // The black-box contract still holds everywhere retain is not involved —
+    // otherwise every project instantiating a few hundred OSCAT blocks pays
+    // for internals nobody addresses.
+    const r = compile(
+      `PROGRAM Main
+VAR t : TON; END_VAR
+VAR go : BOOL; END_VAR
+  t(IN := go, PT := T#5s);
+END_PROGRAM${CFG_R}`,
+      { libraries: discoverStlibs("libs") },
+    );
+    const paths = r.debugMap!.leaves.map((l) => l.path);
+    expect(paths).toContain("INSTANCE0.T.Q");
+    expect(paths).not.toContain("INSTANCE0.T.START_TIME");
+    expect(paths).not.toContain("INSTANCE0.T.STATE");
+  });
+
+  it("lets NON_RETAIN opt a library FB instance out again", () => {
+    const r = compile(
+      `PROGRAM Main
+VAR NON_RETAIN t : TON; END_VAR
+VAR RETAIN boots : DINT; END_VAR
+  t(IN := FALSE, PT := T#5s);
+END_PROGRAM${CFG_R}`,
+      { libraries: discoverStlibs("libs") },
+    );
+    const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);
+    expect(retained).toEqual(["INSTANCE0.BOOTS"]);
+  });
+
+  it("warns, and still retains the visible surface, when a library exports no locals", () => {
+    // A third-party .stlib the user cannot rebuild must not make their project
+    // uncompilable. Retain covers what the manifest does expose — and says
+    // plainly that it is covering less than the whole block, because a partial
+    // retain nobody is told about is discovered after a power cycle.
+    const archives = withoutLocals(discoverStlibs("libs"));
+    const r = compile(
+      `PROGRAM Main
+VAR RETAIN t : TON; END_VAR
+  t(IN := FALSE, PT := T#5s);
+END_PROGRAM${CFG_R}`,
+      { libraries: archives },
+    );
+    expect(r.success).toBe(true);
+    expect(r.warnings.map((w) => w.message).join("\n")).toMatch(
+      /RETAIN on TON: this library does not export/,
+    );
+    // The interface is still retained…
+    const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);
+    expect(retained).toContain("INSTANCE0.T.Q");
+    expect(retained).toContain("INSTANCE0.T.ET");
+    // …and the internals simply are not there to retain.
+    expect(retained).not.toContain("INSTANCE0.T.START_TIME");
+  });
+
+  it("says nothing when such a library block is not retained", () => {
+    const r = compile(
+      `PROGRAM Main
+VAR t : TON; END_VAR
+  t(IN := FALSE, PT := T#5s);
+END_PROGRAM${CFG_R}`,
+      { libraries: withoutLocals(discoverStlibs("libs")) },
+    );
+    expect(r.success).toBe(true);
+    expect(r.warnings.map((w) => w.message).join("\n")).not.toMatch(/RETAIN on/);
+    expect(r.debugMap!.leaves.map((l) => l.path)).toContain("INSTANCE0.T.Q");
+  });
+
+  it("reports the blob size the target has to be able to hold", () => {
+    // 14-byte header + DINT(4) + BOOL(1). The editor gates a build on this;
+    // getting it wrong there means firmware that silently drops retain.
+    const { map } = mapOf(
+      `PROGRAM Main
+VAR RETAIN boots : DINT; END_VAR
+VAR RETAIN armed : BOOL; END_VAR
+VAR live : DINT; END_VAR
+  live := boots;
+END_PROGRAM${CFG_R}`,
+    );
+    expect(map.retainBlobSize).toBe(14 + 4 + 1);
+  });
+
+  it("omits the blob size when nothing is retained", () => {
+    const { map } = mapOf(
+      `PROGRAM Main
+VAR live : DINT; END_VAR
+  live := 1;
+END_PROGRAM${CFG_R}`,
+    );
+    expect(map.retainBlobSize).toBeUndefined();
+  });
+
+  it("retains a CONFIGURATION VAR_GLOBAL and not its plain sibling", () => {
+    const { byPath } = mapOf(
+      `PROGRAM Main
+VAR_EXTERNAL g_hours : DINT; g_live : DINT; END_VAR
+  g_live := g_hours;
+END_PROGRAM
+CONFIGURATION Config0
+  VAR_GLOBAL RETAIN g_hours : DINT; END_VAR
+  VAR_GLOBAL g_live : DINT; END_VAR
+  RESOURCE Res0 ON PLC
+    TASK task0(INTERVAL := T#20ms, PRIORITY := 0);
+    PROGRAM instance0 WITH task0 : Main;
+  END_RESOURCE
+END_CONFIGURATION`,
+    );
+    expect(byPath.get("G_HOURS")?.retain).toBe(true);
+    expect(byPath.get("G_LIVE")).not.toHaveProperty("retain");
+  });
+
+  it("expands every element of a retained array", () => {
+    const { byPath, map } = mapOf(
+      `PROGRAM Main
+VAR RETAIN log : ARRAY[0..2] OF DINT; END_VAR
+  log[0] := 1;
+END_PROGRAM${CFG_R}`,
+    );
+    for (const i of [0, 1, 2]) {
+      expect(byPath.get(`INSTANCE0.LOG[${i}]`)?.retain).toBe(true);
+    }
+    expect(map.retainVars).toHaveLength(3);
+  });
+
+  describe("layout hash", () => {
+    const hashOf = (vars: string, body: string) =>
+      mapOf(`PROGRAM Main
+${vars}
+  ${body}
+END_PROGRAM${CFG_R}`).map.retainLayoutHash;
+
+    it("is stable across a body-only edit — retained values survive it", () => {
+      const vars = "VAR RETAIN a : DINT; b : DINT; END_VAR";
+      expect(hashOf(vars, "a := 1;")).toBe(hashOf(vars, "a := 2; b := 3;"));
+    });
+
+    it("changes when a retained variable is added", () => {
+      expect(hashOf("VAR RETAIN a : DINT; END_VAR", "a := 1;")).not.toBe(
+        hashOf("VAR RETAIN a : DINT; b : DINT; END_VAR", "a := 1;"),
+      );
+    });
+
+    it("changes when a retained variable is retyped", () => {
+      expect(hashOf("VAR RETAIN a : DINT; END_VAR", "a := 1;")).not.toBe(
+        hashOf("VAR RETAIN a : INT; END_VAR", "a := 1;"),
+      );
+    });
+
+    it("changes when retained variables are reordered", () => {
+      // Order is the blob's packing order, so a swap has to invalidate it.
+      expect(hashOf("VAR RETAIN a : DINT; b : INT; END_VAR", "a := 1;")).not.toBe(
+        hashOf("VAR RETAIN b : INT; a : DINT; END_VAR", "a := 1;"),
+      );
+    });
+  });
+
+  describe("retain through a user-installed library", () => {
+    // Nothing here is bundled with STruC++. This is the path a user takes when
+    // they add a custom .stlib in the library manager, and it exercises the three
+    // things a consuming compilation supposedly cannot resolve on its own:
+    //
+    //   1. a member whose name matches its own user-defined type's name, which
+    //      the library's codegen mangles to a trailing underscore;
+    //   2. a local of a library-INTERNAL struct type;
+    //   3. a local that is another function-block instance.
+    const LIB_SOURCE = `
+TYPE Tally : STRUCT
+  hits : DINT;
+  misses : DINT;
+END_STRUCT; END_TYPE
+
+FUNCTION_BLOCK Latch
+VAR_INPUT s : BOOL; END_VAR
+VAR_OUTPUT q : BOOL; END_VAR
+VAR held : BOOL; END_VAR
+  IF s THEN held := TRUE; END_IF;
+  q := held;
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK Gauge
+VAR_INPUT bump : BOOL; END_VAR
+VAR_OUTPUT total : DINT; END_VAR
+VAR
+  Tally : Tally;      (* 1. member name == its own type name *)
+  inner : Latch;      (* 3. nested FB instance *)
+  scratch : DINT;
+END_VAR
+VAR RETAIN
+  lifetime : DINT;    (* retained by the LIBRARY, in every instance *)
+END_VAR
+  inner(s := bump);
+  IF bump THEN Tally.hits := Tally.hits + 1; lifetime := lifetime + 1;
+  ELSE Tally.misses := Tally.misses + 1; END_IF;
+  scratch := 0;
+  total := Tally.hits;
+END_FUNCTION_BLOCK
+`;
+
+    const archive = () => {
+      const built = compileLibrary([{ source: LIB_SOURCE, fileName: "gauge.st" }], {
+        name: "user-gauge",
+        version: "1.0.0",
+        namespace: "usergauge",
+      });
+      expect(built.errors).toEqual([]);
+      expect(built.success).toBe(true);
+      return built;
+    };
+
+    it("records the mangled member name only where mangling happened", () => {
+      const gauge = archive().manifest.functionBlocks.find((f) => f.name.toUpperCase() === "GAUGE")!;
+      const byName = new Map(gauge.locals!.map((l) => [l.name.toUpperCase(), l]));
+      // `Tally : Tally` collides with its own type name — codegen emits TALLY_.
+      expect(byName.get("TALLY")!.cppName).toBe("TALLY_");
+      // Nothing else needed it, so nothing else carries the field.
+      expect(byName.get("INNER")!.cppName).toBeUndefined();
+      expect(byName.get("SCRATCH")!.cppName).toBeUndefined();
+      // The library's own VAR RETAIN is marked, so it survives in every instance.
+      expect(byName.get("LIFETIME")!.retain).toBe(true);
+    });
+
+    it("retains every internal leaf of an instance of a user library block", () => {
+      const built = archive();
+      const r = compile(
+        `PROGRAM Main
+VAR RETAIN g : Gauge; END_VAR
+VAR go : BOOL; END_VAR
+  g(bump := go);
+END_PROGRAM${CFG_R}`,
+        { libraries: [{ manifest: built.manifest, chunks: built.chunks }] as never },
+      );
+      expect(r.errors.map((e) => e.message)).toEqual([]);
+      const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);
+      // Interface…
+      expect(retained).toContain("INSTANCE0.G.BUMP");
+      expect(retained).toContain("INSTANCE0.G.TOTAL");
+      // …the mangled member, recursed into its internal struct…
+      expect(retained).toContain("INSTANCE0.G.TALLY.HITS");
+      expect(retained).toContain("INSTANCE0.G.TALLY.MISSES");
+      // …the nested FB instance, interface and its own local…
+      expect(retained).toContain("INSTANCE0.G.INNER.S");
+      expect(retained).toContain("INSTANCE0.G.INNER.Q");
+      expect(retained).toContain("INSTANCE0.G.INNER.HELD");
+      // …and the plain locals.
+      expect(retained).toContain("INSTANCE0.G.SCRATCH");
+      expect(retained).toContain("INSTANCE0.G.LIFETIME");
+    });
+
+    it("retains the library's own VAR RETAIN even when the instance is not retained", () => {
+      const built = archive();
+      const r = compile(
+        `PROGRAM Main
+VAR g : Gauge; END_VAR
+VAR go : BOOL; END_VAR
+  g(bump := go);
+END_PROGRAM${CFG_R}`,
+        { libraries: [{ manifest: built.manifest, chunks: built.chunks }] as never },
+      );
+      expect(r.errors.map((e) => e.message)).toEqual([]);
+      const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);
+      expect(retained).toEqual(["INSTANCE0.G.LIFETIME"]);
+      // The rest of the block stays a black box, as it does for any library.
+      const paths = r.debugMap!.leaves.map((l) => l.path);
+      expect(paths).not.toContain("INSTANCE0.G.SCRATCH");
+      expect(paths).not.toContain("INSTANCE0.G.INNER.HELD");
+    });
   });
 });

@@ -775,6 +775,12 @@ function emitVarDescriptors(
   programs: ProgramInfo[],
   ast: CompilationUnit,
 ): void {
+  // v.memberName is already the mangled C++ member name (see
+  // collectVarsFromBlocks / getMangledMemberName below), computed from
+  // knownUserDefinedTypes — which, unlike member-mangling.ts's
+  // userDefinedTypeNames(ast), also includes library-declared FB/types. That
+  // superset must be used here so the address matches what codegen actually
+  // emitted for a variable naming a library type.
   for (const prog of programs) {
     if (prog.vars.length > 0) {
       lines.push(`static VarDescriptor ${prog.varsDescName}[] = {`);

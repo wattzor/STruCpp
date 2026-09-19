@@ -117,24 +117,6 @@ function parseAddress(address: string): ParsedAddress | null {
 }
 
 /**
- * Get the expected IEC types for a given address size.
- */
-function getCompatibleTypes(size: "X" | "B" | "W" | "D" | "L"): string[] {
-  switch (size) {
-    case "X":
-      return ["BOOL"];
-    case "B":
-      return ["BYTE", "USINT", "SINT"];
-    case "W":
-      return ["WORD", "INT", "UINT"];
-    case "D":
-      return ["DWORD", "DINT", "UDINT", "REAL"];
-    case "L":
-      return ["LWORD", "LINT", "ULINT", "LREAL"];
-  }
-}
-
-/**
  * Variable-block kinds that may carry a physical location ("AT %...").
  *
  * IEC 61131-3 allows located declarations in VAR and VAR_GLOBAL only — interface
@@ -153,16 +135,120 @@ const LOCATABLE_BLOCK_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Create a canonical address key for duplicate detection.
+ * The bank a located address lives in: its area and its size class.
  *
- * Exact match is the right test: the image is not flat memory. Each size class
- * has its own array in the runtime (bool_memory[][], int_memory[], dint_memory[],
- * lint_memory[]) and byte_index indexes that array, so %MW0 and %MD0 name
- * unrelated storage rather than overlapping bytes. Two declarations collide only
- * when area, size, byte and bit all match.
+ * Two addresses can only collide within one bank. The image is not flat memory
+ * -- each size class has its own array in the runtime (bool_memory[][],
+ * int_memory[], dint_memory[], lint_memory[]) and the index selects an element
+ * of THAT array -- so %MW0 and %MD0 name unrelated storage rather than
+ * overlapping bytes.
  */
-function addressKey(parsed: ParsedAddress): string {
-  return `${parsed.area}${parsed.size}${parsed.byteIndex}.${parsed.bitIndex}`;
+function bankKey(parsed: ParsedAddress): string {
+  return `${parsed.area}${parsed.size}`;
+}
+
+/**
+ * The first slot a located address names, as a linear index into its bank.
+ *
+ * Bit addresses linearise as `byte*8 + bit` so that consecutive bits are
+ * consecutive slots across a byte boundary (%IX0.7 and %IX1.0 are slots 7 and
+ * 8). Every other size class indexes its array directly.
+ */
+function firstSlot(parsed: ParsedAddress): number {
+  return parsed.size === "X"
+    ? parsed.byteIndex * 8 + parsed.bitIndex
+    : parsed.byteIndex;
+}
+
+/**
+ * Elementary types that may sit at an address of the given size.
+ *
+ * For an array, this is checked against the ELEMENT type: `ARRAY [0..66] OF
+ * WORD AT %MW60` occupies 67 consecutive WORD slots, so what has to fit the
+ * `W` size class is WORD, not the array as a whole.
+ */
+function getCompatibleTypes(size: "X" | "B" | "W" | "D" | "L"): string[] {
+  switch (size) {
+    case "X":
+      return ["BOOL"];
+    case "B":
+      return ["BYTE", "USINT", "SINT"];
+    case "W":
+      return ["WORD", "INT", "UINT"];
+    case "D":
+      return ["DWORD", "DINT", "UDINT", "REAL"];
+    case "L":
+      return ["LWORD", "LINT", "ULINT", "LREAL"];
+  }
+}
+
+/**
+ * What a located declaration actually occupies in the process image.
+ *
+ * A plain variable takes one slot and must itself fit the size class. An array
+ * takes one slot PER ELEMENT, laid out consecutively from the declared address,
+ * and it is the element type that must fit -- `HR AT %MW60 : ARRAY [0..66] OF
+ * WORD` means %MW60 through %MW126, each a WORD (openplc-editor#565).
+ *
+ * Arrays are supported here because nothing in the descriptor table stands in
+ * the way: it is flat, one `{area, size, index, pointer}` row per slot, so an
+ * array is N rows rather than a new mechanism. (The pre-strucpp toolchain
+ * refused these because MatIEC could not express them at all; that constraint
+ * left with MatIEC.)
+ *
+ * Returns a `reason` instead of a shape for the array forms that have no
+ * meaningful linear layout. Each is rejected with its own sentence rather than
+ * falling through to the type-compatibility error, which would otherwise
+ * report the compiler's internal `__INLINE_ARRAY_<T>` spelling at the user.
+ */
+type LocatedShape =
+  | { elementTypeName: string; slotCount: number; reason?: undefined }
+  | { reason: string; elementTypeName?: undefined; slotCount?: undefined };
+
+function resolveLocatedShape(
+  type: TypeReference,
+  ast: CompilationUnit,
+): LocatedShape {
+  // A variable-length array carries no bounds anywhere — the AST builder
+  // records only its rank, in the synthetic `__VLA_<rank>_<T>` name — so
+  // `resolveArrayShape` cannot see it and it would otherwise fall through to
+  // the scalar branch and be reported as an incompatible type named
+  // `__VLA_1D_WORD`. Catch it here so the message says what is actually wrong.
+  if (type.name.toUpperCase().startsWith("__VLA_")) {
+    return {
+      reason: `its length is not known at compile time. A located array needs constant bounds, because each element is bound to a fixed address before the program runs`,
+    };
+  }
+
+  const shape: ArrayShape | undefined = resolveArrayShape(type, ast);
+  if (!shape) {
+    // Not an array: the declaration is the slot, and its own type is what
+    // has to fit the size class.
+    return { elementTypeName: type.name, slotCount: 1 };
+  }
+
+  if (shape.dims.length !== 1) {
+    return {
+      reason: `a ${shape.dims.length}-dimensional array has no single linear run of addresses to occupy. Declare it unlocated, or use a one-dimensional array`,
+    };
+  }
+
+  const dim = shape.dims[0];
+  if (!dim) {
+    // `ARRAY [*]` or a bound that isn't a compile-time constant. The runtime
+    // binds each element to a fixed address, so the count has to be known
+    // when the descriptor table is emitted -- not when the program runs.
+    return {
+      reason: `its length is not known at compile time. A located array needs constant bounds, because each element is bound to a fixed address before the program runs`,
+    };
+  }
+
+  const slotCount = arrayDimSize(dim);
+  if (slotCount === undefined || slotCount <= 0) {
+    return { reason: `its declared bounds are empty` };
+  }
+
+  return { elementTypeName: shape.elementTypeName, slotCount };
 }
 
 // =============================================================================
@@ -273,15 +359,21 @@ export class SemanticAnalyzer {
     // Pass 1: Build symbol tables
     this.buildSymbolTables(ast);
 
+    // Reported before the gates below so a type error in any merged source cannot hide
+    // an undefined type — and excluded from them, so the reverse cannot happen either.
+    const errorsBeforeTypeReferences = this.errors.length;
+    this.validateTypeReferences(ast);
+    const typeReferenceErrors = this.errors.length - errorsBeforeTypeReferences;
+
     // Pass 2: Type checking
-    if (this.errors.length === 0) {
+    if (this.errors.length - typeReferenceErrors === 0) {
       const typeResult = this.typeChecker.check(ast);
       this.errors.push(...typeResult.errors);
       this.warnings.push(...typeResult.warnings);
     }
 
     // Pass 3: Semantic validation
-    if (this.errors.length === 0) {
+    if (this.errors.length - typeReferenceErrors === 0) {
       this.validateSemantics(ast);
     }
 
@@ -472,6 +564,7 @@ export class SemanticAnalyzer {
           scope,
           "function",
           funcDecl.name,
+          false,
         );
 
         // The function name is also the return variable inside the function body.
@@ -522,6 +615,7 @@ export class SemanticAnalyzer {
           scope,
           "functionBlock",
           fbDecl.name,
+          true,
         );
 
         // Create method scopes (parent = FB scope for correct lookup chain)
@@ -536,6 +630,7 @@ export class SemanticAnalyzer {
               methodScope,
               "functionBlock",
               fbDecl.name,
+              false,
             );
             // Register method return variable (MethodName := value)
             if (method.returnType) {
@@ -588,6 +683,7 @@ export class SemanticAnalyzer {
                 propScope,
                 "functionBlock",
                 fbDecl.name,
+                false,
               );
               // Register implicit result/input variable (PropName := value / := PropName)
               const propType = this.resolveVarType(
@@ -674,6 +770,7 @@ export class SemanticAnalyzer {
           scope,
           "program",
           progDecl.name,
+          true,
         );
       } catch (err) {
         if (err instanceof Error) {
@@ -743,10 +840,19 @@ export class SemanticAnalyzer {
     scope: ReturnType<typeof this.symbolTables.createProgramScope>,
     scopeType: "program" | "function" | "functionBlock",
     scopeName: string,
+    /**
+     * Whether declarations here belong to something with instance storage.
+     *
+     * False for a FUNCTION and for a METHOD: neither has an instance, their
+     * locals are stack temporaries, and RETAIN over a stack slot is
+     * meaningless. `scopeType` cannot answer this — a method reports
+     * "functionBlock" so its located variables are rejected the same way an
+     * FB's are, and overloading it would change that unrelated rule.
+     */
+    hasInstanceState: boolean,
   ): void {
     for (const block of varBlocks) {
-      // Validate variable modifiers (CONSTANT, RETAIN)
-      this.validateVarModifiers(block);
+      this.validateVarModifiers(block, hasInstanceState);
 
       for (const decl of block.declarations) {
         for (const name of decl.names) {
@@ -839,9 +945,6 @@ export class SemanticAnalyzer {
    * Validate IEC 61131-3 semantic rules.
    */
   private validateSemantics(ast: CompilationUnit): void {
-    // Validate type references (must come first — other validations assume types exist)
-    this.validateTypeReferences(ast);
-
     // Validate undeclared variable usage
     this.validateUndeclaredVariables(ast);
 
@@ -882,8 +985,389 @@ export class SemanticAnalyzer {
     this.validateIntegerLiteralRange(ast);
 
     // TODO: Implement additional semantic validation
+    // - Check CASE statement coverage
     // - Validate reference operations
     // - Check for unreachable code
+  }
+
+  /**
+   * Validate array declarations and array accesses against the declared shape:
+   *
+   *   - an initializer's nesting must match the array's rank
+   *   - an initializer must not supply more values than the array (or a row) holds
+   *   - a subscript must supply one index per dimension
+   *
+   * All three were previously invisible here: a nesting or rank mistake surfaced
+   * as a C++ error against generated code, and an over-long initializer was
+   * silently truncated by the runtime container's constructor.
+   *
+   * Every check is skipped rather than guessed at when the shape isn't statically
+   * known (variable-length `ARRAY[*]`, non-constant bounds, a type that doesn't
+   * resolve), so this can only ever add diagnostics for definite mistakes.
+   */
+  private validateArrayShapes(ast: CompilationUnit): void {
+    // Globals are visible to every POU, and are the fallback when a name isn't
+    // one of the POU's own variables.
+    const globals = new Map<string, TypeReference>();
+    const addDecls = (
+      blocks: VarBlock[],
+      into: Map<string, TypeReference>,
+    ): void => {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names)
+            into.set(name.toUpperCase(), decl.type);
+        }
+      }
+    };
+    addDecls(ast.globalVarBlocks, globals);
+    for (const config of ast.configurations)
+      addDecls(config.varBlocks, globals);
+
+    // Declaration initializers, everywhere a declaration can appear.
+    for (const block of ast.globalVarBlocks) {
+      this.checkVarBlockInitializers(block, ast);
+    }
+    for (const config of ast.configurations) {
+      for (const block of config.varBlocks) {
+        this.checkVarBlockInitializers(block, ast);
+      }
+    }
+    for (const typeDecl of ast.types) {
+      if (typeDecl.definition.kind !== "StructDefinition") continue;
+      for (const field of typeDecl.definition.fields) {
+        this.checkDeclarationInitializer(field, ast);
+      }
+    }
+
+    // Per-POU: initializers plus the subscript counts in its body.
+    const checkPou = (blocks: VarBlock[], bodies: Statement[][]): void => {
+      const scope = new Map(globals);
+      addDecls(blocks, scope);
+      for (const block of blocks) this.checkVarBlockInitializers(block, ast);
+      for (const body of bodies) this.checkSubscriptCounts(body, scope, ast);
+    };
+
+    for (const prog of ast.programs) checkPou(prog.varBlocks, [prog.body]);
+    for (const func of ast.functions) checkPou(func.varBlocks, [func.body]);
+    for (const fb of ast.functionBlocks) {
+      checkPou(fb.varBlocks, [fb.body]);
+      for (const method of fb.methods) {
+        // A method sees its own locals plus the FB's members.
+        checkPou([...fb.varBlocks, ...method.varBlocks], [method.body]);
+      }
+    }
+  }
+
+  /** Check every declaration in a VAR block. */
+  private checkVarBlockInitializers(
+    block: VarBlock,
+    ast: CompilationUnit,
+  ): void {
+    for (const decl of block.declarations) {
+      this.checkDeclarationInitializer(decl, ast);
+    }
+  }
+
+  /**
+   * Check one declaration's initializer against its declared array shape.
+   *
+   * Only array literals are examined. A scalar initializer on an array is left
+   * alone: it is meaningful for a STRUCT element (`data : ARRAY[…] OF INT := 0`
+   * value-initialises), so rejecting it here would flag working code.
+   */
+  private checkDeclarationInitializer(
+    decl: VarDeclaration,
+    ast: CompilationUnit,
+  ): void {
+    if (!decl.initialValue) return;
+    if (decl.initialValue.kind !== "ArrayLiteralExpression") return;
+    const shape = resolveArrayShape(decl.type, ast);
+    if (!shape) return;
+    this.checkArrayLiteralShape(
+      decl.initialValue,
+      shape,
+      decl.names.join(", "),
+      ast,
+      0,
+    );
+  }
+
+  /**
+   * Recursively check an array literal against the dimensions it initialises.
+   *
+   * `depth` counts nesting levels already consumed. Returns true once something
+   * has been reported, so one mistaken declaration yields one diagnostic rather
+   * than one per row.
+   */
+  private checkArrayLiteralShape(
+    literal: ArrayLiteralExpression,
+    shape: ArrayShape,
+    declName: string,
+    ast: CompilationUnit,
+    depth: number,
+  ): boolean {
+    const span = literal.sourceSpan;
+    const where = depth === 0 ? "" : ` at nesting level ${depth + 1}`;
+    const nestedCount = literal.elements.filter(
+      (e) => e.kind === "ArrayLiteralExpression",
+    ).length;
+
+    if (nestedCount > 0 && nestedCount !== literal.elements.length) {
+      this.addError(
+        `Initializer for '${declName}' mixes nested and flat values${where}. ` +
+          `Either give every element its own list, or write the whole array flat.`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+      return true;
+    }
+
+    if (nestedCount === 0) {
+      // A flat list at the outermost level fills the whole array row-major,
+      // which IEC allows for any rank. Once nesting has started, though, each
+      // level descends exactly one dimension — a flat list part-way down leaves
+      // dimensions unaccounted for and no container constructor matches it.
+      if (depth > 0 && shape.dims.length > 1) {
+        this.addError(
+          `Initializer for '${declName}' stops nesting at level ${depth + 1}, ` +
+            `but ${shape.dims.length} dimensions remain. Nest one level per ` +
+            `dimension, or write the whole array as a single flat list.`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+        return true;
+      }
+      const total = arrayTotalSize(shape.dims);
+      if (total !== undefined && literal.elements.length > total) {
+        this.addError(
+          `Initializer for '${declName}' has ${literal.elements.length} values ` +
+            `but the array holds ${total}. The extra values would be discarded.`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+        return true;
+      }
+      return false;
+    }
+
+    // Nested list — the outer level fills the first dimension. When only one
+    // dimension remains, the nesting can only be meant for an element type that
+    // is itself an array.
+    const outerSize = arrayDimSize(shape.dims[0] ?? null);
+    if (outerSize !== undefined && literal.elements.length > outerSize) {
+      this.addError(
+        `Initializer for '${declName}' has ${literal.elements.length} entries` +
+          `${where} but that dimension holds ${outerSize}. ` +
+          `The extra entries would be discarded.`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+      return true;
+    }
+
+    let innerShape: ArrayShape;
+    if (shape.dims.length > 1) {
+      innerShape = {
+        dims: shape.dims.slice(1),
+        elementTypeName: shape.elementTypeName,
+      };
+    } else {
+      const elementShape = resolveArrayShapeByName(shape.elementTypeName, ast);
+      if (!elementShape) {
+        this.addError(
+          `Initializer for '${declName}' is nested ${depth + 2} levels deep, but ` +
+            `the array has ${depth + 1} dimension${depth === 0 ? "" : "s"} and its ` +
+            `elements are not arrays. Write the values at one level per dimension.`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+        return true;
+      }
+      innerShape = elementShape;
+    }
+
+    for (const element of literal.elements) {
+      if (
+        this.checkArrayLiteralShape(
+          element as ArrayLiteralExpression,
+          innerShape,
+          declName,
+          ast,
+          depth + 1,
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Walk statements and check that every array subscript supplies one index per
+   * dimension. `arr[i, j]` on a 1-dimensional array and `arr[i]` on a
+   * 2-dimensional one are both static mistakes that used to reach g++ as
+   * "no matching member function for call to 'at'".
+   */
+  private checkSubscriptCounts(
+    statements: Statement[],
+    scope: Map<string, TypeReference>,
+    ast: CompilationUnit,
+  ): void {
+    const seen = new Set<Expression>();
+    for (const stmt of statements) {
+      walkAST(stmt, (node) => {
+        if (node.kind !== "VariableExpression") return;
+        const expr = node as VariableExpression;
+        if (seen.has(expr)) return;
+        seen.add(expr);
+        this.checkVariableSubscripts(expr, scope, ast);
+      });
+    }
+  }
+
+  /**
+   * Check one variable reference's subscripts, walking its access chain so that
+   * `a[0][1]` (two single-index steps into an array of arrays) is not confused
+   * with `a[0, 1]` (one two-index step into a 2D array).
+   */
+  private checkVariableSubscripts(
+    expr: VariableExpression,
+    scope: Map<string, TypeReference>,
+    ast: CompilationUnit,
+  ): void {
+    const declared = scope.get(expr.name.toUpperCase());
+    if (!declared) return;
+
+    // Only the ordered chain distinguishes the two spellings above; without it
+    // the flat `subscripts` list is ambiguous, so there is nothing safe to check.
+    const chain = expr.accessChain;
+    if (!chain || chain.length === 0) return;
+
+    let currentTypeName: string | undefined = declared.name;
+    let currentShape = resolveArrayShape(declared, ast);
+
+    for (const step of chain) {
+      if (step.kind === "subscript") {
+        if (!currentShape) return; // not a known array — nothing to check
+        if (step.indices.length !== currentShape.dims.length) {
+          this.addError(
+            `'${expr.name}' has ${currentShape.dims.length} dimension` +
+              `${currentShape.dims.length === 1 ? "" : "s"} but is indexed with ` +
+              `${step.indices.length} ` +
+              `${step.indices.length === 1 ? "index" : "indices"}.`,
+            expr.sourceSpan.startLine,
+            expr.sourceSpan.startCol,
+            expr.sourceSpan.file,
+          );
+          return;
+        }
+        currentTypeName = currentShape.elementTypeName;
+        currentShape = currentTypeName
+          ? resolveArrayShapeByName(currentTypeName, ast)
+          : undefined;
+      } else if (step.kind === "field") {
+        if (!currentTypeName) return;
+        const fieldType = resolveFieldType(currentTypeName, step.name, ast);
+        if (!fieldType) return;
+        currentTypeName = fieldType;
+        currentShape = resolveArrayShapeByName(fieldType, ast);
+      } else {
+        // Dereference — pointer semantics are out of scope for this check.
+        return;
+      }
+    }
+  }
+
+  /**
+   * Reject a structure initializer written anywhere but a declaration's initial
+   * value.
+   *
+   * `structure_initialization` (Annex B.1.4.3) belongs to `var_init_decl`; it is
+   * not an expression, so IEC has no position for it inside a statement. The
+   * lowering needs the target's C++ type, which only a declaration supplies —
+   * reaching codegen without one used to value-initialise silently, so
+   *
+   *     arr := [(x := 1.0), (x := 2.0)];   ->  ARR = {{}, {}};
+   *     f(P := (x := 3.0));                ->  F.P = {};
+   *
+   * compiled clean and ran with every written element discarded, the members
+   * left at their declared defaults. Reported here instead, against the source.
+   *
+   * The walk prunes at every initial value a declaration can carry — a variable
+   * or STRUCT element's (`VarDeclaration.initialValue`) and a type-level default's
+   * (`TypeDeclaration.defaultValue`, Annex B.1.3.3) — so the legal forms, including
+   * a structure initializer nested inside an array literal, are never visited.
+   */
+  private validateStructInitializerPlacement(ast: CompilationUnit): void {
+    // Identity set rather than a node-kind test: only the initializer's own root
+    // is legal, and pruning there covers everything beneath it.
+    const declarationInitializers = new Set<Expression>();
+    walkAST(ast, (node) => {
+      if (node.kind === "VarDeclaration") {
+        const decl = node as VarDeclaration;
+        if (decl.initialValue) declarationInitializers.add(decl.initialValue);
+      } else if (node.kind === "TypeDeclaration") {
+        const type = node as TypeDeclaration;
+        if (type.defaultValue) declarationInitializers.add(type.defaultValue);
+      }
+    });
+
+    walkAST(ast, (node) => {
+      if (declarationInitializers.has(node as Expression)) return false;
+      if (node.kind !== "StructInitializerExpression") return;
+      const span = node.sourceSpan;
+      this.addError(
+        "A structure initializer '(NAME := value, ...)' is only valid as a " +
+          "variable's initial value in a declaration, not inside a statement. " +
+          "Assign the elements individually instead.",
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+      // One diagnostic per initializer, not one per nesting level.
+      return false;
+    });
+  }
+
+  /**
+   * Reject an integer literal that no IEC 61131-3 integer type can hold.
+   *
+   * The widest are LINT (signed 64-bit) and ULINT (unsigned 64-bit), so a value
+   * outside `[LINT_MIN, ULINT_MAX]` is a mistake against *every* declared type
+   * and can be reported without knowing which one it initialises — the same
+   * conservative rule the array-shape checks follow. In range but wrong for the
+   * specific type (`INT := 70000`) is left to the type checker.
+   *
+   * Checked on the exact value rather than the parsed `number`, which rounds
+   * above 2^53; codegen lowers from the same exact value (see
+   * `formatIntegerLiteral`), so the two agree on what is representable.
+   */
+  private validateIntegerLiteralRange(ast: CompilationUnit): void {
+    walkAST(ast, (node) => {
+      if (node.kind !== "LiteralExpression") return;
+      const literal = node as LiteralExpression;
+      if (literal.literalType !== "INT") return;
+      const exact = exactIntegerLiteralValue(literal.rawValue);
+      if (exact === undefined) return;
+      // A negative literal parses as unary minus over a positive one, so the
+      // magnitude LINT_MIN needs the unsigned bound to stay accepted here.
+      if (exact <= IEC_INTEGER_MAX && exact >= IEC_INTEGER_MIN) return;
+      const span = literal.sourceSpan;
+      this.addError(
+        `Integer literal '${literal.rawValue}' is outside the range of every ` +
+          `IEC 61131-3 integer type (LINT holds ${IEC_INTEGER_MIN} to ` +
+          `${-IEC_INTEGER_MIN - 1n}, ULINT holds 0 to ${IEC_INTEGER_MAX}).`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    });
   }
 
   /**
@@ -1071,7 +1555,11 @@ export class SemanticAnalyzer {
    * - Bit index must be 0-7 for bit addresses
    */
   private validateLocatedVariables(ast: CompilationUnit): void {
-    const addressMap = new Map<string, LocatedVarInfo>();
+    /** Slot ranges already claimed, keyed by bank (`area + size`). */
+    const claimedSlots = new Map<
+      string,
+      Array<{ start: number; end: number; owner: LocatedVarInfo }>
+    >();
     const instanceCounts = this.countProgramInstantiations(ast);
 
     // Configuration globals participate in every rule below, above all in the
@@ -1122,11 +1610,30 @@ export class SemanticAnalyzer {
         }
       }
 
-      // Rule 2: Validate type compatibility with address size
-      const compatibleTypes = getCompatibleTypes(locVar.parsed.size);
-      if (!compatibleTypes.includes(locVar.typeName.toUpperCase())) {
+      // Rule 2: the type must fit the address size, and (for an array) the
+      // array must have a linear run of addresses to occupy at all.
+      const shape = resolveLocatedShape(decl.type, ast);
+      if (shape.reason !== undefined) {
         this.addError(
-          `Type '${locVar.typeName}' is not compatible with address size '${locVar.parsed.size}' in '${locVar.address}'. Expected one of: ${compatibleTypes.join(", ")}`,
+          `Located variable '${locVar.name}' at ${locVar.address} cannot be placed: ${shape.reason}.`,
+          decl.sourceSpan.startLine,
+          decl.sourceSpan.startCol,
+          decl.sourceSpan.file,
+        );
+        continue;
+      }
+
+      const compatibleTypes = getCompatibleTypes(locVar.parsed.size);
+      if (!compatibleTypes.includes(shape.elementTypeName.toUpperCase())) {
+        // For an array the mismatch is in the ELEMENT type, so say so —
+        // "Type 'ARRAY [0..66] OF STRING'" would point at the wrong half of
+        // the declaration.
+        const subject =
+          shape.slotCount > 1
+            ? `Array element type '${shape.elementTypeName}'`
+            : `Type '${shape.elementTypeName}'`;
+        this.addError(
+          `${subject} is not compatible with address size '${locVar.parsed.size}' in '${locVar.address}'. Expected one of: ${compatibleTypes.join(", ")}`,
           decl.sourceSpan.startLine,
           decl.sourceSpan.startCol,
           decl.sourceSpan.file,
@@ -1146,18 +1653,34 @@ export class SemanticAnalyzer {
         );
       }
 
-      // Rule 4: Check for duplicate addresses
-      const key = addressKey(locVar.parsed);
-      const existing = addressMap.get(key);
-      if (existing) {
+      // Rule 4: no two declarations may claim the same slot.
+      //
+      // Overlap, not equality: an array occupies `slotCount` consecutive
+      // slots, so `x AT %MW60 : ARRAY [0..66] OF WORD` collides with a plain
+      // `y AT %MW61 : WORD` even though the two addresses differ. Comparing
+      // addresses for equality (which is all that was needed while every
+      // declaration took exactly one slot) would let the second variable
+      // silently share storage with an element of the first.
+      const bank = bankKey(locVar.parsed);
+      const start = firstSlot(locVar.parsed);
+      const end = start + shape.slotCount - 1;
+
+      const claimsInBank = claimedSlots.get(bank) ?? [];
+      const clash = claimsInBank.find((c) => start <= c.end && c.start <= end);
+      if (clash) {
         this.addError(
-          `Duplicate address ${locVar.address}: variable '${locVar.name}' conflicts with '${existing.name}'`,
+          `Duplicate address ${locVar.address}: variable '${locVar.name}' conflicts with '${clash.owner.name}'${
+            clash.end > clash.start || end > start
+              ? ` (${clash.owner.name} occupies ${clash.owner.address} onwards)`
+              : ""
+          }`,
           decl.sourceSpan.startLine,
           decl.sourceSpan.startCol,
           decl.sourceSpan.file,
         );
       } else {
-        addressMap.set(key, locVar);
+        claimsInBank.push({ start, end, owner: locVar });
+        claimedSlots.set(bank, claimsInBank);
       }
     }
   }
@@ -1170,10 +1693,24 @@ export class SemanticAnalyzer {
    * - Block type restrictions for CONSTANT
    * - Block type restrictions for RETAIN
    */
-  private validateVarModifiers(block: VarBlock): void {
+  /**
+   * Validate variable block modifiers (CONSTANT, RETAIN, NON_RETAIN,
+   * PERSISTENT).
+   *
+   * PERSISTENT has already folded into `isRetain` by the time it gets here (see
+   * `VarBlock.isRetain`), so there is nothing PERSISTENT-specific to check.
+   * NON_RETAIN is the default spelled out, so it is accepted wherever a plain
+   * `VAR` would be — including on `VAR_TEMP`, where it is redundant but true,
+   * and rejecting a correct statement would fail a CODESYS import for no gain.
+   */
+  private validateVarModifiers(
+    block: VarBlock,
+    hasInstanceState: boolean,
+  ): void {
     const blockType = block.blockType;
 
-    // RETAIN + CONSTANT is invalid
+    // ---- Contradictions, checked first: once two qualifiers disagree there is
+    // no single intent left to validate the rest against. ------------------
     if (block.isRetain && block.isConstant) {
       this.addError(
         "Variable cannot be both RETAIN and CONSTANT",
@@ -1181,12 +1718,32 @@ export class SemanticAnalyzer {
         block.sourceSpan.startCol,
         block.sourceSpan.file,
       );
-      return; // Skip further validation for this block
+      return;
     }
 
-    // CONSTANT validation
+    if (block.isNonRetain && block.isRetain) {
+      this.addError(
+        "Variable cannot be both RETAIN and NON_RETAIN",
+        block.sourceSpan.startLine,
+        block.sourceSpan.startCol,
+        block.sourceSpan.file,
+      );
+      return;
+    }
+
+    if (block.isNonRetain && block.isConstant) {
+      this.addError(
+        "Variable cannot be both CONSTANT and NON_RETAIN",
+        block.sourceSpan.startLine,
+        block.sourceSpan.startCol,
+        block.sourceSpan.file,
+      );
+      return;
+    }
+
+    // ---- CONSTANT ---------------------------------------------------------
     if (block.isConstant) {
-      // CONSTANT requires initializer (except VAR_INPUT CONSTANT — caller provides value)
+      // CONSTANT requires initializer (except VAR_INPUT — caller provides value)
       if (blockType !== "VAR_INPUT") {
         for (const decl of block.declarations) {
           if (!decl.initialValue) {
@@ -1201,7 +1758,6 @@ export class SemanticAnalyzer {
         }
       }
 
-      // Block type restrictions for CONSTANT
       if (blockType === "VAR_OUTPUT") {
         this.addError(
           "VAR_OUTPUT cannot be CONSTANT",
@@ -1219,15 +1775,41 @@ export class SemanticAnalyzer {
       }
     }
 
-    // RETAIN validation - block type restrictions
+    // ---- RETAIN -----------------------------------------------------------
     if (block.isRetain) {
-      const invalidRetainTypes = [
-        "VAR_INPUT",
-        "VAR_OUTPUT",
-        "VAR_IN_OUT",
-        "VAR_TEMP",
-        "VAR_EXTERNAL",
-      ];
+      // No instance, no state to retain. A FUNCTION is re-entered from scratch
+      // on every call and a METHOD's locals live on the stack, so RETAIN there
+      // is not a restriction we are imposing — it has nothing to describe.
+      // Previously accepted in silence, which is the worst outcome: the user
+      // believes a value survives a power cycle and it never did.
+      if (!hasInstanceState) {
+        this.addError(
+          // Deliberately unnamed: the only scope name in reach here is the
+          // owning FB's, and a method-level RETAIN reported against the FB
+          // name reads as a lie — RETAIN on the FB's own VAR is legal. The
+          // source span points at the offending block.
+          "RETAIN is not allowed in a FUNCTION or METHOD: there is no instance, so the variables have nothing to retain",
+          block.sourceSpan.startLine,
+          block.sourceSpan.startCol,
+          block.sourceSpan.file,
+        );
+        return;
+      }
+
+      // VAR_INPUT and VAR_OUTPUT are deliberately absent: IEC 61131-3 permits
+      // RETAIN on VAR, VAR_INPUT, VAR_OUTPUT and VAR_GLOBAL, and CODESYS
+      // accepts all four. Refusing the first two rejected function blocks that
+      // are valid everywhere else.
+      //
+      // The three below have no retainable storage of their own:
+      //   VAR_IN_OUT   — a reference; the retention belongs to whatever it
+      //                  points at.
+      //   VAR_TEMP     — transient by definition, re-initialised every
+      //                  invocation.
+      //   VAR_EXTERNAL — a view onto a VAR_GLOBAL; that declaration is where
+      //                  RETAIN belongs, and putting it here would suggest two
+      //                  independent answers for one storage location.
+      const invalidRetainTypes = ["VAR_IN_OUT", "VAR_TEMP", "VAR_EXTERNAL"];
 
       if (invalidRetainTypes.includes(blockType)) {
         this.addError(
@@ -2392,386 +2974,6 @@ export class SemanticAnalyzer {
     } else if (expr.kind === "ParenthesizedExpression") {
       this.validateExpression(expr.expression, varTypeMap, ast);
     }
-  }
-
-  /**
-   * Validate array declarations and array accesses against the declared shape:
-   *
-   *   - an initializer's nesting must match the array's rank
-   *   - an initializer must not supply more values than the array (or a row) holds
-   *   - a subscript must supply one index per dimension
-   *
-   * All three were previously invisible here: a nesting or rank mistake surfaced
-   * as a C++ error against generated code, and an over-long initializer was
-   * silently truncated by the runtime container's constructor.
-   *
-   * Every check is skipped rather than guessed at when the shape isn't statically
-   * known (variable-length `ARRAY[*]`, non-constant bounds, a type that doesn't
-   * resolve), so this can only ever add diagnostics for definite mistakes.
-   */
-  private validateArrayShapes(ast: CompilationUnit): void {
-    // Globals are visible to every POU, and are the fallback when a name isn't
-    // one of the POU's own variables.
-    const globals = new Map<string, TypeReference>();
-    const addDecls = (
-      blocks: VarBlock[],
-      into: Map<string, TypeReference>,
-    ): void => {
-      for (const block of blocks) {
-        for (const decl of block.declarations) {
-          for (const name of decl.names)
-            into.set(name.toUpperCase(), decl.type);
-        }
-      }
-    };
-    addDecls(ast.globalVarBlocks, globals);
-    for (const config of ast.configurations)
-      addDecls(config.varBlocks, globals);
-
-    // Declaration initializers, everywhere a declaration can appear.
-    for (const block of ast.globalVarBlocks) {
-      this.checkVarBlockInitializers(block, ast);
-    }
-    for (const config of ast.configurations) {
-      for (const block of config.varBlocks) {
-        this.checkVarBlockInitializers(block, ast);
-      }
-    }
-    for (const typeDecl of ast.types) {
-      if (typeDecl.definition.kind !== "StructDefinition") continue;
-      for (const field of typeDecl.definition.fields) {
-        this.checkDeclarationInitializer(field, ast);
-      }
-    }
-
-    // Per-POU: initializers plus the subscript counts in its body.
-    const checkPou = (blocks: VarBlock[], bodies: Statement[][]): void => {
-      const scope = new Map(globals);
-      addDecls(blocks, scope);
-      for (const block of blocks) this.checkVarBlockInitializers(block, ast);
-      for (const body of bodies) this.checkSubscriptCounts(body, scope, ast);
-    };
-
-    for (const prog of ast.programs) checkPou(prog.varBlocks, [prog.body]);
-    for (const func of ast.functions) checkPou(func.varBlocks, [func.body]);
-    for (const fb of ast.functionBlocks) {
-      checkPou(fb.varBlocks, [fb.body]);
-      for (const method of fb.methods) {
-        // A method sees its own locals plus the FB's members.
-        checkPou([...fb.varBlocks, ...method.varBlocks], [method.body]);
-      }
-    }
-  }
-
-  /** Check every declaration in a VAR block. */
-  private checkVarBlockInitializers(
-    block: VarBlock,
-    ast: CompilationUnit,
-  ): void {
-    for (const decl of block.declarations) {
-      this.checkDeclarationInitializer(decl, ast);
-    }
-  }
-
-  /**
-   * Check one declaration's initializer against its declared array shape.
-   *
-   * Only array literals are examined. A scalar initializer on an array is left
-   * alone: it is meaningful for a STRUCT element (`data : ARRAY[…] OF INT := 0`
-   * value-initialises), so rejecting it here would flag working code.
-   */
-  private checkDeclarationInitializer(
-    decl: VarDeclaration,
-    ast: CompilationUnit,
-  ): void {
-    if (!decl.initialValue) return;
-    if (decl.initialValue.kind !== "ArrayLiteralExpression") return;
-    const shape = resolveArrayShape(decl.type, ast);
-    if (!shape) return;
-    this.checkArrayLiteralShape(
-      decl.initialValue,
-      shape,
-      decl.names.join(", "),
-      ast,
-      0,
-    );
-  }
-
-  /**
-   * Recursively check an array literal against the dimensions it initialises.
-   *
-   * `depth` counts nesting levels already consumed. Returns true once something
-   * has been reported, so one mistaken declaration yields one diagnostic rather
-   * than one per row.
-   */
-  private checkArrayLiteralShape(
-    literal: ArrayLiteralExpression,
-    shape: ArrayShape,
-    declName: string,
-    ast: CompilationUnit,
-    depth: number,
-  ): boolean {
-    const span = literal.sourceSpan;
-    const where = depth === 0 ? "" : ` at nesting level ${depth + 1}`;
-    const nestedCount = literal.elements.filter(
-      (e) => e.kind === "ArrayLiteralExpression",
-    ).length;
-
-    if (nestedCount > 0 && nestedCount !== literal.elements.length) {
-      this.addError(
-        `Initializer for '${declName}' mixes nested and flat values${where}. ` +
-          `Either give every element its own list, or write the whole array flat.`,
-        span.startLine,
-        span.startCol,
-        span.file,
-      );
-      return true;
-    }
-
-    if (nestedCount === 0) {
-      // A flat list at the outermost level fills the whole array row-major,
-      // which IEC allows for any rank. Once nesting has started, though, each
-      // level descends exactly one dimension — a flat list part-way down leaves
-      // dimensions unaccounted for and no container constructor matches it.
-      if (depth > 0 && shape.dims.length > 1) {
-        this.addError(
-          `Initializer for '${declName}' stops nesting at level ${depth + 1}, ` +
-            `but ${shape.dims.length} dimensions remain. Nest one level per ` +
-            `dimension, or write the whole array as a single flat list.`,
-          span.startLine,
-          span.startCol,
-          span.file,
-        );
-        return true;
-      }
-      const total = arrayTotalSize(shape.dims);
-      if (total !== undefined && literal.elements.length > total) {
-        this.addError(
-          `Initializer for '${declName}' has ${literal.elements.length} values ` +
-            `but the array holds ${total}. The extra values would be discarded.`,
-          span.startLine,
-          span.startCol,
-          span.file,
-        );
-        return true;
-      }
-      return false;
-    }
-
-    // Nested list — the outer level fills the first dimension. When only one
-    // dimension remains, the nesting can only be meant for an element type that
-    // is itself an array.
-    const outerSize = arrayDimSize(shape.dims[0] ?? null);
-    if (outerSize !== undefined && literal.elements.length > outerSize) {
-      this.addError(
-        `Initializer for '${declName}' has ${literal.elements.length} entries` +
-          `${where} but that dimension holds ${outerSize}. ` +
-          `The extra entries would be discarded.`,
-        span.startLine,
-        span.startCol,
-        span.file,
-      );
-      return true;
-    }
-
-    let innerShape: ArrayShape;
-    if (shape.dims.length > 1) {
-      innerShape = {
-        dims: shape.dims.slice(1),
-        elementTypeName: shape.elementTypeName,
-      };
-    } else {
-      const elementShape = resolveArrayShapeByName(shape.elementTypeName, ast);
-      if (!elementShape) {
-        this.addError(
-          `Initializer for '${declName}' is nested ${depth + 2} levels deep, but ` +
-            `the array has ${depth + 1} dimension${depth === 0 ? "" : "s"} and its ` +
-            `elements are not arrays. Write the values at one level per dimension.`,
-          span.startLine,
-          span.startCol,
-          span.file,
-        );
-        return true;
-      }
-      innerShape = elementShape;
-    }
-
-    for (const element of literal.elements) {
-      if (
-        this.checkArrayLiteralShape(
-          element as ArrayLiteralExpression,
-          innerShape,
-          declName,
-          ast,
-          depth + 1,
-        )
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /**
-   * Walk statements and check that every array subscript supplies one index per
-   * dimension. `arr[i, j]` on a 1-dimensional array and `arr[i]` on a
-   * 2-dimensional one are both static mistakes that used to reach g++ as
-   * "no matching member function for call to 'at'".
-   */
-  private checkSubscriptCounts(
-    statements: Statement[],
-    scope: Map<string, TypeReference>,
-    ast: CompilationUnit,
-  ): void {
-    const seen = new Set<Expression>();
-    for (const stmt of statements) {
-      walkAST(stmt, (node) => {
-        if (node.kind !== "VariableExpression") return;
-        const expr = node as VariableExpression;
-        if (seen.has(expr)) return;
-        seen.add(expr);
-        this.checkVariableSubscripts(expr, scope, ast);
-      });
-    }
-  }
-
-  /**
-   * Check one variable reference's subscripts, walking its access chain so that
-   * `a[0][1]` (two single-index steps into an array of arrays) is not confused
-   * with `a[0, 1]` (one two-index step into a 2D array).
-   */
-  private checkVariableSubscripts(
-    expr: VariableExpression,
-    scope: Map<string, TypeReference>,
-    ast: CompilationUnit,
-  ): void {
-    const declared = scope.get(expr.name.toUpperCase());
-    if (!declared) return;
-
-    // Only the ordered chain distinguishes the two spellings above; without it
-    // the flat `subscripts` list is ambiguous, so there is nothing safe to check.
-    const chain = expr.accessChain;
-    if (!chain || chain.length === 0) return;
-
-    let currentTypeName: string | undefined = declared.name;
-    let currentShape = resolveArrayShape(declared, ast);
-
-    for (const step of chain) {
-      if (step.kind === "subscript") {
-        if (!currentShape) return; // not a known array — nothing to check
-        if (step.indices.length !== currentShape.dims.length) {
-          this.addError(
-            `'${expr.name}' has ${currentShape.dims.length} dimension` +
-              `${currentShape.dims.length === 1 ? "" : "s"} but is indexed with ` +
-              `${step.indices.length} ` +
-              `${step.indices.length === 1 ? "index" : "indices"}.`,
-            expr.sourceSpan.startLine,
-            expr.sourceSpan.startCol,
-            expr.sourceSpan.file,
-          );
-          return;
-        }
-        currentTypeName = currentShape.elementTypeName;
-        currentShape = currentTypeName
-          ? resolveArrayShapeByName(currentTypeName, ast)
-          : undefined;
-      } else if (step.kind === "field") {
-        if (!currentTypeName) return;
-        const fieldType = resolveFieldType(currentTypeName, step.name, ast);
-        if (!fieldType) return;
-        currentTypeName = fieldType;
-        currentShape = resolveArrayShapeByName(fieldType, ast);
-      } else {
-        // Dereference — pointer semantics are out of scope for this check.
-        return;
-      }
-    }
-  }
-
-  /**
-   * Reject a structure initializer written anywhere but a declaration's initial
-   * value.
-   *
-   * `structure_initialization` (Annex B.1.4.3) belongs to `var_init_decl`; it is
-   * not an expression, so IEC has no position for it inside a statement. The
-   * lowering needs the target's C++ type, which only a declaration supplies —
-   * reaching codegen without one used to value-initialise silently, so
-   *
-   *     arr := [(x := 1.0), (x := 2.0)];   ->  ARR = {{}, {}};
-   *     f(P := (x := 3.0));                ->  F.P = {};
-   *
-   * compiled clean and ran with every written element discarded, the members
-   * left at their declared defaults. Reported here instead, against the source.
-   *
-   * The walk prunes at every initial value a declaration can carry — a variable
-   * or STRUCT element's (`VarDeclaration.initialValue`) and a type-level default's
-   * (`TypeDeclaration.defaultValue`, Annex B.1.3.3) — so the legal forms, including
-   * a structure initializer nested inside an array literal, are never visited.
-   */
-  private validateStructInitializerPlacement(ast: CompilationUnit): void {
-    // Identity set rather than a node-kind test: only the initializer's own root
-    // is legal, and pruning there covers everything beneath it.
-    const declarationInitializers = new Set<Expression>();
-    walkAST(ast, (node) => {
-      if (node.kind === "VarDeclaration") {
-        const decl = node as VarDeclaration;
-        if (decl.initialValue) declarationInitializers.add(decl.initialValue);
-      } else if (node.kind === "TypeDeclaration") {
-        const type = node as TypeDeclaration;
-        if (type.defaultValue) declarationInitializers.add(type.defaultValue);
-      }
-    });
-
-    walkAST(ast, (node) => {
-      if (declarationInitializers.has(node as Expression)) return false;
-      if (node.kind !== "StructInitializerExpression") return;
-      const span = node.sourceSpan;
-      this.addError(
-        "A structure initializer '(NAME := value, ...)' is only valid as a " +
-          "variable's initial value in a declaration, not inside a statement. " +
-          "Assign the elements individually instead.",
-        span.startLine,
-        span.startCol,
-        span.file,
-      );
-      // One diagnostic per initializer, not one per nesting level.
-      return false;
-    });
-  }
-
-  /**
-   * Reject an integer literal that no IEC 61131-3 integer type can hold.
-   *
-   * The widest are LINT (signed 64-bit) and ULINT (unsigned 64-bit), so a value
-   * outside `[LINT_MIN, ULINT_MAX]` is a mistake against *every* declared type
-   * and can be reported without knowing which one it initialises — the same
-   * conservative rule the array-shape checks follow. In range but wrong for the
-   * specific type (`INT := 70000`) is left to the type checker.
-   *
-   * Checked on the exact value rather than the parsed `number`, which rounds
-   * above 2^53; codegen lowers from the same exact value (see
-   * `formatIntegerLiteral`), so the two agree on what is representable.
-   */
-  private validateIntegerLiteralRange(ast: CompilationUnit): void {
-    walkAST(ast, (node) => {
-      if (node.kind !== "LiteralExpression") return;
-      const literal = node as LiteralExpression;
-      if (literal.literalType !== "INT") return;
-      const exact = exactIntegerLiteralValue(literal.rawValue);
-      if (exact === undefined) return;
-      // A negative literal parses as unary minus over a positive one, so the
-      // magnitude LINT_MIN needs the unsigned bound to stay accepted here.
-      if (exact <= IEC_INTEGER_MAX && exact >= IEC_INTEGER_MIN) return;
-      const span = literal.sourceSpan;
-      this.addError(
-        `Integer literal '${literal.rawValue}' is outside the range of every ` +
-          `IEC 61131-3 integer type (LINT holds ${IEC_INTEGER_MIN} to ` +
-          `${-IEC_INTEGER_MIN - 1n}, ULINT holds 0 to ${IEC_INTEGER_MAX}).`,
-        span.startLine,
-        span.startCol,
-        span.file,
-      );
-    });
   }
 
   /**
